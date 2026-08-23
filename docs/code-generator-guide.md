@@ -1,0 +1,254 @@
+# MyBatis-Plus 代码生成器使用说明
+
+本文说明 Light Deploy 代码生成器的配置、运行方式、生成结果和常见问题。
+
+## 1. 生成器位置
+
+入口类：
+
+```text
+src/main/java/com/lx/deploy/common/generator/CodeGenerator.java
+```
+
+自定义模板：
+
+```text
+src/main/resources/templates/entity.java.ftl
+src/main/resources/templates/serviceImpl.java.ftl
+src/main/resources/templates/controller.java.ftl
+src/main/resources/templates/dto.java.ftl
+src/main/resources/templates/vo.java.ftl
+```
+
+生成器会生成 Entity、DTO、VO、Mapper、Service、Controller 和 Mapper XML。纯 CRUD Service 不生成接口层。
+
+## 2. 创建外置配置
+
+数据库连接和生成参数不写在 Java 代码中。首次使用时，在项目根目录执行：
+
+```bash
+cp generator.properties.example generator.properties
+```
+
+修改本机的 `generator.properties`：
+
+```properties
+generator.datasource.url=jdbc:mysql://localhost:3306/deploy?characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+generator.datasource.username=root
+generator.datasource.password=change-me
+generator.module=server
+generator.tables=server
+generator.package=com.lx.deploy
+generator.author=lx
+generator.overwrite=false
+```
+
+`generator.properties` 和 `generator-*.properties` 已加入 `.gitignore`，可以保存本机配置，但不能提交真实数据库密码。团队只提交脱敏后的 `generator.properties.example`。
+
+## 3. 配置项说明
+
+| 配置项 | 必填 | 说明 |
+| --- | --- | --- |
+| `generator.datasource.url` | 是 | MySQL JDBC 地址 |
+| `generator.datasource.username` | 是 | MySQL 用户名 |
+| `generator.datasource.password` | 是 | MySQL 密码 |
+| `generator.module` | 是 | 生成模块，例如 `server`、`task` |
+| `generator.tables` | 是 | 数据库表名，多个表使用英文逗号分隔 |
+| `generator.package` | 否 | Java 根包名，默认 `com.lx.deploy` |
+| `generator.author` | 否 | 类注释作者，默认 `lx` |
+| `generator.overwrite` | 否 | 是否覆盖已有文件，默认 `false` |
+
+配置文件不存在、必填项为空或数据库连接失败时，生成器会直接报错并停止，不会使用隐藏的数据库默认值。
+
+## 4. 生成 server 模块
+
+`server` 表不带业务前缀：
+
+```properties
+generator.module=server
+generator.tables=server
+generator.overwrite=false
+```
+
+运行后输出到：
+
+```text
+src/main/java/com/lx/deploy/server/model/Server.java
+src/main/java/com/lx/deploy/server/model/dto/ServerDto.java
+src/main/java/com/lx/deploy/server/model/vo/ServerVo.java
+src/main/java/com/lx/deploy/server/mapper/ServerMapper.java
+src/main/java/com/lx/deploy/server/service/ServerService.java
+src/main/java/com/lx/deploy/server/controller/ServerController.java
+src/main/resources/mapper/ServerMapper.xml
+```
+
+## 5. 生成 task 模块
+
+任务域表使用 `lds_` 前缀：
+
+```properties
+generator.module=task
+generator.tables=lds_task,lds_task_log
+generator.overwrite=false
+```
+
+当 `generator.module=task` 时，生成器自动从 Java 类名中移除 `lds_` 前缀，因此类名为 `Task`、`TaskLog`，数据库表名仍为 `lds_task`、`lds_task_log`。
+
+## 6. IntelliJ IDEA 运行方式
+
+最简单的方式：
+
+1. 打开 `CodeGenerator.java`；
+2. 点击 `main` 方法左侧的运行按钮；
+3. 默认读取项目根目录的 `generator.properties`；
+4. 运行完成后刷新 IDEA 项目目录并检查 Git diff。
+
+如果需要切换配置文件，可以在 Run Configuration 的 **Program arguments** 中填写绝对路径：
+
+```text
+/Users/lixiong/idea_work/light-deploy/generator-task.properties
+```
+
+也可以在 **VM options** 中填写：
+
+```text
+-Dgenerator.config=/Users/lixiong/idea_work/light-deploy/generator-task.properties
+```
+
+配置文件读取优先级为：
+
+1. Program arguments 的第一个参数；
+2. VM option `-Dgenerator.config=...`；
+3. 项目根目录 `generator.properties`。
+
+建议不同模块分别使用本地文件，例如 `generator-server.properties`、`generator-task.properties`，运行时显式指定，避免反复修改同一份配置。
+
+## 7. 覆盖策略
+
+默认配置是：
+
+```properties
+generator.overwrite=false
+```
+
+当文件已经存在时，控制台会打印：
+
+```text
+File [Server.java] already exists. Overwrite mode is disabled.
+```
+
+这表示生成器已经执行，但为了保护现有代码而跳过文件，并不是文件生成到其他地方了。
+
+确实需要根据最新模板重新生成时，先提交或备份当前代码，再临时设置：
+
+```properties
+generator.overwrite=true
+```
+
+该配置会覆盖已有实体、Mapper、Service、Controller 和 XML，手工修改可能丢失。生成后必须检查 Git diff，确认无误后立即恢复为 `false`。
+
+## 8. 自动生成的内容
+
+实体类：
+
+- 继承 `BaseEntity`；
+- 使用 Lombok `@Data`；
+- 不重复生成 `id`、`create_time`、`update_time`、`is_deleted`；
+- 数据库字段注释生成 JavaDoc 和 Swagger 描述。
+- 主键使用 `BaseEntity` 的 `ASSIGN_UUID`，实际生成逻辑统一由 `IdGenerator.generateUUID()` 提供。
+
+Service 自动提供：
+
+```text
+pageByCondition    条件分页查询
+listByCondition    条件列表查询
+getRequiredById    根据 ID 查询，不存在时抛统一异常
+create             新增
+update             修改
+delete             逻辑删除
+```
+
+Controller 自动提供：
+
+```text
+GET    /{module}/page
+GET    /{module}/list
+GET    /{module}/{id}
+POST   /{module}
+PUT    /{module}/{id}
+DELETE /{module}/{id}
+```
+
+Controller 使用字段注入，不生成构造方法。动态查询只包含模板允许的业务字段，敏感字段不会加入普通条件查询。
+
+### DTO 和 VO 分层
+
+Controller 不直接使用数据库实体：
+
+```text
+model/Entity.java       Service/Mapper 内部持久化实体
+model/dto/EntityDto.java Controller 请求体和查询条件
+model/vo/EntityVo.java  Controller 响应对象
+```
+
+DTO 用于分页条件、列表条件、新增和修改请求，不包含服务端维护的主键、创建时间、更新时间、创建人、更新人和软删除字段。VO 由 Service 从实体转换而来，默认不包含密码、密文、Token、私钥等敏感字段。这样可以避免数据库字段变化、请求体伪造主键以及敏感信息误返回。
+
+生成的 Service 方法负责完成 DTO/Entity/VO 转换，Controller 只做参数校验、调用 Service 和包装 `ApiResponse`。
+
+## 9. traceId 说明
+
+接口响应中的 `traceId` 是请求追踪标识，不是业务主键，也不表示用户身份或权限。`RequestTraceFilter` 的行为如下：
+
+1. 优先读取调用方的 `X-Request-Id`；未传入时生成 32 位 UUID；
+2. 写入响应头 `X-Request-Id`；
+3. 写入 `ApiResponse.traceId`；
+4. 写入日志 MDC，由 `logback-spring.xml` 的 `%X{traceId}` 输出。
+
+前端反馈问题时应同时提供接口地址、时间和 `traceId`，运维人员即可在 `logs/info.log` 或 `logs/error.log` 中关联该请求。traceId 只用于请求与日志关联，不替代发布任务 ID、用户 ID 或数据库主键。
+
+## 10. 推荐操作流程
+
+1. 手工确认目标数据库和目标表已经存在；
+2. 复制或选择对应的本地 properties 配置；
+3. 确认 `generator.module`、`generator.tables` 和数据库地址；
+4. 首次生成保持 `generator.overwrite=false`；
+5. 运行 `CodeGenerator.main()`；
+6. 到固定输出目录检查生成文件；
+7. 执行编译并检查 Git diff；
+8. 根据业务规则补充校验、枚举转换和敏感字段处理。
+
+代码生成器负责生成通用 CRUD 骨架，不代表生成后的代码可以不经检查直接用于生产。
+
+## 11. 常见问题
+
+### 配置文件不存在
+
+确认已将 `generator.properties.example` 复制为 `generator.properties`，并确认 IDEA Run Configuration 的工作目录是项目根目录。也可以使用 Program arguments 传入绝对路径。
+
+### 数据库连接失败
+
+检查 MySQL 是否启动、数据库名是否正确、账号是否有读取表结构的权限，以及 JDBC URL 的时区和连接参数是否正确。
+
+### 表不存在或字段不完整
+
+生成器读取数据库元数据，不是读取 `schema.sql` 文本。需要先人工执行数据库 DDL，并确认所连接数据库中已经存在目标表和字段注释。
+
+### 执行后没有新文件
+
+先查看控制台是否提示 `already exists`。如果存在该提示，就是覆盖开关关闭后正常跳过。再按第 4 节所列固定路径检查文件，并刷新 IDEA 项目目录。
+
+### 生成了错误的包或类名
+
+检查 `generator.module`、`generator.tables` 和 `generator.package`。任务表应使用 `generator.module=task`，才能自动移除类名中的 `lds_` 前缀。
+
+### 是否会自动创建数据库表
+
+不会。代码生成器只读取已有表结构并生成 Java/XML 文件。Spring Boot 启动时也禁止自动执行 `schema.sql`；数据库创建和升级必须人工确认执行。
+
+## 12. 安全要求
+
+- 禁止提交真实的数据库账号、密码或生产配置；
+- 禁止在 Java 代码、日志或异常消息中打印数据库密码；
+- 生成前确认没有误连生产数据库；
+- 覆盖模式开启前必须保证现有代码可通过 Git 恢复；
+- 生成后必须进行编译和代码审查。

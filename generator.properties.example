@@ -1,0 +1,25 @@
+# MyBatis-Plus 代码生成器配置示例。
+# 使用前复制为项目根目录 generator.properties，并修改数据库账号密码。
+
+# 数据库连接配置。
+generator.datasource.url=jdbc:mysql://localhost:3306/deploy?characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+generator.datasource.username=root
+generator.datasource.password=change-me
+
+# 生成范围：server 或 task。
+generator.module=server
+
+# 表名可以填写多个，使用英文逗号分隔。
+# server 模块示例：server
+# task 模块示例：lds_task,lds_task_log
+generator.tables=server
+
+# Java 根包名。
+generator.package=com.lx.deploy
+
+# 生成文件作者。
+generator.author=lx
+
+# false：已有文件不覆盖，推荐默认值。
+# true：覆盖已有实体、Mapper、Service、Controller 和 XML，谨慎使用。
+generator.overwrite=false

@@ -1,0 +1,963 @@
+# Light Deploy 轻量化部署发布平台设计方案
+
+> 文档版本：v1.0  
+> 编写日期：2026-08-23  
+> 文档状态：开发设计基线  
+> 目标读者：产品、后端、前端、测试、运维和项目维护者
+
+## 1. 文档说明
+
+Light Deploy 是面向中小企业和个人运维团队的轻量化应用构建、部署、发布和回滚平台。平台以 Docker 为主要交付方式，同时支持 Java JAR 直接运行和前端静态产物通过 Nginx 发布。
+
+平台不是企业级 Kubernetes 平台，也不试图替代完整 CI/CD 产品。第一阶段的目标是用较少的基础设施完成以下闭环：
+
+```text
+项目配置 -> 拉取代码/上传产物 -> 构建 -> 远程发布 -> 健康检查 -> 版本记录 -> 回滚
+```
+
+平台需要纳管至少 6 台部署主机，并能同时调度这些主机上的不同项目。6 台主机是平台的并发管理基线，不表示一个项目必须发布到 6 台主机。平台为后续接入统一权限中心和已有 AIops 平台预留稳定的 OpenAPI 和事件模型。
+
+## 2. 背景与建设目标
+
+### 2.1 背景
+
+传统中小企业项目通常存在以下问题：
+
+- 发布依赖人工 SSH 登录，操作不可审计；
+- Java、Python、Node.js 和前端项目的发布脚本不统一；
+- 版本、构建日志和回滚信息分散在个人电脑或服务器上；
+- 发布时监控告警产生大量噪音，无法区分发布故障和真实故障；
+- 企业级 DevOps 产品部署和维护成本较高，不适合小团队。
+
+### 2.2 建设目标
+
+1. 提供简单的项目、环境、服务器和凭据管理。
+2. 支持 Docker、Java JAR、前端静态产物三种发布运行时。
+3. 支持 6 台以上 Linux/Docker 主机，并支持不同主机上的发布任务并发执行。
+4. 提供可追踪的构建、部署、健康检查、回滚任务。
+5. 与 AIops 通过发布事件和告警维护窗口联动。
+6. 权限模型不在本项目中重复建设，预留统一权限中心接入能力。
+7. 平台自身可以使用 Docker Compose 部署，前端使用 Nginx 托管。
+
+### 2.3 非目标
+
+第一阶段明确不实现以下能力：
+
+- Kubernetes 编排和 Operator；
+- 多租户隔离和完整 RBAC；
+- 内置镜像仓库；
+- 灰度、蓝绿和服务网格流量治理；
+- 分布式构建集群和高可用控制面；
+- 自研监控、日志、链路追踪系统；
+- AI 自动执行生产回滚；
+- Jenkins、GitLab CI 等产品的全量兼容。
+
+这些能力可以在后续版本以插件或外部系统集成的方式加入。
+
+## 3. 用户角色与典型场景
+
+### 3.1 角色
+
+| 角色 | 职责 | 权限来源 |
+| --- | --- | --- |
+| 平台运维人员 | 管理服务器、项目和部署策略 | 统一权限中心 |
+| 项目开发人员 | 查看项目、触发非生产发布、查看日志 | 统一权限中心 |
+| 生产发布人员 | 触发生产发布、回滚和确认风险 | 统一权限中心 |
+| AIops 系统 | 接收事件、创建告警静默、返回分析建议 | 服务间凭据/权限中心 |
+
+当前版本只在业务表中保存 `operator_id` 和 `operator_name`，不在 Light Deploy 内实现角色、用户组和权限规则。
+
+### 3.2 典型场景
+
+#### 场景 A：Docker 项目发布
+
+用户选择项目和环境，平台拉取指定分支或 Commit，在目标主机执行 `docker build`，启动新容器，完成健康检查后将版本标记为当前版本。
+
+#### 场景 B：Java JAR 发布
+
+用户上传 JAR 或从 Git 构建 JAR，平台将文件上传至版本目录，切换 `current` 软链接，重启对应 systemd 服务，执行进程和 HTTP 健康检查。
+
+#### 场景 C：Vue 静态产物发布
+
+用户上传 `dist.zip` 或平台构建前端项目，平台解压至 Nginx 站点的版本目录，原子切换 `current` 软链接，无需每次修改 Nginx 配置。
+
+#### 场景 D：发布与 AIops 联动
+
+发布前创建精确到项目、环境和主机的告警维护窗口；发布过程中发送生命周期事件；发布成功或回滚稳定后关闭维护窗口；发布后的异常交给 AIops 分析。
+
+## 4. 需求设计
+
+### 4.1 功能需求总览
+
+| 编号 | 模块 | 优先级 | 说明 |
+| --- | --- | --- | --- |
+| FR-001 | 登录鉴权 | P0 | 支持当前开发模式，并预留权限中心 Token 校验 |
+| FR-002 | 服务器管理 | P0 | 增删改查、SSH 测试、Docker 信息检测 |
+| FR-003 | 凭据管理 | P0 | Git Token、SSH 密码和私钥加密存储 |
+| FR-004 | 项目管理 | P0 | 项目基本信息、代码源、运行时和发布配置 |
+| FR-005 | 环境管理 | P0 | 开发、测试、生产环境及目标主机 |
+| FR-006 | Docker 发布 | P0 | 构建、启动、停止、重启、健康检查 |
+| FR-007 | JAR 发布 | P0 | SFTP 上传、systemd 重启、版本切换和回滚 |
+| FR-008 | 静态发布 | P0 | dist 产物上传、Nginx 站点原子切换 |
+| FR-009 | 异步任务 | P0 | 任务状态、阶段进度、日志和错误信息 |
+| FR-010 | 多目标发布 | P1 | 单项目单主机为默认，多副本项目可选全量/滚动发布 |
+| FR-011 | 版本与回滚 | P0 | 保留版本、手动回滚、失败自动恢复 |
+| FR-012 | AIops 联动 | P1 | 维护窗口、发布事件、失败重试和幂等 |
+| FR-013 | 审计记录 | P1 | 发布、回滚、服务器变更和凭据引用审计 |
+| FR-014 | 运行状态 | P1 | 容器、进程和站点基础状态 |
+
+### 4.2 服务器管理需求
+
+服务器字段至少包括：名称、主机地址、SSH 端口、登录用户、认证类型、加密凭据、标签、状态和描述。
+
+平台应支持：
+
+- SSH 连接测试；
+- Docker 版本和运行状态检查；
+- Java、Nginx、Git 和磁盘空间检查；
+- 主机停用；
+- 同一主机的并发部署锁；
+- 服务器标签，例如 `prod`、`hangzhou`、`gpu`。
+
+平台不直接管理主机初始化。主机初始化脚本可以作为 `scripts/server-init.sh` 在后续补充。
+
+### 4.3 项目与环境需求
+
+项目和环境分离：项目保存应用配置，环境绑定一个或多个部署目标和环境变量。默认一个项目环境绑定一台目标主机；只有明确需要多副本或集群部署时，才配置多个目标主机。
+
+项目配置包括：
+
+- 项目编码和名称；
+- 运行时类型：`DOCKER`、`JAR`、`STATIC`；
+- Git 地址、凭据、分支、Tag 或 Commit；
+- Dockerfile 路径或语言模板；
+- JAR 启动参数和 JVM 参数；
+- 静态站点目录和 Nginx 站点；
+- 端口、环境变量、数据卷和健康检查；
+- 版本保留数量。
+
+环境配置包括：
+
+- 环境编码：`dev`、`test`、`prod`；
+- 默认目标服务器；
+- 可选的多目标服务器列表；
+- 发布策略；
+- 批次大小；
+- 健康检查和发布超时；
+- AIops 集成策略。
+
+### 4.4 构建需求
+
+构建方式按以下优先级处理：
+
+1. 项目自带 Dockerfile；
+2. 平台内置语言模板生成 Dockerfile；
+3. 用户上传或选择构建产物。
+
+内置模板至少支持：
+
+- Java Maven/Gradle；
+- Python pip/uv；
+- Node.js npm/pnpm；
+- Go；
+- 前端静态产物。
+
+构建输出必须记录：Commit、构建命令、构建主机、镜像 Tag 或文件 SHA256、构建耗时和日志。
+
+### 4.4.1 构建模式
+
+项目支持以下构建模式：
+
+| 模式 | 适用场景 | 说明 |
+| --- | --- | --- |
+| `PLATFORM_TEMPLATE` | 简单 Java/Python/Node 项目 | 使用平台提供的语言模板 |
+| `PROJECT_DOCKERFILE` | 项目已有 Dockerfile | 使用仓库中的 Dockerfile |
+| `LAYERED_DOCKER` | AI 和大型依赖项目 | 分离依赖基础镜像与业务镜像 |
+| `ARTIFACT_ONLY` | 已有 JAR 或静态产物 | 不在平台内构建镜像 |
+
+对于 AIops 等依赖体积较大的项目，采用 `LAYERED_DOCKER`：
+
+```text
+Dockerfile.base -> base image -> 阿里云镜像仓库
+Dockerfile.app  -> app image FROM base image -> 阿里云镜像仓库
+docker-compose.yml -> 拉取 app image -> 目标服务器启动
+```
+
+基础镜像只在依赖指纹变化或用户强制重建时构建。依赖指纹可以由 `Dockerfile.base`、`pyproject.toml`、`uv.lock`、`requirements.txt` 等文件的内容摘要组成。业务代码变化只重建业务镜像，不重复安装大型 AI 依赖。
+
+项目仓库可以提供可选的 `light-deploy.yml`，声明 Dockerfile、Compose 文件、构建上下文、依赖文件、镜像名称和健康检查。平台配置负责环境变量、凭据、目标服务器、发布策略和告警联动，敏感信息不得写入该文件。
+
+### 4.4.2 镜像仓库与构建服务器
+
+支持阿里云容器镜像服务（ACR），并抽象为可扩展的镜像仓库配置。构建可在目标主机或独立构建主机执行；AI 项目建议构建一次后推送仓库，再由各目标主机拉取同一个不可变镜像。
+
+镜像 Tag 至少包含 Commit 或构建任务编号，数据库同时保存镜像 Digest：
+
+```text
+aiops-base:dep-a83f21c
+aiops-app:git-a1b2c3d
+aiops-app@sha256:<digest>
+```
+
+### 4.5 发布需求
+
+部署任务必须异步执行，API 立即返回 `taskId`。
+
+任务阶段统一为：
+
+```text
+VALIDATE
+PREPARE
+FETCH_SOURCE
+BUILD
+UPLOAD
+STOP_OLD
+START_NEW
+HEALTH_CHECK
+OBSERVE
+FINISH
+ROLLBACK
+```
+
+部署任务必须异步执行，API 立即返回 `taskId`。同一项目同一环境不能同时发布；不同项目只要不违反资源冲突规则，可以在不同服务器上并发发布。平台应至少支持 6 台服务器上各有一个发布任务同时运行。相同服务器上的不同项目默认串行，除非项目显式声明资源隔离和允许并发。
+
+### 4.6 健康检查需求
+
+健康检查由部署平台执行，支持：
+
+- Docker 容器状态；
+- systemd 服务状态；
+- HTTP 2xx 检查；
+- TCP 端口检查；
+- 静态文件版本检查。
+
+默认参数建议：
+
+```text
+请求超时：5 秒
+重试次数：3 次
+重试间隔：5 秒
+启动宽限：30 秒
+发布后观察：120 秒
+```
+
+### 4.7 回滚需求
+
+每次成功发布都必须产生不可变版本记录。
+
+- Docker：重新启动旧镜像 Tag；
+- JAR：切换旧版本目录的 `current` 软链接并重启 systemd；
+- STATIC：切换旧版本目录的 `current` 软链接。
+
+回滚也必须创建任务、记录日志、执行健康检查并通知 AIops。
+
+## 5. 系统架构设计
+
+### 5.1 逻辑架构
+
+```text
+表示层：Vue3 / TypeScript / Element Plus
+        |
+接口层：REST API / OpenAPI / SSE（后续）
+        |
+应用层：项目、发布、任务、版本、服务器编排
+        |
+领域层：运行时策略、发布状态机、健康检查、回滚策略
+        |
+基础设施层：MySQL、Redis、SSH、SFTP、Docker CLI、Nginx
+        |
+外部系统：统一权限中心、AIops 平台、Git 仓库
+```
+
+### 5.2 控制面与目标面
+
+控制面运行 Light Deploy API、任务调度和数据库。
+
+目标面由 6 台或更多 Linux 主机组成。不同业务可以分布在不同主机上，例如 AIops、分析、采集、巡检和其他业务系统。平台通过 SSH/SFTP 连接目标主机，并调用受控的 Docker、systemd 和 Nginx 命令。AIops 只是被纳管的一个普通项目，不在部署调度层做特殊假设。
+
+第一版不开发目标主机 Agent。未来当主机数量或发布并发明显增加时，再引入 Agent 或独立 Worker。
+
+### 5.3 发布状态机
+
+```text
+QUEUED -> RUNNING -> SUCCESS
+                 -> FAILED -> ROLLING_BACK -> ROLLED_BACK
+                 -> CANCELED
+```
+
+单目标项目只需要一个部署目标记录；多目标项目才创建主任务和多个目标子任务。单目标项目在该目标健康检查通过后进入 `SUCCESS`；多目标项目在所有必需目标通过后才进入 `SUCCESS`。
+
+### 5.4 服务器并发与多目标发布策略
+
+平台调度维度是服务器，而不是“一个项目必须覆盖所有服务器”。调度器维护服务器级并发槽位：
+
+- 不同服务器上的不同项目可以并行发布；
+- 同一服务器默认同一时刻只执行一个发布任务，避免 Docker 构建、磁盘和端口资源互相影响；
+- 同一项目同一环境使用项目锁，防止重复发布；
+- 服务器不可用时，只阻塞该服务器上的任务，不影响其他服务器。
+
+第一版至少验证 6 台服务器各运行一个任务时，任务状态、日志、锁和资源占用均正确。线程池大小应大于等于 6，并通过配置限制全局并发数。
+
+对于明确需要多副本的项目，才启用以下策略：
+
+支持：
+
+- `ALL_AT_ONCE`：该项目的所有目标主机并行发布；
+- `ROLLING`：该项目的目标主机按批次发布，当前批次通过后再进行下一批。
+
+默认项目策略为 `SINGLE_TARGET`，即一个环境绑定一台服务器。多目标项目才建议 `ROLLING` 且批次大小为 2。任一批次失败后停止后续批次，并按策略决定是否自动回滚已成功主机。
+
+## 6. AIops 联动设计
+
+### 6.1 职责边界
+
+```text
+Light Deploy：发布、版本、健康检查、回滚、发布日志
+AIops：指标、日志、告警、异常分析、告警静默、风险建议
+```
+
+部署平台不等待 AIops 返回健康结果，避免 AIops 故障阻塞部署。AIops 只接收发布上下文，并对发布期间的告警进行精确处理。
+
+### 6.2 发布前维护窗口
+
+发布开始前，平台调用 AIops 创建维护窗口。静默匹配条件必须包含：
+
+- 项目；
+- 环境；
+- 目标主机；
+- 相关告警类型。
+
+不能静默整台主机的所有告警。磁盘满、SSH 不可用、数据库故障等基础设施告警必须继续触发。
+
+维护窗口必须有自动过期时间，建议为预计发布时长加 10 分钟，防止平台宕机造成永久静默。
+
+### 6.3 发布事件
+
+建议事件类型：
+
+```text
+DEPLOYMENT_PREPARED
+DEPLOYMENT_STARTED
+DEPLOYMENT_HOST_SUCCESS
+DEPLOYMENT_HOST_FAILED
+DEPLOYMENT_SUCCEEDED
+DEPLOYMENT_FAILED
+DEPLOYMENT_ROLLED_BACK
+```
+
+事件必须包含 `deploymentId`、项目、环境、版本、Commit、主机、状态和时间。接口需要幂等，幂等键建议为：
+
+```text
+deploymentId:eventType
+```
+
+### 6.4 失败处理
+
+发布失败时，平台先保持静默，执行回滚和回滚后的健康检查；确认旧版本稳定后关闭静默并发送失败/回滚事件。如果回滚后仍不健康，必须通知 AIops 恢复真实告警并升级事件等级。
+
+AIops 可以异步回调平台提交风险分析和回滚建议，但第一版生产环境不自动执行 AI 决策，采用“AI 分析、人工确认、平台执行”。
+
+## 7. 后端项目层级
+
+建议从当前代码逐步调整为以下结构：
+
+```text
+com.lx.deploy
+├── auth
+│   ├── controller
+│   ├── provider
+│   └── model
+├── server
+│   ├── controller
+│   ├── service
+│   ├── mapper
+│   ├── model
+│   │   ├── dto
+│   │   └── vo
+│   └── executor
+├── project
+├── environment
+├── credential
+├── build
+│   ├── strategy
+│   ├── template
+│   └── service
+├── deploy
+│   ├── controller
+│   ├── service
+│   ├── strategy
+│   ├── state
+│   └── scheduler
+├── release
+├── task
+│   ├── controller
+│   ├── service
+│   ├── executor
+│   └── log
+├── health
+├── aiops
+│   ├── client
+│   ├── event
+│   └── silence
+├── integration
+└── common
+    ├── exception
+    ├── response
+    ├── security
+    ├── crypto
+    ├── lock
+    └── util
+```
+
+接口模型必须与数据库实体隔离：`model` 根目录实体只用于 Service/Mapper 持久化；
+`model/dto` 保存 Controller 查询、新增和修改请求；`model/vo` 保存 Controller 响应。
+Controller 禁止直接使用实体作为请求体、查询条件或响应泛型。VO 默认排除密码、凭据密文、Token 和私钥等敏感字段。
+
+### 7.1 请求追踪 traceId
+
+每次 HTTP 请求必须具有唯一 `traceId`。平台优先透传请求头 `X-Request-Id`，调用方未提供时生成 32 位 UUID，并将同一个值写入：
+
+- 响应头 `X-Request-Id`；
+- 统一响应 `ApiResponse.traceId`；
+- SLF4J MDC；
+- `info.log` 和 `error.log` 的日志格式。
+
+前端反馈接口错误时应提供接口地址、发生时间和 traceId，运维人员可直接按 traceId 检索同一次请求的业务日志和异常日志。traceId 仅用于请求链路关联，不代表用户身份、权限、发布任务 ID 或数据库主键。
+
+核心接口建议包括：
+
+```java
+public interface DeployStrategy {
+    DeployResult deploy(DeployContext context);
+}
+
+public interface HealthChecker {
+    HealthResult check(HealthCheckContext context);
+}
+
+public interface AiopsClient {
+    String createSilence(SilenceRequest request);
+    void closeSilence(String silenceId);
+    void publishEvent(DeploymentEvent event);
+}
+
+public interface AuthProvider {
+    UserIdentity authenticate(String token);
+}
+```
+
+## 8. 数据库设计
+
+普通业务表不使用统一前缀，任务域表使用 `lds_` 前缀。字符集使用 `utf8mb4`，时间字段使用 `DATETIME`。主键和关联 ID 统一使用 `VARCHAR(32)`，由 MyBatis-Plus `ASSIGN_UUID` 调用公共 `IdGenerator.generateUUID()` 生成 32 位 UUID 字符串。
+
+### 8.1 `server`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | varchar(32) | 主键 |
+| name | varchar(100) | 服务器名称 |
+| host | varchar(255) | IP 或域名 |
+| ssh_port | int | SSH 端口 |
+| username | varchar(100) | SSH 登录用户 |
+| auth_type | tinyint | 认证类型：1密码、2私钥 |
+| ciphertext | text | Java AES-GCM 加密后的密码或私钥 |
+| environment_tag | tinyint | 环境标签：1开发、2测试、3生产 |
+| status | tinyint | 服务器状态：0停用、1启用 |
+| description | varchar(500) | 描述 |
+| created_by | varchar(100) | 操作者 |
+| create_time | datetime | 创建时间 |
+| update_time | datetime | 更新时间 |
+| is_deleted | tinyint | 逻辑删除 |
+
+### 8.2 `user`（过渡期）
+
+当前版本提供临时用户表，仅用于平台初期登录和开发联调。密码字段只保存 BCrypt 等不可逆哈希，不保存明文密码。接入统一权限中心后，通过 `external_user_id` 完成迁移映射，平台逐步停用本地登录。
+
+主要字段：`id`、`username`、`password_hash`、`nickname`、`email`、`mobile`、`external_user_id`、`status`、`last_login_time`、`create_time`、`update_time`、`is_deleted`。
+
+### 8.3 `credential`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | varchar(32) | 主键 |
+| name | varchar(100) | 凭据名称 |
+| type | varchar(30) | SSH_PASSWORD/SSH_KEY/GIT_TOKEN |
+| encrypted_value | text | Java AES-GCM 密文 |
+| metadata_json | json | 用户名、指纹等非敏感信息 |
+| created_by | varchar(100) | 创建人 |
+| created_at | datetime | 创建时间 |
+| updated_at | datetime | 更新时间 |
+
+### 8.4 `ld_project`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | varchar(32) | 主键 |
+| code | varchar(64) | 项目编码，唯一 |
+| name | varchar(100) | 项目名称 |
+| runtime_type | varchar(20) | DOCKER/JAR/STATIC |
+| source_type | varchar(20) | GIT/UPLOAD |
+| git_url | varchar(500) | Git 地址 |
+| git_branch | varchar(100) | 分支 |
+| git_credential_id | varchar(32) | Git 凭据 |
+| build_config_json | json | 构建配置 |
+| runtime_config_json | json | 运行配置 |
+| health_config_json | json | 健康检查配置 |
+| retain_release_count | int | 保留版本数 |
+| status | varchar(20) | ENABLED/DISABLED |
+| created_by | varchar(100) | 创建人 |
+| created_at | datetime | 创建时间 |
+| updated_at | datetime | 更新时间 |
+| deleted | tinyint | 逻辑删除 |
+
+### 8.5 `ld_environment`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | varchar(32) | 主键 |
+| code | varchar(32) | dev/test/prod |
+| name | varchar(100) | 环境名称 |
+| deploy_strategy | varchar(30) | SINGLE_TARGET/ALL_AT_ONCE/ROLLING |
+| batch_size | int | 多目标项目的滚动批次大小 |
+| default_server_id | varchar(32) | 默认目标服务器 |
+| aiops_enabled | tinyint | 是否联动 AIops |
+| created_at | datetime | 创建时间 |
+| updated_at | datetime | 更新时间 |
+
+项目环境与目标服务器的关系建议独立使用 `ld_project_environment_target` 保存，不将多个服务器 ID 直接固化在 JSON 字段中。普通项目只有一条目标记录，多副本项目可以有多条目标记录。
+
+### 8.6 `ld_project_environment_target`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | varchar(32) | 主键 |
+| project_id | varchar(32) | 项目 ID |
+| environment_id | varchar(32) | 环境 ID |
+| server_id | varchar(32) | 目标服务器 ID |
+| is_primary | tinyint | 是否默认目标 |
+| deploy_order | int | 多目标发布顺序 |
+| runtime_config_json | json | 目标服务器差异配置 |
+| status | varchar(20) | ENABLED/DISABLED |
+| created_at | datetime | 创建时间 |
+| updated_at | datetime | 更新时间 |
+
+### 8.7 `ld_release`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | varchar(32) | 主键 |
+| project_id | varchar(32) | 项目 ID |
+| version | varchar(100) | 发布版本 |
+| commit_id | varchar(100) | Commit |
+| artifact_path | varchar(500) | JAR/静态产物路径 |
+| image_tag | varchar(255) | Docker 镜像 Tag |
+| sha256 | varchar(128) | 产物摘要 |
+| status | varchar(20) | BUILT/DEPLOYED/FAILED |
+| created_by | varchar(100) | 创建人 |
+| created_at | datetime | 创建时间 |
+
+### 8.8 `ld_deployment`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | varchar(32) | 主键 |
+| project_id | varchar(32) | 项目 ID |
+| environment_id | varchar(32) | 环境 ID |
+| release_id | varchar(32) | 版本 ID |
+| strategy | varchar(30) | 发布策略 |
+| status | varchar(30) | 任务状态 |
+| operator_id | varchar(100) | 外部用户 ID |
+| operator_name | varchar(100) | 操作者名称 |
+| aiops_silence_id | varchar(100) | 静默 ID |
+| started_at | datetime | 开始时间 |
+| finished_at | datetime | 结束时间 |
+| error_message | text | 错误信息 |
+
+### 8.9 `ld_deployment_target`
+
+每次发布至少生成一条目标记录。普通单目标项目只有一条；多副本项目才会生成多条。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | varchar(32) | 主键 |
+| deployment_id | varchar(32) | 发布主任务 |
+| server_id | varchar(32) | 目标服务器 |
+| status | varchar(30) | 主机任务状态 |
+| old_version | varchar(100) | 旧版本 |
+| new_version | varchar(100) | 新版本 |
+| image_tag | varchar(255) | 镜像 Tag |
+| health_status | varchar(30) | 健康状态 |
+| log_cursor | bigint | 日志序号 |
+| started_at | datetime | 开始时间 |
+| finished_at | datetime | 结束时间 |
+| error_message | text | 错误信息 |
+
+### 8.10 `ld_task`、`ld_task_log`、`ld_aiops_event`
+
+分别用于保存异步任务、任务日志和 AIops 调用记录。AIops 调用必须记录请求摘要、响应状态、重试次数和幂等键，便于故障排查。
+
+### 8.11 构建与镜像表
+
+建议补充以下表，以支持分层构建和阿里云镜像仓库：
+
+#### `ld_registry`
+
+保存仓库地址、命名空间和加密凭据引用，后续可兼容 Harbor 等仓库。
+
+#### `ld_build`
+
+保存构建模式、构建主机、Commit、状态、耗时和错误信息。
+
+#### `ld_build_artifact`
+
+保存 `BASE_IMAGE`、`APP_IMAGE`、JAR 或 STATIC 产物的名称、Tag、Digest、依赖指纹、Dockerfile 路径和元数据。
+
+`ld_project` 增加 `build_mode` 字段，取值为 `PLATFORM_TEMPLATE`、`PROJECT_DOCKERFILE`、`LAYERED_DOCKER` 或 `ARTIFACT_ONLY`。
+
+## 9. 接口设计
+
+### 9.1 服务器
+
+```http
+GET    /api/servers
+POST   /api/servers
+PUT    /api/servers/{id}
+DELETE /api/servers/{id}
+POST   /api/servers/{id}/test
+GET    /api/servers/{id}/runtime-info
+```
+
+### 9.2 项目和环境
+
+```http
+GET    /api/projects
+POST   /api/projects
+GET    /api/projects/{id}
+PUT    /api/projects/{id}
+DELETE /api/projects/{id}
+POST   /api/projects/{id}/validate
+
+GET    /api/environments
+POST   /api/environments
+PUT    /api/environments/{id}
+```
+
+### 9.3 发布和任务
+
+```http
+POST /api/projects/{id}/deploy
+GET  /api/projects/{id}/releases
+POST /api/projects/{id}/rollback
+GET  /api/deployments/{id}
+GET  /api/deployments/{id}/targets
+GET  /api/tasks/{taskId}
+GET  /api/tasks/{taskId}/logs
+POST /api/tasks/{taskId}/cancel
+```
+
+发布接口应立即返回：
+
+```json
+{
+  "taskId": "task-202608230001",
+  "deploymentId": "deploy-202608230001",
+  "status": "QUEUED"
+}
+```
+
+### 9.4 AIops 开放接口
+
+```http
+POST   /openapi/v1/maintenance-windows
+DELETE /openapi/v1/maintenance-windows/{id}
+POST   /openapi/v1/deployment-events
+POST   /openapi/v1/deployment-assessments
+```
+
+AIops 调用部署平台的接口必须使用服务身份凭据，不能复用普通用户 Token。
+
+## 10. 使用依赖
+
+### 10.1 后端
+
+| 依赖 | 用途 |
+| --- | --- |
+| Spring Boot 4.x | Web 和应用基础框架 |
+| Java 21 | 运行时 |
+| MyBatis-Plus | ORM 和 CRUD |
+| MySQL Connector/J | MySQL 访问 |
+| Spring Data Redis | 分布式锁、状态和缓存 |
+| Apache SSHD | SSH/SFTP |
+| Spring Validation | 参数校验 |
+| Springdoc OpenAPI | 接口文档 |
+| Lombok | 样板代码简化 |
+| JUnit、Mockito、Testcontainers | 测试 |
+
+当前项目的父版本是 Spring Boot 4.1.0。如果必须锁定 4.0.x，应统一调整父版本，并验证 MyBatis-Plus 和 Springdoc 的兼容性。
+
+### 10.2 前端
+
+| 依赖 | 用途 |
+| --- | --- |
+| Vue 3 | UI 框架 |
+| Vite | 构建工具 |
+| TypeScript | 类型安全 |
+| Vue Router | 路由 |
+| Pinia | 状态管理 |
+| Element Plus | 管理端组件 |
+| Axios | HTTP 请求 |
+| ECharts | 控制台基础图表 |
+| ESLint、Prettier | 代码质量 |
+
+### 10.3 目标主机
+
+- Linux；
+- Docker；
+- OpenSSH；
+- Git；
+- systemd；
+- Nginx（静态项目）；
+- Java Runtime（JAR 项目）；
+- `curl` 或 `wget`。
+
+## 11. 安全设计
+
+1. SSH 密码、私钥、Git Token 使用 Java 标准 AES-GCM 加密存储。
+2. 加密主密钥通过环境变量或外部密钥管理注入，不进入 Git。
+
+平台公共实现为 `CredentialCrypto`，使用 Java 标准 `AES/GCM/NoPadding`。服务器新增或修改时请求字段为明文 `credential`，Service 在写库前调用 `encrypt`；建立 SSH、Docker Registry 或 Git 连接前调用 `decrypt`，明文只在内存中短暂使用。仅有密文而没有对应的 AES key 无法解密。
+
+部署时配置：
+
+```bash
+export LIGHT_DEPLOY_AES_KEY='Base64编码的32字节AES-256密钥'
+```
+
+生成新 key（仅在需要新密钥时执行，并安全保存）：
+
+```bash
+openssl rand -base64 32
+
+也可以直接运行项目中的 `com.lx.deploy.common.crypto.AesKeyGenerator` main 方法生成密钥：
+
+```bash
+java com.lx.deploy.common.crypto.AesKeyGenerator
+```
+```
+3. 前端和接口不得返回明文凭据。
+4. 日志自动脱敏密码、Token 和敏感环境变量。
+5. 使用专用部署账号，不默认使用 root。
+6. 限制部署账号的 Docker、systemd 和 Nginx 权限。
+7. 禁止用户输入任意 Shell 命令。
+8. 对项目编码、镜像名、容器名、端口和文件路径进行严格校验。
+9. 所有发布、回滚、删除和凭据变更写入审计日志。
+10. AIops 和权限中心接口使用 HTTPS、服务凭据、超时和重试机制。
+
+## 12. 非功能需求
+
+### 12.1 性能
+
+- 页面列表接口 P95 小于 500 ms；
+- 发布接口 2 秒内返回任务编号；
+- 支持至少 6 台主机同时被管理和调度；
+- 至少支持 6 台服务器各执行一个发布任务；
+- 全局并发数和单服务器并发数可配置，默认单服务器并发为 1；
+- 单个任务日志支持持续增长且不阻塞 API 请求。
+
+### 12.2 可用性
+
+- 同一环境只能存在一个活动发布任务；
+- SSH 失败可以重试；
+- AIops 调用失败不会阻塞回滚；
+- 告警静默自动过期；
+- 任务中断后可以标记为 `UNKNOWN` 并允许人工重新执行。
+
+### 12.3 可维护性
+
+- 发布策略通过接口和策略类扩展；
+- Docker、JAR、STATIC 运行时互不污染；
+- 所有外部系统调用集中在 `integration` 模块；
+- 统一错误码、日志格式和 Trace ID；
+- 关键配置通过 `application-{profile}.yaml` 管理。
+
+## 13. 测试设计
+
+### 单元测试
+
+- 发布状态机；
+- 版本选择和回滚逻辑；
+- 健康检查重试；
+- AIops 事件幂等；
+- 告警静默过期计算；
+- 命令参数校验和敏感信息脱敏。
+
+### 集成测试
+
+- MySQL Mapper；
+- Redis 锁和任务状态；
+- SSH 执行器；
+- SFTP 上传；
+- Docker 命令适配器；
+- AIops HTTP 客户端。
+
+### 端到端测试
+
+至少准备三个示例项目：
+
+1. Spring Boot JAR；
+2. FastAPI Docker；
+3. Vue 静态站点。
+
+验证以下路径：
+
+```text
+首次发布 -> 健康检查 -> 二次发布 -> 发布失败 -> 自动回滚 -> 手动回滚
+```
+
+## 14. 部署方案
+
+### 14.1 Light Deploy 自身
+
+```text
+light-deploy-api
+mysql
+redis
+nginx
+```
+
+使用 Docker Compose 启动控制面。前端构建后的 `dist` 由 Nginx 托管，Nginx 将 `/api` 反向代理到 Spring Boot。
+
+### 14.2 目标主机目录规范
+
+```text
+/opt/light-deploy/
+├── apps/
+│   └── {projectCode}/
+│       ├── releases/
+│       ├── current
+│       ├── logs/
+│       └── config/
+├── workspaces/
+└── backups/
+```
+
+版本目录不可覆盖，发布通过新建版本目录和原子切换完成。
+
+## 15. 开发核心和难度评估
+
+### 难点一：远程命令执行
+
+难度：高。
+
+需要处理 SSH 超时、连接断开、命令退出码、输出流、日志截断、sudo 权限和命令注入。建议封装统一的 `RemoteExecutor`，所有运行时策略不能自行拼接底层连接逻辑。
+
+### 难点二：发布状态一致性与并发调度
+
+难度：高。
+
+平台需要同时处理不同服务器上的多个发布任务，也要支持少数多目标项目。必须区分主任务和目标子任务，设计全局并发、服务器锁、项目环境锁，并支持超时、重试、失败和回滚。不能只依赖内存变量保存状态。
+
+### 难点三：版本与回滚
+
+难度：中高。
+
+Docker 使用镜像 Tag，JAR 和静态文件使用版本目录和软链接，三种运行时必须统一抽象为 `Release`。
+
+### 难点四：AIops 告警联动
+
+难度：中高。
+
+重点不是发送 HTTP，而是处理幂等、重试、过期、平台异常和回滚期间的静默范围。AIops 不可用时，生产环境可以配置为阻止发布，测试环境可以降级继续发布。
+
+### 难点五：权限中心接入
+
+难度：中。
+
+第一版只实现 `AuthProvider` 和 `PermissionProvider` 接口，不在本项目复制用户和权限模型。后续只替换实现，不修改业务模块。
+
+## 16. 开发阶段与验收标准
+
+### 阶段一：基础设施
+
+- 完成统一响应、异常、日志、Trace ID；
+- 完成 MySQL 初始化脚本；
+- 完成 Redis 任务锁；
+- 完成服务器 CRUD 和 SSH 测试。
+
+### 阶段二：单主机发布
+
+- Docker、JAR、STATIC 各完成一次发布；
+- 完成任务日志；
+- 完成健康检查；
+- 完成版本记录和手动回滚。
+
+### 阶段三：多服务器并发与可选多目标发布
+
+- 支持纳管 6 台主机；
+- 支持不同主机上的项目并发发布；
+- 支持服务器级锁和项目环境级锁；
+- 对明确的多副本项目支持全量和滚动发布；
+- 支持目标失败停止和已发布目标回滚。
+
+### 阶段四：AIops 集成
+
+- 发布前创建静默；
+- 发布过程中发送事件；
+- 发布成功、失败和回滚事件完整；
+- AIops 调用失败可重试；
+- 静默可自动过期。
+
+### 阶段五：前端交付
+
+- Vue 管理端使用 Nginx 托管；
+- 完成服务器、项目、环境、任务和版本页面；
+- 完成实时或轮询日志；
+- 完成发布、停止、重启和回滚操作。
+
+### MVP 完成标准
+
+- 至少纳管 6 台目标主机，并能让 6 台主机各自运行一个发布任务；
+- 单项目默认绑定单台目标主机；
+- Java JAR、Docker 项目、Vue 静态项目均可一键发布；
+- 发布任务有完整日志和状态；
+- 发布失败可以回滚到上一版本；
+- 多目标项目可按批次滚动发布；
+- AIops 告警静默和发布事件可幂等重试；
+- 凭据不明文保存；
+- 权限中心接入不需要修改项目核心业务模块。
+
+## 17. 后续演进路线
+
+### v1.1
+
+- Docker Compose 多容器项目；
+- Git Webhook 自动触发；
+- SSE 实时日志；
+- 镜像和产物清理策略；
+- 更完整的主机资源状态。
+
+### v1.2
+
+- 接入统一权限中心；
+- 接入 AIops 风险评估；
+- 发布审批和生产二次确认；
+- 灰度批次策略。
+
+### v2.0
+
+- 构建机和镜像仓库；
+- 独立 Worker；
+- Docker Swarm 或 Kubernetes 适配器；
+- AI 辅助生成构建和部署配置。
+
+## 18. 结论
+
+Light Deploy 的核心价值不是堆叠企业级功能，而是把三种常见交付方式统一到一个可审计、可回滚、可观察的发布流程中：
+
+```text
+Docker 容器
+Java JAR + systemd
+前端静态文件 + Nginx
+```
+
+以 MySQL 保存业务事实，以 Redis 支撑任务和锁，以 SSH/SFTP 连接至少 6 台目标主机，以服务器维度并发调度不同业务项目，以 AIops 处理发布期间的告警维护和发布后分析，以统一权限中心作为未来鉴权边界。单项目默认只发布到一台目标主机，多目标发布作为明确配置后的扩展能力。该设计足够支撑个人开发者完成可上线的 MVP，同时为后续多用户、权限、构建集群和 Kubernetes 适配保留清晰的扩展位置。
