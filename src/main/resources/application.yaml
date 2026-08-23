@@ -78,8 +78,8 @@ light-deploy:
     # 只从环境变量注入，禁止将真实密钥写入 application.yaml 或提交到 Git。
     # aes-key: ${LIGHT_DEPLOY_AES_KEY:}
     aes-key: sCiAhDKE1xzqkAXnMECqPLvrFE3w7G2dqXSJPOffEOE=
-  task:
-    # 任务线程池基础并发配置，当前基线支持至少 6 台服务器并发调度。
-    core-pool-size: 6
-    max-pool-size: 6
-    queue-capacity: 20
+#  task:
+#    # 任务线程池基础并发配置，当前基线支持至少 6 台服务器并发调度。
+#    core-pool-size: 6
+#    max-pool-size: 6
+#    queue-capacity: 20
