@@ -3,7 +3,7 @@
  *
  * 与后端 com.lx.deploy.common 包中的 ApiResponse / PageResult / PageQuery 一一对应。
  * 后端契约：
- * - 统一响应 code === 200 表示成功，message 为提示信息，traceId 用于日志关联；
+ * - 统一响应 code === 200 表示成功，message 为提示信息，requestId 用于日志关联；
  * - 分页参数 pageNum / pageSize（pageNum 从 1 开始，pageSize 最大 100）；
  * - 分页结果返回 pageNum、pageSize、total、pages、records。
  */
@@ -14,7 +14,7 @@ export interface ApiResponse<T = any> {
   message: string
   data: T
   timestamp?: string
-  traceId?: string
+  requestId?: string
 }
 
 /** 后端统一分页结果结构（PageResult.java） */
