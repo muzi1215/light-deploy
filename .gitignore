@@ -32,9 +32,18 @@ build/
 ### VS Code ###
 .vscode/
 
+### 本地工具工作目录（Agent 会话产物，不入库） ###
+.workbuddy/
+
+### macOS ###
+.DS_Store
+
 ### Code generator local configuration ###
 generator.properties
 generator-*.properties
+
+### Generated frontend code (from code generator) ###
+generated-ui/
 
 ### Runtime logs ###
 logs/
