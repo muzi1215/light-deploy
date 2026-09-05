@@ -35,14 +35,14 @@ public class ProjectEnvironmentTargetController {
      *
      * @param pageQuery 页码和每页数量
      * @param condition DTO 查询条件
-     * @param request 当前 HTTP 请求，用于获取 traceId
+     * @param request 当前 HTTP 请求，用于获取 requestId
      * @return VO 分页数据
      */
     @GetMapping("/page")
     public ApiResponse<PageResult<ProjectEnvironmentTargetVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute ProjectEnvironmentTargetDto condition,
                                                       HttpServletRequest request) {
-        return ApiResponse.success(service.pageByCondition(pageQuery, condition), traceId(request));
+        return ApiResponse.success(service.pageByCondition(pageQuery, condition), requestId(request));
     }
 
     /**
@@ -51,38 +51,38 @@ public class ProjectEnvironmentTargetController {
      * <p>该接口适合数据量较小的选择列表；大数据量页面应使用分页接口。</p>
      *
      * @param condition DTO 查询条件，字段全部为空时查询所有未删除记录
-     * @param request 当前 HTTP 请求，用于读取本次请求的 traceId
+     * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的 VO 列表
      */
     @GetMapping("/list")
     public ApiResponse<List<ProjectEnvironmentTargetVo>> list(@ModelAttribute ProjectEnvironmentTargetDto condition,
                                                HttpServletRequest request) {
-        return ApiResponse.success(service.listByCondition(condition), traceId(request));
+        return ApiResponse.success(service.listByCondition(condition), requestId(request));
     }
 
     /**
      * 根据主键查询单条项目环境部署目标。
      *
      * @param id 数据主键
-     * @param request 当前 HTTP 请求，用于读取本次请求的 traceId
+     * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
     @GetMapping("/{id}")
     public ApiResponse<ProjectEnvironmentTargetVo> detail(@PathVariable String id, HttpServletRequest request) {
-        return ApiResponse.success(service.getRequiredById(id), traceId(request));
+        return ApiResponse.success(service.getRequiredById(id), requestId(request));
     }
 
     /**
      * 根据请求 DTO 新增一条项目环境部署目标。
      *
      * @param dto 新增请求参数，主键和审计字段由服务端维护
-     * @param request 当前 HTTP 请求，用于读取本次请求的 traceId
+     * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
     @PostMapping
     public ApiResponse<ProjectEnvironmentTargetVo> create(@Valid @RequestBody ProjectEnvironmentTargetDto dto,
                                            HttpServletRequest request) {
-        return ApiResponse.success(service.create(dto), traceId(request));
+        return ApiResponse.success(service.create(dto), requestId(request));
     }
 
     /**
@@ -90,37 +90,37 @@ public class ProjectEnvironmentTargetController {
      *
      * @param id 待修改数据的主键
      * @param dto 修改请求参数，不能通过请求体修改主键
-     * @param request 当前 HTTP 请求，用于读取本次请求的 traceId
+     * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
     @PutMapping("/{id}")
     public ApiResponse<ProjectEnvironmentTargetVo> update(@PathVariable String id,
                                            @Valid @RequestBody ProjectEnvironmentTargetDto dto,
                                            HttpServletRequest request) {
-        return ApiResponse.success(service.update(id, dto), traceId(request));
+        return ApiResponse.success(service.update(id, dto), requestId(request));
     }
 
     /**
      * 根据主键逻辑删除项目环境部署目标。
      *
      * @param id 待删除数据的主键
-     * @param request 当前 HTTP 请求，用于读取本次请求的 traceId
+     * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);
-        return ApiResponse.success(traceId(request));
+        return ApiResponse.success(requestId(request));
     }
 
     /**
      * 从请求属性读取本次请求的追踪 ID。
      *
      * @param request 当前 HTTP 请求
-     * @return 与响应头和 MDC 日志一致的 traceId
+     * @return 与响应头和 MDC 日志一致的 requestId
      */
-    private String traceId(HttpServletRequest request) {
-        Object traceId = request.getAttribute(RequestTraceFilter.ATTRIBUTE_NAME);
-        return traceId == null ? null : traceId.toString();
+    private String requestId(HttpServletRequest request) {
+        Object requestId = request.getAttribute(RequestTraceFilter.ATTRIBUTE_NAME);
+        return requestId == null ? null : requestId.toString();
     }
 }

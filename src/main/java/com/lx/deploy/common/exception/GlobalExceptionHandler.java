@@ -23,7 +23,7 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     /** 处理可预期的部署业务异常。 */
     public ApiResponse<Void> handleBusiness(DeployException ex, HttpServletRequest request) {
-        return ApiResponse.failure(ex.getCode(), ex.getMessage(), traceId(request));
+        return ApiResponse.failure(ex.getCode(), ex.getMessage(), requestId(request));
     }
 
     @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class})
@@ -41,7 +41,7 @@ public class GlobalExceptionHandler {
                     .map(error -> error.getField() + ": " + error.getDefaultMessage())
                     .collect(Collectors.joining(", "));
         }
-        return ApiResponse.failure(ResponseCode.VALIDATION_ERROR, message, traceId(request));
+        return ApiResponse.failure(ResponseCode.VALIDATION_ERROR, message, requestId(request));
     }
 
     @ExceptionHandler(Exception.class)
@@ -49,12 +49,12 @@ public class GlobalExceptionHandler {
     /** 记录未处理异常并返回统一系统错误。 */
     public ApiResponse<Void> handleUnexpected(Exception ex, HttpServletRequest request) {
         log.error("Unhandled request error, uri={}", request.getRequestURI(), ex);
-        return ApiResponse.failure(ResponseCode.SYSTEM_ERROR, traceId(request));
+        return ApiResponse.failure(ResponseCode.SYSTEM_ERROR, requestId(request));
     }
 
     /** 从当前请求中读取追踪ID。 */
-    private String traceId(HttpServletRequest request) {
-        Object traceId = request.getAttribute(RequestTraceFilter.ATTRIBUTE_NAME);
-        return traceId == null ? null : traceId.toString();
+    private String requestId(HttpServletRequest request) {
+        Object requestId = request.getAttribute(RequestTraceFilter.ATTRIBUTE_NAME);
+        return requestId == null ? null : requestId.toString();
     }
 }

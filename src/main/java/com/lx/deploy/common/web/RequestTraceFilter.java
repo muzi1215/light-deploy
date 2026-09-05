@@ -16,7 +16,7 @@ import java.io.IOException;
 public class RequestTraceFilter extends OncePerRequestFilter {
 
     public static final String HEADER_NAME = "X-Request-Id";
-    public static final String ATTRIBUTE_NAME = "requestTraceId";
+    public static final String ATTRIBUTE_NAME = "requestId";
 
     /**
      * 为每个 HTTP 请求生成或透传追踪ID。
@@ -34,21 +34,21 @@ public class RequestTraceFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
         // 优先复用上游网关传递的请求ID，保证跨服务调用链可以使用同一个标识。
-        String traceId = request.getHeader(HEADER_NAME);
-        if (traceId == null || traceId.isBlank()) {
+        String requestId = request.getHeader(HEADER_NAME);
+        if (requestId == null || requestId.isBlank()) {
             // 上游未提供请求ID时，在本服务内生成不带连字符的32位UUID。
-            traceId = IdGenerator.generateUUID();
+            requestId = IdGenerator.generateUUID();
         }
         // 请求属性供 Controller 和异常处理器读取，响应头供调用方获取。
-        request.setAttribute(ATTRIBUTE_NAME, traceId);
-        response.setHeader(HEADER_NAME, traceId);
-        // MDC 中的 traceId 会被 logback-spring.xml 的日志格式自动输出。
-        MDC.put("traceId", traceId);
+        request.setAttribute(ATTRIBUTE_NAME, requestId);
+        response.setHeader(HEADER_NAME, requestId);
+        // MDC 中的 requestId 会被 logback-spring.xml 的日志格式自动输出。
+        MDC.put("requestId", requestId);
         try {
             filterChain.doFilter(request, response);
         } finally {
             // 线程可能被 Web 容器复用，必须清理 MDC，避免请求之间串号。
-            MDC.remove("traceId");
+            MDC.remove("requestId");
         }
     }
 }

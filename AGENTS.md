@@ -226,7 +226,7 @@ throw new DeployException(ResponseCode.DATA_NOT_FOUND, "服务器不存在");
 
 Controller 不捕获通用异常，统一交给 `GlobalExceptionHandler`。
 
-所有响应应携带 `traceId`，用于关联接口请求和服务端日志。
+所有响应应携带 `requestId`，用于关联接口请求和服务端日志。
 
 ## 10. MyBatis-Plus 配置
 
@@ -318,7 +318,7 @@ Controller 只负责：
 - 校验参数；
 - 调用 Service；
 - 包装 `ApiResponse`；
-- 返回 `traceId`。
+- 返回 `requestId`。
 
 Controller 不负责：
 
@@ -420,16 +420,16 @@ logs/error.log
 - `error.log` 单独保存 ERROR 日志；
 - 支持按日期和大小滚动；
 - 历史文件存放在 `logs/archive/`；
-- 日志格式必须包含 `traceId`；
+- 日志格式必须包含 `requestId`；
 - `logs/` 不提交 Git。
 
 日志中禁止输出密码、私钥、Token、密文、完整环境变量或其他敏感信息。
 
-### 14.1 traceId 约定
+### 14.1 requestId 约定
 
-`RequestTraceFilter` 为每个请求生成或透传 `X-Request-Id`，并同时写入请求属性、响应头和 SLF4J MDC。`ApiResponse.traceId` 返回同一个值，日志格式通过 `%X{traceId}` 输出。
+`RequestTraceFilter` 为每个请求生成或透传 `X-Request-Id`，并同时写入请求属性、响应头和 SLF4J MDC。`ApiResponse.requestId` 返回同一个值，日志格式通过 `%X{requestId}` 输出。
 
-因此，前端只需要把错误响应中的 `traceId` 提供给运维人员，即可在 `logs/info.log` 或 `logs/error.log` 中检索同一次请求。调用方也可以主动传入 `X-Request-Id`，用于网关、AIops 和部署平台之间的链路关联。traceId 只用于排查和关联，不代表用户身份、权限或业务主键。
+因此，前端只需要把错误响应中的 `requestId` 提供给运维人员，即可在 `logs/info.log` 或 `logs/error.log` 中检索同一次请求。调用方也可以主动传入 `X-Request-Id`，用于网关、AIops 和部署平台之间的链路关联。requestId 只用于排查和关联，不代表用户身份、权限或业务主键。
 
 ## 15. AIops 集成边界
 
@@ -527,7 +527,7 @@ docs/code-generator-guide.md
 ### 20.3 接口对接约定
 
 - 请求统一走 `src/utils/request.ts` 的 axios 实例，`code === 200` 为成功，业务码非 200 由 request 层统一 ElMessage 提示，页面不重复弹错误提示；
-- 后端错误响应中的 `traceId` 需要在提示或控制台中可追溯，用于关联后端日志；
+- 后端错误响应中的 `requestId` 需要在提示或控制台中可追溯，用于关联后端日志；
 - 新模块接口封装放在 `src/api/{module}.ts`，类型定义统一维护在 `src/api/deployTypes.ts`，与后端 DTO/VO 字段一一对应；
 - 开发环境通过 vite proxy 将 `/api` 代理到 `http://localhost:2027/deploy`，前端代码不出现后端主机地址。
 

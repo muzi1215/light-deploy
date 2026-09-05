@@ -14,7 +14,8 @@ public class LightDeployApplication {
     /** 启动 Light Deploy Spring Boot 应用。 */
     public static void main(String[] args) {
         SpringApplication.run(LightDeployApplication.class, args);
-        log.info("轻量化DevOps部署平台.....");
+        log.info("轻量化DevOps部署平台启动成功.....");
+        log.info("http://localhost:2027/deploy");
     }
 
 }

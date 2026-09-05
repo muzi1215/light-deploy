@@ -53,7 +53,7 @@ public class ServerController {
                                                    HttpServletRequest request) {
         // Service 负责构建动态条件并执行分页查询。
         PageResult<ServerVo> result = service.pageByCondition(pageQuery, condition);
-        return ApiResponse.success(result, traceId(request));
+        return ApiResponse.success(result, requestId(request));
     }
 
     /**
@@ -70,7 +70,7 @@ public class ServerController {
                                              HttpServletRequest request) {
         // Service 复用与分页接口相同的动态条件构造规则。
         List<ServerVo> records = service.listByCondition(condition);
-        return ApiResponse.success(records, traceId(request));
+        return ApiResponse.success(records, requestId(request));
     }
 
     /**
@@ -83,7 +83,7 @@ public class ServerController {
     @GetMapping("/{id}")
     public ApiResponse<ServerVo> detail(@PathVariable String id, HttpServletRequest request) {
         // Service 在记录不存在时抛出统一 DATA_NOT_FOUND 业务异常。
-        return ApiResponse.success(service.getRequiredById(id), traceId(request));
+        return ApiResponse.success(service.getRequiredById(id), requestId(request));
     }
 
     /**
@@ -97,7 +97,7 @@ public class ServerController {
     public ApiResponse<ServerVo> create(@Valid @RequestBody ServerDto dto,
                                          HttpServletRequest request) {
         // Service 会清空调用方传入的主键，并由 MyBatis-Plus 生成 UUID。
-        return ApiResponse.success(service.create(dto), traceId(request));
+        return ApiResponse.success(service.create(dto), requestId(request));
     }
 
     /**
@@ -113,7 +113,7 @@ public class ServerController {
                                          @Valid @RequestBody ServerDto dto,
                                          HttpServletRequest request) {
         // Service 始终使用路径中的 ID，避免请求体主键覆盖其他数据。
-        return ApiResponse.success(service.update(id, dto), traceId(request));
+        return ApiResponse.success(service.update(id, dto), requestId(request));
     }
 
     /**
@@ -127,7 +127,7 @@ public class ServerController {
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         // Service 使用 MyBatis-Plus removeById，将 is_deleted 更新为1而不是物理删除记录。
         service.delete(id);
-        return ApiResponse.success(traceId(request));
+        return ApiResponse.success(requestId(request));
     }
 
     /**
@@ -136,9 +136,9 @@ public class ServerController {
      * @param request 当前 HTTP 请求
      * @return 请求追踪ID；请求属性不存在时返回 null
      */
-    private String traceId(HttpServletRequest request) {
+    private String requestId(HttpServletRequest request) {
         // 追踪ID会同时出现在响应和日志中，用于关联一次完整请求。
-        Object traceId = request.getAttribute(RequestTraceFilter.ATTRIBUTE_NAME);
-        return traceId == null ? null : traceId.toString();
+        Object requestId = request.getAttribute(RequestTraceFilter.ATTRIBUTE_NAME);
+        return requestId == null ? null : requestId.toString();
     }
 }

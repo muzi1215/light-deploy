@@ -3,7 +3,7 @@
     <!-- 优先读取环境变量 LOG_PATH，未配置时写入项目 logs 目录。 -->
     <property name="LOG_PATH" value="${LOG_PATH:-logs}"/>
     <property name="LOG_PATTERN"
-              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-no-trace}] %logger{50} - %msg%n"/>
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{requestId:-no-request}] %logger{50} - %msg%n"/>
 
     <!-- 开发和容器环境保留标准输出，便于 docker logs 直接查看。 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">

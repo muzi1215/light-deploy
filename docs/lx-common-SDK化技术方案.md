@@ -26,7 +26,7 @@
 - 业务异常与全局异常处理（`DeployException` / `GlobalExceptionHandler`）;
 - MyBatis-Plus 分页封装（`PageQuery` / `PageResult` / 分页插件配置）；
 - 通用工具类（`IdGenerator` 等）；
-- 请求链路追踪（`RequestTraceFilter` + traceId）；
+- 请求链路追踪（`RequestTraceFilter` + requestId）；
 - 凭据加解密（`CredentialCrypto`，AES-GCM）。
 
 这些代码在不同项目间高度相似但又各自维护，导致：重复劳动、修复不同步、风格漂移、无法统一升级。
@@ -62,7 +62,7 @@
 | F-03 | MyBatis-Plus 基座：`BaseEntity`、分页插件、字段自动填充、逻辑删除、UUID 主键策略 | P0 | Light Deploy 现有实现 |
 | F-04 | 通用分页模型 `PageQuery` / `PageResult` | P0 | Light Deploy 现有实现 |
 | F-05 | 主键生成器 `IdGenerator`（32 位 UUID） | P0 | Light Deploy 现有实现 |
-| F-06 | traceId 链路追踪过滤器 `RequestTraceFilter`，自动生效，可关闭 | P1 | Light Deploy 现有实现 |
+| F-06 | requestId 链路追踪过滤器 `RequestTraceFilter`，自动生效，可关闭 | P1 | Light Deploy 现有实现 |
 | F-07 | 凭据加解密 `CredentialCrypto`（AES-GCM），key 外部注入 | P1 | Light Deploy 现有实现 |
 | F-08 | 通用工具类沉淀（日期、字符串、JSON 等） | P1 | 持续沉淀 |
 | F-09 | BOM 统一版本管理，业务项目无需写版本号 | P0 | 方案设计 |
@@ -134,7 +134,7 @@
 |------|------|---------|---------|
 | lx-common-bom | 统一版本清单，业务项目 `import` 一次 | Maven BOM | pom |
 | lx-common-core | 核心契约：统一响应、响应码、业务异常、分页模型、ID 生成 | 纯 Java（Spring 注解 compileOnly） | jar |
-| lx-common-web-starter | Web 层自动装配：全局异常处理、traceId 过滤器 | Spring Boot AutoConfiguration | jar |
+| lx-common-web-starter | Web 层自动装配：全局异常处理、requestId 过滤器 | Spring Boot AutoConfiguration | jar |
 | lx-common-mybatis-starter | 持久层自动装配：BaseEntity、分页插件、自动填充、逻辑删除、UUID 主键 | MyBatis-Plus + AutoConfiguration | jar |
 | lx-common-crypto | 凭据加解密（AES-GCM），key 外部注入 | Java 标准 JCE | jar |
 | lx-common-util | 通用工具类沉淀 | 纯 Java | jar |
@@ -173,7 +173,7 @@ Spring Boot 启动扫描 AutoConfiguration.imports
 ```properties
 # 关闭平台统一异常处理（使用方自定义）
 lx.common.web.global-exception-handler.enabled=false
-# 关闭 traceId 过滤器
+# 关闭 requestId 过滤器
 lx.common.web.trace-id.enabled=false
 ```
 
@@ -215,7 +215,7 @@ lx.common.web.trace-id.enabled=false
 </dependency>
 ```
 
-效果：引入 starter 即自动获得统一响应、异常处理、traceId、分页等能力，无需任何代码；不需要的模块不引入即可。
+效果：引入 starter 即自动获得统一响应、异常处理、requestId、分页等能力，无需任何代码；不需要的模块不引入即可。
 
 ---
 
