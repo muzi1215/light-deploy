@@ -126,6 +126,9 @@ public final class CodeGenerator {
                         .controller("/templates/controller.java"))
                 .templateEngine(new FreemarkerTemplateEngine())
                 .execute();
+
+        // 后端生成完成后，继续生成前端 API 与 Vue 页面到项目独立目录，供人工审查后拷入 lighit-deploy-ui。
+        FrontendCodeGenerator.generate(projectPath, properties);
     }
 
     /**

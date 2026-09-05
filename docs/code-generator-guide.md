@@ -18,9 +18,11 @@ src/main/resources/templates/serviceImpl.java.ftl
 src/main/resources/templates/controller.java.ftl
 src/main/resources/templates/dto.java.ftl
 src/main/resources/templates/vo.java.ftl
+src/main/resources/templates/frontend-api.ts.ftl
+src/main/resources/templates/frontend-index.vue.ftl
 ```
 
-生成器会生成 Entity、DTO、VO、Mapper、Service、Controller 和 Mapper XML。纯 CRUD Service 不生成接口层。
+生成器会生成 Entity、DTO、VO、Mapper、Service、Controller 和 Mapper XML，并同步生成前端 API 与 Vue 列表页。纯 CRUD Service 不生成接口层。
 
 ## 2. 创建外置配置
 
@@ -57,6 +59,7 @@ generator.overwrite=false
 | `generator.package` | 否 | Java 根包名，默认 `com.lx.deploy` |
 | `generator.author` | 否 | 类注释作者，默认 `lx` |
 | `generator.overwrite` | 否 | 是否覆盖已有文件，默认 `false` |
+| `generator.frontend.output` | 否 | 前端文件输出目录，相对项目根目录，默认 `generated-ui` |
 
 配置文件不存在、必填项为空或数据库连接失败时，生成器会直接报错并停止，不会使用隐藏的数据库默认值。
 
@@ -94,7 +97,27 @@ generator.overwrite=false
 
 当 `generator.module=task` 时，生成器自动从 Java 类名中移除 `lds_` 前缀，因此类名为 `Task`、`TaskLog`，数据库表名仍为 `lds_task`、`lds_task_log`。
 
-## 6. IntelliJ IDEA 运行方式
+## 6. 前端文件生成
+
+后端代码生成完成后，生成器会读取同一份配置中的数据库连接和表元数据，为模块内每张业务表生成前端文件，输出到 `generator.frontend.output` 指定的目录（默认 `generated-ui/`）：
+
+```text
+generated-ui/
+  api/server.ts                      模块内所有表的 TS 类型与接口函数
+  views/server/index.vue             标准 CRUD 列表页（搜索 + 分页 + 新增/编辑弹窗）
+  views/projectEnvironmentTarget/index.vue
+```
+
+生成规则：
+
+- API 文件按模块命名（`{module}.ts`），一个模块一个文件，内含该模块所有表的 VO/DTO 类型定义和六个接口函数（page/list/get/create/update/delete），接口路径与后端 Controller 的 `@RequestMapping` 一致。
+- 每张表生成一个 Vue 列表页，页面遵守 `AGENTS.md §20` 约定：二级菜单结构、对话框 720px、表单 label 110px、文本域置于表单底部。
+- 字段控件由数据库类型启发式推断：长文本/JSON/描述映射为 textarea，布尔语义的 TINYINT 映射为 radio，数值映射为 number，其余映射为 input。
+- 敏感字段（密文、哈希、Token、私钥）不会进入前端接口；枚举字符串字段先映射为普通输入框，待精化阶段按后端枚举补充分段控件。
+
+生成的前端文件是待人工审查的骨架，不直接覆盖 `lighit-deploy-ui/src/` 下已有的手写文件。审查并精化（补全枚举渲染、字段校验、凭据输入等）后，再手工拷入 `lighit-deploy-ui/src/api/` 和 `lighit-deploy-ui/src/views/`。
+
+## 7. IntelliJ IDEA 运行方式
 
 最简单的方式：
 
@@ -123,7 +146,7 @@ generator.overwrite=false
 
 建议不同模块分别使用本地文件，例如 `generator-server.properties`、`generator-task.properties`，运行时显式指定，避免反复修改同一份配置。
 
-## 7. 覆盖策略
+## 8. 覆盖策略
 
 默认配置是：
 
@@ -147,7 +170,7 @@ generator.overwrite=true
 
 该配置会覆盖已有实体、Mapper、Service、Controller 和 XML，手工修改可能丢失。生成后必须检查 Git diff，确认无误后立即恢复为 `false`。
 
-## 8. 自动生成的内容
+## 9. 自动生成的内容
 
 实体类：
 
@@ -195,7 +218,7 @@ DTO 用于分页条件、列表条件、新增和修改请求，不包含服务�
 
 生成的 Service 方法负责完成 DTO/Entity/VO 转换，Controller 只做参数校验、调用 Service 和包装 `ApiResponse`。
 
-## 9. traceId 说明
+## 10. traceId 说明
 
 接口响应中的 `traceId` 是请求追踪标识，不是业务主键，也不表示用户身份或权限。`RequestTraceFilter` 的行为如下：
 
@@ -206,7 +229,7 @@ DTO 用于分页条件、列表条件、新增和修改请求，不包含服务�
 
 前端反馈问题时应同时提供接口地址、时间和 `traceId`，运维人员即可在 `logs/info.log` 或 `logs/error.log` 中关联该请求。traceId 只用于请求与日志关联，不替代发布任务 ID、用户 ID 或数据库主键。
 
-## 10. 推荐操作流程
+## 11. 推荐操作流程
 
 1. 手工确认目标数据库和目标表已经存在；
 2. 复制或选择对应的本地 properties 配置；
@@ -219,7 +242,7 @@ DTO 用于分页条件、列表条件、新增和修改请求，不包含服务�
 
 代码生成器负责生成通用 CRUD 骨架，不代表生成后的代码可以不经检查直接用于生产。
 
-## 11. 常见问题
+## 12. 常见问题
 
 ### 配置文件不存在
 
@@ -245,7 +268,7 @@ DTO 用于分页条件、列表条件、新增和修改请求，不包含服务�
 
 不会。代码生成器只读取已有表结构并生成 Java/XML 文件。Spring Boot 启动时也禁止自动执行 `schema.sql`；数据库创建和升级必须人工确认执行。
 
-## 12. 安全要求
+## 13. 安全要求
 
 - 禁止提交真实的数据库账号、密码或生产配置；
 - 禁止在 Java 代码、日志或异常消息中打印数据库密码；

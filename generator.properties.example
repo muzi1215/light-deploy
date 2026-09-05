@@ -21,5 +21,9 @@ generator.package=com.lx.deploy
 generator.author=lx
 
 # false：已有文件不覆盖，推荐默认值。
-# true：覆盖已有实体、Mapper、Service、Controller 和 XML，谨慎使用。
+# true：覆盖已有实体、Mapper、Service、Controller、XML 和前端文件，谨慎使用。
 generator.overwrite=false
+
+# 前端文件输出目录（相对项目根目录）。默认 generated-ui。
+# 生成 api/{module}.ts 和 views/{entityPath}/index.vue，人工审查后拷入 lighit-deploy-ui/src/。
+generator.frontend.output=generated-ui
