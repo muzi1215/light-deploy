@@ -1,0 +1,352 @@
+package com.lx.deploy.project.service;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lx.deploy.common.exception.DeployException;
+import com.lx.deploy.common.model.PageQuery;
+import com.lx.deploy.common.model.PageResult;
+import com.lx.deploy.common.response.ResponseCode;
+import com.lx.deploy.project.enums.BuildMode;
+import com.lx.deploy.project.enums.EnableStatus;
+import com.lx.deploy.project.enums.RuntimeType;
+import com.lx.deploy.project.enums.SourceType;
+import com.lx.deploy.project.mapper.ProjectEnvironmentTargetMapper;
+import com.lx.deploy.project.mapper.ProjectMapper;
+import com.lx.deploy.project.model.Project;
+import com.lx.deploy.project.model.ProjectEnvironmentTarget;
+import com.lx.deploy.project.model.dto.ProjectDto;
+import com.lx.deploy.project.model.vo.ProjectVo;
+import org.springframework.beans.BeanUtils;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+import java.util.List;
+import java.util.regex.Pattern;
+
+/**
+ * 部署项目服务。
+ *
+ * <p>当前类直接继承 MyBatis-Plus ServiceImpl，不创建 Service 接口。Controller 只传递 DTO 和 VO，
+ * 实体仅在 Service 与 Mapper 数据访问边界内使用。除了基础 CRUD，本服务还集中处理项目编码唯一性、
+ * 枚举取值合法性、Git 来源必填地址和 JSON 配置格式等业务校验。</p>
+ *
+ * @author lx
+ * @since 2026-09-02 02:05:03
+ */
+@Service
+public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
+
+    /** 项目编码只允许字母、数字、下划线和中划线，长度 2 到 64 位。 */
+    private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{2,64}$");
+
+    /** 用于校验 JSON 配置字段格式的解析器，线程安全可静态复用。 */
+    private static final ObjectMapper JSON_PARSER = new ObjectMapper();
+
+    /** 项目环境部署目标 Mapper，用于删除项目前检查引用关系，避免 Service 之间循环依赖。 */
+    private final ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper;
+
+    /**
+     * 注入项目环境部署目标 Mapper。
+     *
+     * @param projectEnvironmentTargetMapper 项目环境部署目标 Mapper
+     */
+    public ProjectService(ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper) {
+        this.projectEnvironmentTargetMapper = projectEnvironmentTargetMapper;
+    }
+
+    /**
+     * 根据 DTO 中的非空条件分页查询部署项目。
+     *
+     * @param pageQuery 分页参数，包含页码和每页数量
+     * @param condition 请求查询条件，仅允许非敏感业务字段参与查询
+     * @return 只包含 VO 的统一分页结果
+     */
+    public PageResult<ProjectVo> pageByCondition(PageQuery pageQuery, ProjectDto condition) {
+        // 持久层使用实体分页，接口返回前逐条转换为 VO，避免实体泄漏到 Controller。
+        Page<Project> page = page(pageQuery.toPage(), buildQueryWrapper(condition));
+        List<ProjectVo> records = page.getRecords().stream().map(this::toVo).toList();
+        return new PageResult<>(page.getCurrent(), page.getSize(), page.getTotal(), page.getPages(), records);
+    }
+
+    /**
+     * 根据 DTO 中的非空条件查询全部匹配记录。
+     *
+     * @param condition 请求查询条件；为 null 时查询所有未删除记录
+     * @return 转换后的 VO 列表
+     */
+    public List<ProjectVo> listByCondition(ProjectDto condition) {
+        // 查询结果在 Service 层统一脱敏并转换为 VO。
+        return list(buildQueryWrapper(condition)).stream().map(this::toVo).toList();
+    }
+
+    /**
+     * 根据主键查询并返回部署项目响应对象。
+     *
+     * @param id 数据主键
+     * @return 不包含敏感字段的响应对象
+     * @throws DeployException 数据不存在时抛出
+     */
+    public ProjectVo getRequiredById(String id) {
+        return toVo(getRequiredEntityById(id));
+    }
+
+    /**
+     * 根据请求 DTO 新增一条部署项目。
+     *
+     * <p>新增前校验编码格式、编码唯一性、运行时和构建模式等枚举取值，
+     * 并为代码来源、构建模式和状态填充默认值。Git 来源项目必须提供仓库地址。</p>
+     *
+     * @param dto 待新增的请求参数，不包含主键和审计字段
+     * @return 保存完成后的响应对象
+     * @throws DeployException 参数不合法、编码重复或保存失败时抛出
+     */
+    public ProjectVo create(ProjectDto dto) {
+        // 新增前执行完整的业务规则校验，不存在排除自身的问题。
+        validateBusinessRule(dto, null);
+        // DTO 转换为新的持久化实体，主键和时间字段由 MyBatis-Plus 维护。
+        Project entity = toEntity(dto);
+        applyDefaultValue(entity);
+        if (!save(entity)) {
+            throw new DeployException(ResponseCode.BUSINESS_ERROR, "新增部署项目失败");
+        }
+        return toVo(entity);
+    }
+
+    /**
+     * 根据路径主键和请求 DTO 修改部署项目。
+     *
+     * <p>修改时同样执行业务规则校验，编码唯一性检查会排除当前记录自身，
+     * 避免项目修改其他字段时被误判为编码重复。</p>
+     *
+     * @param id 待修改数据的主键
+     * @param dto 包含修改后业务字段的请求参数
+     * @return 修改后的最新响应对象
+     * @throws DeployException 数据不存在、参数不合法、编码重复或修改失败时抛出
+     */
+    public ProjectVo update(String id, ProjectDto dto) {
+        // 先校验目标存在，再将 DTO 内容复制到该实体，主键始终采用路径参数。
+        Project entity = getRequiredEntityById(id);
+        // 修改时编码唯一性检查排除当前记录。
+        validateBusinessRule(dto, id);
+        BeanUtils.copyProperties(dto, entity);
+        entity.setId(id);
+        if (!updateById(entity)) {
+            throw new DeployException(ResponseCode.BUSINESS_ERROR, "修改部署项目失败");
+        }
+        return getRequiredById(id);
+    }
+
+    /**
+     * 根据主键逻辑删除部署项目。
+     *
+     * <p>删除前检查项目是否仍被项目环境部署目标引用；存在引用时拒绝删除，
+     * 避免部署目标指向不存在的项目。应先删除或迁移全部部署目标后再删除项目。</p>
+     *
+     * @param id 数据主键
+     * @throws DeployException 数据不存在、仍被部署目标引用或删除失败时抛出
+     */
+    public void delete(String id) {
+        // 删除前校验记录存在；BaseEntity 的逻辑删除配置保证不会物理删除。
+        getRequiredEntityById(id);
+        // 统计仍引用该项目的部署目标数量，存在引用时抛出数据冲突异常。
+        Long targetCount = projectEnvironmentTargetMapper.selectCount(
+                new LambdaQueryWrapper<ProjectEnvironmentTarget>()
+                        .eq(ProjectEnvironmentTarget::getProjectId, id));
+        if (targetCount != null && targetCount > 0) {
+            throw new DeployException(ResponseCode.DATA_CONFLICT, "项目仍被部署目标引用，请先删除或迁移部署目标");
+        }
+        if (!removeById(id)) {
+            throw new DeployException(ResponseCode.BUSINESS_ERROR, "删除部署项目失败");
+        }
+    }
+
+    /**
+     * 校验项目业务规则。
+     *
+     * <p>校验内容包括：编码和名称必填、编码格式、编码唯一性、运行时/来源/构建模式/状态枚举取值、
+     * Git 来源必须提供仓库地址、保留版本数量下限以及三个 JSON 配置字段的格式。</p>
+     *
+     * @param dto 请求参数
+     * @param excludeId 修改场景下排除的当前记录主键；新增时为 null
+     * @throws DeployException 任一规则不满足时抛出，异常消息说明具体原因
+     */
+    private void validateBusinessRule(ProjectDto dto, String excludeId) {
+        // 项目编码必填且只允许字母、数字、下划线和中划线。
+        if (!StringUtils.hasText(dto.getCode())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "项目编码不能为空");
+        }
+        if (!CODE_PATTERN.matcher(dto.getCode()).matches()) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "项目编码只允许字母、数字、下划线和中划线，长度 2 到 64 位");
+        }
+        // 项目名称必填。
+        if (!StringUtils.hasText(dto.getName())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "项目名称不能为空");
+        }
+        // 运行时类型必填且必须是受支持的枚举值。
+        if (RuntimeType.fromCode(dto.getRuntimeType()) == null) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "运行时类型必须为 DOCKER、JAR 或 STATIC");
+        }
+        // 代码来源可选，传入时必须是受支持的枚举值。
+        if (dto.getSourceType() != null && SourceType.fromCode(dto.getSourceType()) == null) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "代码来源必须为 GIT 或 UPLOAD");
+        }
+        // 构建模式可选，传入时必须是受支持的枚举值。
+        if (dto.getBuildMode() != null && BuildMode.fromCode(dto.getBuildMode()) == null) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "构建模式必须为 PLATFORM_TEMPLATE、PROJECT_DOCKERFILE、LAYERED_DOCKER 或 ARTIFACT_ONLY");
+        }
+        // 状态可选，传入时必须是受支持的枚举值。
+        if (dto.getStatus() != null && EnableStatus.fromCode(dto.getStatus()) == null) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "状态必须为 ENABLED 或 DISABLED");
+        }
+        // Git 来源必须提供仓库地址，上传来源不强制。
+        if (SourceType.GIT.getCode().equals(dto.getSourceType()) && !StringUtils.hasText(dto.getGitUrl())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "Git 来源项目必须填写 Git 仓库地址");
+        }
+        // 保留发布版本数量传入时必须大于等于 1。
+        if (dto.getRetainReleaseCount() != null && dto.getRetainReleaseCount() < 1) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "保留发布版本数量必须大于等于 1");
+        }
+        // 三个 JSON 配置字段传入时必须是合法 JSON，尽早拦截格式错误。
+        validateJsonFormat("构建配置", dto.getBuildConfigJson());
+        validateJsonFormat("运行配置", dto.getRuntimeConfigJson());
+        validateJsonFormat("健康检查配置", dto.getHealthConfigJson());
+        // 编码唯一性检查，修改场景排除当前记录自身。
+        LambdaQueryWrapper<Project> codeWrapper = new LambdaQueryWrapper<Project>()
+                .eq(Project::getCode, dto.getCode());
+        if (excludeId != null) {
+            codeWrapper.ne(Project::getId, excludeId);
+        }
+        if (count(codeWrapper) > 0) {
+            throw new DeployException(ResponseCode.DATA_CONFLICT, "项目编码已存在：" + dto.getCode());
+        }
+    }
+
+    /**
+     * 为新增实体填充默认值。
+     *
+     * <p>数据库层虽然定义了默认值，但显式填充保证新增后返回的 VO 与库中数据一致。</p>
+     *
+     * @param entity 待填充默认值的实体
+     */
+    private void applyDefaultValue(Project entity) {
+        // 未指定代码来源时默认从 Git 仓库拉取。
+        if (!StringUtils.hasText(entity.getSourceType())) {
+            entity.setSourceType(SourceType.GIT.getCode());
+        }
+        // 未指定构建模式时默认使用平台 Dockerfile 模板。
+        if (!StringUtils.hasText(entity.getBuildMode())) {
+            entity.setBuildMode(BuildMode.PLATFORM_TEMPLATE.getCode());
+        }
+        // 未指定状态时默认启用。
+        if (!StringUtils.hasText(entity.getStatus())) {
+            entity.setStatus(EnableStatus.ENABLED.getCode());
+        }
+        // 未指定保留版本数量时默认保留 5 个历史版本。
+        if (entity.getRetainReleaseCount() == null) {
+            entity.setRetainReleaseCount(5);
+        }
+    }
+
+    /**
+     * 校验字符串是合法 JSON。
+     *
+     * @param fieldName 配置字段中文名，用于异常消息
+     * @param json 待校验的 JSON 字符串；为空时跳过校验
+     * @throws DeployException 内容不是合法 JSON 时抛出
+     */
+    private void validateJsonFormat(String fieldName, String json) {
+        if (!StringUtils.hasText(json)) {
+            return;
+        }
+        try {
+            JSON_PARSER.readTree(json);
+        } catch (Exception e) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, fieldName + "不是合法的 JSON 格式");
+        }
+    }
+
+    /**
+     * 查询数据库实体，供 Service 内部更新、删除和 VO 转换使用。
+     *
+     * @param id 数据主键
+     * @return 数据库实体
+     * @throws DeployException 数据不存在或已逻辑删除时抛出
+     */
+    private Project getRequiredEntityById(String id) {
+        Project entity = getById(id);
+        if (entity == null) {
+            throw new DeployException(ResponseCode.DATA_NOT_FOUND, "部署项目不存在");
+        }
+        return entity;
+    }
+
+    /**
+     * 将请求 DTO 转换为数据库实体。
+     *
+     * @param dto Controller 接收的请求参数
+     * @return 可由 Mapper 持久化的新实体
+     */
+    private Project toEntity(ProjectDto dto) {
+        Project entity = new Project();
+        BeanUtils.copyProperties(dto, entity);
+        return entity;
+    }
+
+    /**
+     * 将数据库实体转换为接口响应 VO。
+     *
+     * <p>VO 类型本身不声明敏感字段，因此属性复制不会把密码、密文、Token 或私钥返回给前端。</p>
+     *
+     * @param entity 数据库实体
+     * @return 可安全返回给 Controller 的响应对象
+     */
+    private ProjectVo toVo(Project entity) {
+        ProjectVo vo = new ProjectVo();
+        BeanUtils.copyProperties(entity, vo);
+        return vo;
+    }
+
+    /**
+     * 根据请求 DTO 构建 MyBatis-Plus 动态查询条件。
+     *
+     * <p>JSON 配置字段内容较长且不适合作为过滤条件，因此不参与查询。</p>
+     *
+     * @param condition 查询条件；为 null 时返回空条件构造器
+     * @return 用于分页或列表查询的条件构造器
+     */
+    private LambdaQueryWrapper<Project> buildQueryWrapper(ProjectDto condition) {
+        LambdaQueryWrapper<Project> wrapper = new LambdaQueryWrapper<>();
+        if (condition == null) {
+            return wrapper;
+        }
+        // 项目编码：非空字符串使用等值条件查询。
+        wrapper.eq(StringUtils.hasText(condition.getCode()),
+                Project::getCode, condition.getCode());
+        // 项目名称：非空字符串使用等值条件查询。
+        wrapper.eq(StringUtils.hasText(condition.getName()),
+                Project::getName, condition.getName());
+        // 运行时类型：非空字符串使用等值条件查询。
+        wrapper.eq(StringUtils.hasText(condition.getRuntimeType()),
+                Project::getRuntimeType, condition.getRuntimeType());
+        // 代码来源：非空字符串使用等值条件查询。
+        wrapper.eq(StringUtils.hasText(condition.getSourceType()),
+                Project::getSourceType, condition.getSourceType());
+        // Git 分支：非空字符串使用等值条件查询。
+        wrapper.eq(StringUtils.hasText(condition.getGitBranch()),
+                Project::getGitBranch, condition.getGitBranch());
+        // 构建模式：非空字符串使用等值条件查询。
+        wrapper.eq(StringUtils.hasText(condition.getBuildMode()),
+                Project::getBuildMode, condition.getBuildMode());
+        // 状态：非空字符串使用等值条件查询。
+        wrapper.eq(StringUtils.hasText(condition.getStatus()),
+                Project::getStatus, condition.getStatus());
+        // 默认按创建时间倒序返回，优先展示最近新增的数据。
+        wrapper.orderByDesc(Project::getCreateTime);
+        return wrapper;
+    }
+}
