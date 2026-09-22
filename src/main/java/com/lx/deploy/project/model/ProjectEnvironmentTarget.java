@@ -86,13 +86,13 @@ public class ProjectEnvironmentTarget extends BaseEntity {
     private String runtimeConfigJson;
 
     /**
-     * 目标状态，取值见 {@code EnableStatus} 枚举。
+     * 目标状态，数字编码。
      *
-     * <p>ENABLED 启用 / DISABLED 停用；未指定时 Service 填充默认值 ENABLED。
-     * 停用的目标保留绑定关系但不参与发布执行。</p>
+     * <p>0 停用 / 1 启用，由服务端维护；未指定时 Service 填充默认值 1（启用）。
+     * 停用的目标保留绑定关系，但不参与发布执行与批次编排。</p>
      */
     @TableField("status")
-    @Schema(description = "状态：ENABLED/DISABLED，默认ENABLED")
-    private String status;
+    @Schema(description = "状态：0停用，1启用，默认1")
+    private Integer status;
 
 }

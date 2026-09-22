@@ -72,11 +72,12 @@ public class ProjectEnvironmentTargetDto {
     private String runtimeConfigJson;
 
     /**
-     * 目标状态，取值见后端 EnableStatus 枚举。
+     * 目标状态，数字编码。
      *
-     * <p>选填，默认 ENABLED；查询时等值过滤。</p>
+     * <p>选填，取值 0 停用 / 1 启用，未传时 Service 填充默认值 1；
+     * 查询时等值过滤。传入其他数字返回参数校验失败。</p>
      */
-    @Schema(description = "状态：ENABLED/DISABLED，默认ENABLED")
-    private String status;
+    @Schema(description = "状态：0停用，1启用，默认1")
+    private Integer status;
 
 }

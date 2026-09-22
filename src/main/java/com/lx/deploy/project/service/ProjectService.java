@@ -4,20 +4,25 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lx.deploy.common.enums.project.BuildMode;
+import com.lx.deploy.common.enums.project.RuntimeType;
+import com.lx.deploy.common.enums.project.SourceType;
+import com.lx.deploy.common.constants.EnableStatus;
+import com.lx.deploy.common.enums.credential.CredentialType;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ResponseCode;
-import com.lx.deploy.project.enums.BuildMode;
-import com.lx.deploy.project.enums.EnableStatus;
-import com.lx.deploy.project.enums.RuntimeType;
-import com.lx.deploy.project.enums.SourceType;
+import com.lx.deploy.credential.mapper.CredentialMapper;
+import com.lx.deploy.credential.model.Credential;
 import com.lx.deploy.project.mapper.ProjectEnvironmentTargetMapper;
 import com.lx.deploy.project.mapper.ProjectMapper;
 import com.lx.deploy.project.model.Project;
 import com.lx.deploy.project.model.ProjectEnvironmentTarget;
 import com.lx.deploy.project.model.dto.ProjectDto;
 import com.lx.deploy.project.model.vo.ProjectVo;
+import com.lx.deploy.registry.mapper.RegistryMapper;
+import com.lx.deploy.registry.model.Registry;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -30,7 +35,11 @@ import java.util.regex.Pattern;
  *
  * <p>当前类直接继承 MyBatis-Plus ServiceImpl，不创建 Service 接口。Controller 只传递 DTO 和 VO，
  * 实体仅在 Service 与 Mapper 数据访问边界内使用。除了基础 CRUD，本服务还集中处理项目编码唯一性、
- * 枚举取值合法性、Git 来源必填地址和 JSON 配置格式等业务校验。</p>
+ * 枚举取值合法性、运行时与构建模式的组合约束、Git 来源必填地址、凭据与镜像仓库引用校验、
+ * JSON 配置格式等业务校验。</p>
+ *
+ * <p>跨模块校验统一注入对方 Mapper（credential / registry），不注入对方 Service，
+ * 避免 Service 之间形成循环依赖。</p>
  *
  * @author lx
  * @since 2026-09-02 02:05:03
@@ -47,13 +56,25 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
     /** 项目环境部署目标 Mapper，用于删除项目前检查引用关系，避免 Service 之间循环依赖。 */
     private final ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper;
 
+    /** 凭据 Mapper，用于校验 project.git_credential_id 指向的凭据存在且可用于 Git 拉取。 */
+    private final CredentialMapper credentialMapper;
+
+    /** 镜像仓库 Mapper，用于校验 project.registry_id 指向的仓库存在且处于启用状态。 */
+    private final RegistryMapper registryMapper;
+
     /**
-     * 注入项目环境部署目标 Mapper。
+     * 注入本模块与跨模块校验所需的 Mapper。
      *
      * @param projectEnvironmentTargetMapper 项目环境部署目标 Mapper
+     * @param credentialMapper 凭据 Mapper
+     * @param registryMapper 镜像仓库 Mapper
      */
-    public ProjectService(ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper) {
+    public ProjectService(ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper,
+                          CredentialMapper credentialMapper,
+                          RegistryMapper registryMapper) {
         this.projectEnvironmentTargetMapper = projectEnvironmentTargetMapper;
+        this.credentialMapper = credentialMapper;
+        this.registryMapper = registryMapper;
     }
 
     /**
@@ -103,6 +124,8 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
      * @throws DeployException 参数不合法、编码重复或保存失败时抛出
      */
     public ProjectVo create(ProjectDto dto) {
+        // 前端文本域未填写时会提交空串，先归一为 null，避免写入 MySQL JSON 列时报格式错误。
+        normalizeJsonConfig(dto);
         // 新增前执行完整的业务规则校验，不存在排除自身的问题。
         validateBusinessRule(dto, null);
         // DTO 转换为新的持久化实体，主键和时间字段由 MyBatis-Plus 维护。
@@ -126,6 +149,8 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
      * @throws DeployException 数据不存在、参数不合法、编码重复或修改失败时抛出
      */
     public ProjectVo update(String id, ProjectDto dto) {
+        // 修改同样需要归一化：空白值表示「清空该配置」，统一落库为 NULL。
+        normalizeJsonConfig(dto);
         // 先校验目标存在，再将 DTO 内容复制到该实体，主键始终采用路径参数。
         Project entity = getRequiredEntityById(id);
         // 修改时编码唯一性检查排除当前记录。
@@ -197,16 +222,35 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         // 构建模式可选，传入时必须是受支持的枚举值。
         if (dto.getBuildMode() != null && BuildMode.fromCode(dto.getBuildMode()) == null) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
-                    "构建模式必须为 PLATFORM_TEMPLATE、PROJECT_DOCKERFILE、LAYERED_DOCKER 或 ARTIFACT_ONLY");
+                    "构建模式必须为 PLATFORM_TEMPLATE、PROJECT_DOCKERFILE、LAYERED_DOCKER、SCRIPT_DEPLOY 或 ARTIFACT_ONLY");
         }
-        // 状态可选，传入时必须是受支持的枚举值。
-        if (dto.getStatus() != null && EnableStatus.fromCode(dto.getStatus()) == null) {
-            throw new DeployException(ResponseCode.VALIDATION_ERROR, "状态必须为 ENABLED 或 DISABLED");
+        // 运行时与构建模式必须匹配：Docker 镜像类构建模式只能配 DOCKER 运行时，
+        // 脚本 / 仅发布产物只能配 JAR 或 STATIC 运行时（AGENTS.md §23.4）。
+        // 规则定义在 RuntimeType 枚举里，避免组合判断散落在各处。
+        RuntimeType runtimeType = RuntimeType.fromCode(dto.getRuntimeType());
+        BuildMode buildMode = BuildMode.fromCode(dto.getBuildMode());
+        if (runtimeType != null && buildMode != null && !runtimeType.supports(buildMode)) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "运行时 " + runtimeType.getCode() + " 不支持构建模式 " + buildMode.getCode()
+                            + "，该运行时的可选构建模式为：" + runtimeType.supportedBuildModeCodes());
+        }
+        // 镜像仓库只允许 DOCKER 运行时绑定：脚本部署与仅发布产物不产出镜像，没有推送目标。
+        if (StringUtils.hasText(dto.getRegistryId()) && runtimeType != RuntimeType.DOCKER) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "只有 DOCKER 运行时的项目可以绑定镜像仓库，当前运行时为 " + dto.getRuntimeType());
+        }
+        // 状态可选，传入时必须是合法数字编码（0 停用 / 1 启用）。
+        if (dto.getStatus() != null && !EnableStatus.isValid(dto.getStatus())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "状态必须为 0（停用）或 1（启用）");
         }
         // Git 来源必须提供仓库地址，上传来源不强制。
         if (SourceType.GIT.getCode().equals(dto.getSourceType()) && !StringUtils.hasText(dto.getGitUrl())) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR, "Git 来源项目必须填写 Git 仓库地址");
         }
+        // Git 凭据引用校验：公开仓库可以不填，填写时必须是可用于 Git 拉取的凭据。
+        validateGitCredentialReference(dto.getGitCredentialId());
+        // 镜像仓库引用校验：仓库必须存在且处于启用状态。
+        validateRegistryReference(dto.getRegistryId());
         // 保留发布版本数量传入时必须大于等于 1。
         if (dto.getRetainReleaseCount() != null && dto.getRetainReleaseCount() < 1) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR, "保留发布版本数量必须大于等于 1");
@@ -242,13 +286,60 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         if (!StringUtils.hasText(entity.getBuildMode())) {
             entity.setBuildMode(BuildMode.PLATFORM_TEMPLATE.getCode());
         }
-        // 未指定状态时默认启用。
-        if (!StringUtils.hasText(entity.getStatus())) {
-            entity.setStatus(EnableStatus.ENABLED.getCode());
+        // 未指定状态时默认启用（1）。
+        if (entity.getStatus() == null) {
+            entity.setStatus(EnableStatus.ENABLED);
         }
         // 未指定保留版本数量时默认保留 5 个历史版本。
         if (entity.getRetainReleaseCount() == null) {
             entity.setRetainReleaseCount(5);
+        }
+    }
+
+    /**
+     * 校验 Git 凭据引用。
+     *
+     * <p>两件必须同时成立的事：凭据存在（否则拉取代码时解密会失败）、凭据类型可用于 Git
+     * （GIT_TOKEN 用于 HTTPS 仓库，SSH_KEY 用于 SSH 仓库）。镜像仓库凭据不允许绑定到项目。</p>
+     *
+     * @param credentialId 待校验的凭据主键，允许为 null（公开仓库）
+     * @throws DeployException 凭据不存在或类型不符时抛出
+     */
+    private void validateGitCredentialReference(String credentialId) {
+        if (!StringUtils.hasText(credentialId)) {
+            return;
+        }
+        Credential credential = credentialMapper.selectById(credentialId);
+        if (credential == null) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "绑定的 Git 凭据不存在，请重新选择");
+        }
+        CredentialType credentialType = CredentialType.fromCode(credential.getType());
+        if (credentialType == null || !credentialType.isGitType()) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "项目只能绑定类型为 GIT_TOKEN 或 SSH_KEY 的凭据，当前凭据类型为 " + credential.getType());
+        }
+    }
+
+    /**
+     * 校验镜像仓库引用。
+     *
+     * <p>仓库必须存在且处于启用状态：停用的仓库意味着运维已经不打算再推送镜像，
+     * 此时允许新项目绑定会推迟到构建阶段才失败。</p>
+     *
+     * @param registryId 待校验的镜像仓库主键，允许为 null（不绑定仓库）
+     * @throws DeployException 仓库不存在或已停用时抛出
+     */
+    private void validateRegistryReference(String registryId) {
+        if (!StringUtils.hasText(registryId)) {
+            return;
+        }
+        Registry registry = registryMapper.selectById(registryId);
+        if (registry == null) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "绑定的镜像仓库不存在，请重新选择");
+        }
+        if (registry.getStatus() == null || registry.getStatus() != EnableStatus.ENABLED) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "绑定的镜像仓库已停用，请重新选择或先启用该仓库");
         }
     }
 
@@ -268,6 +359,34 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         } catch (Exception e) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR, fieldName + "不是合法的 JSON 格式");
         }
+    }
+
+    /**
+     * 归一化请求 DTO 中的三段 JSON 配置字段。
+     *
+     * <p>数据库对应的三列是 MySQL `JSON` 类型，空字符串不是合法 JSON，直接写入会被数据库拒绝；
+     * 前端表单的文本域在未填写时提交的是空串，因此统一在业务校验前把空白值归一为 `null`，
+     * 语义为「该项目未配置这一段」。</p>
+     *
+     * @param dto 请求参数；方法内原地修改，调用方无需接收返回值
+     */
+    private void normalizeJsonConfig(ProjectDto dto) {
+        // 构建配置：仅含空白字符时视为未配置。
+        dto.setBuildConfigJson(normalizeJsonText(dto.getBuildConfigJson()));
+        // 运行配置：仅含空白字符时视为未配置。
+        dto.setRuntimeConfigJson(normalizeJsonText(dto.getRuntimeConfigJson()));
+        // 健康检查配置：仅含空白字符时视为未配置。
+        dto.setHealthConfigJson(normalizeJsonText(dto.getHealthConfigJson()));
+    }
+
+    /**
+     * 将 JSON 配置文本归一化：有效内容去掉首尾空白，空白内容转为 `null`。
+     *
+     * @param json 请求中的原始 JSON 文本，允许为 null
+     * @return 去掉首尾空白后的 JSON 文本；入参为 null 或纯空白时返回 null
+     */
+    private String normalizeJsonText(String json) {
+        return StringUtils.hasText(json) ? json.trim() : null;
     }
 
     /**
@@ -342,8 +461,8 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         // 构建模式：非空字符串使用等值条件查询。
         wrapper.eq(StringUtils.hasText(condition.getBuildMode()),
                 Project::getBuildMode, condition.getBuildMode());
-        // 状态：非空字符串使用等值条件查询。
-        wrapper.eq(StringUtils.hasText(condition.getStatus()),
+        // 状态：传入数字编码时使用等值条件查询。
+        wrapper.eq(condition.getStatus() != null,
                 Project::getStatus, condition.getStatus());
         // 默认按创建时间倒序返回，优先展示最近新增的数据。
         wrapper.orderByDesc(Project::getCreateTime);

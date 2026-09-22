@@ -73,7 +73,7 @@ export const constantRoutes: AppRouteRecordRaw[] = [
       {
         path: 'deploy-target',
         name: 'DeployTargetList',
-        component: () => import('@/views/deploy-target/index.vue'),
+        component: () => import('@/views/deployTarget/index.vue'),
         meta: { title: '部署目标' }
       }
     ]
@@ -91,6 +91,29 @@ export const constantRoutes: AppRouteRecordRaw[] = [
         name: 'TaskList',
         component: () => import('@/views/task/index.vue'),
         meta: { title: '任务列表' }
+      }
+    ]
+  },
+  {
+    // 系统设置（一级目录）：全局资源，不属于某个项目
+    // 凭据供 Git 拉取与镜像仓库推送使用；镜像仓库只服务于 DOCKER 运行时（AGENTS.md §23.4）
+    path: '/system',
+    component: Layout,
+    redirect: '/system/credential',
+    alwaysShow: true,
+    meta: { title: '系统设置', icon: 'Tools' },
+    children: [
+      {
+        path: 'credential',
+        name: 'CredentialList',
+        component: () => import('@/views/credential/index.vue'),
+        meta: { title: '凭据管理' }
+      },
+      {
+        path: 'registry',
+        name: 'RegistryList',
+        component: () => import('@/views/registry/index.vue'),
+        meta: { title: '镜像仓库' }
       }
     ]
   }

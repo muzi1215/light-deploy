@@ -1,4 +1,4 @@
-package com.lx.deploy.task.enums;
+package com.lx.deploy.common.enums.task;
 
 import lombok.Getter;
 
@@ -9,6 +9,11 @@ import java.util.Arrays;
  *
  * <p>数据库以字符串保存稳定编码。SERVER_TEST 为服务器连通性测试，
  * BUILD 为构建任务，DEPLOY 为发布任务，通过 bizId 关联具体业务记录。</p>
+ *
+ * <p>对应数据库字段 lds_task.task_type。</p>
+ *
+ * @author lx
+ * @since 2026-09-05 19:32:43
  */
 @Getter
 public enum TaskType {

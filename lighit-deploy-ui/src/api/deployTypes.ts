@@ -85,12 +85,13 @@ export interface ProjectVo {
   gitUrl?: string
   gitBranch?: string
   gitCredentialId?: string
-  buildMode: string // PLATFORM_TEMPLATE / PROJECT_DOCKERFILE / LAYERED_DOCKER / ARTIFACT_ONLY
+  buildMode: string // PLATFORM_TEMPLATE / PROJECT_DOCKERFILE / LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY
+  registryId?: string // 镜像仓库 ID，仅 DOCKER 运行时项目有值
   buildConfigJson?: string
   runtimeConfigJson?: string
   healthConfigJson?: string
   retainReleaseCount: number
-  status: string // ENABLED / DISABLED
+  status: number // 0 停用，1 启用
   description?: string
   createdBy?: string
   updatedBy?: string
@@ -106,11 +107,13 @@ export interface ProjectDto {
   gitBranch?: string
   gitCredentialId?: string
   buildMode?: string
+  /** 镜像仓库 ID；仅 DOCKER 运行时可填，脚本部署 / 仅发布产物传了会被后端拒绝 */
+  registryId?: string
   buildConfigJson?: string
   runtimeConfigJson?: string
   healthConfigJson?: string
   retainReleaseCount?: number
-  status?: string
+  status?: number
   description?: string
 }
 
@@ -154,7 +157,7 @@ export interface DeployTargetVo {
   isPrimary: number // 0 / 1
   deployOrder: number
   runtimeConfigJson?: string
-  status: string // ENABLED / DISABLED
+  status: number // 0 停用，1 启用
 }
 
 /** 部署目标查询/新增/修改 DTO */
@@ -165,7 +168,7 @@ export interface DeployTargetDto {
   isPrimary?: number
   deployOrder?: number
   runtimeConfigJson?: string
-  status?: string
+  status?: number
 }
 
 // ==================== 任务模块类型 ====================
@@ -178,7 +181,7 @@ export interface TaskVo {
   taskNo: string
   taskType: string // SERVER_TEST / BUILD / DEPLOY
   bizId?: string
-  status: string // QUEUED / RUNNING / SUCCESS / FAILED / CANCELED
+  status: number // 0 排队中，1 执行中，2 成功，3 失败，4 已取消
   currentStage?: string
   progress: number // 0-100
   startedAt?: string
@@ -191,7 +194,7 @@ export interface TaskDto {
   taskNo?: string
   taskType?: string
   bizId?: string
-  status?: string
+  status?: number
   currentStage?: string
   progress?: number
   startedAt?: string
@@ -211,6 +214,25 @@ export interface TaskLogVo {
   content: string
 }
 
+/**
+ * 任务日志增量拉取结果（对应后端 TaskLogPullVo）。
+ *
+ * 后端 /taskLog/pull 的响应：logs 只包含 sequenceNo 大于请求 lastSeq 的增量日志，
+ * finished 为 true 表示任务已进入终态（成功/失败/已取消），前端应停止轮询。
+ */
+export interface TaskLogPullVo {
+  taskId: string
+  status: number // 0 排队中，1 执行中，2 成功，3 失败，4 已取消
+  statusText: string // 服务端统一给出的状态中文描述
+  finished: boolean // true 表示终态，停止轮询
+  currentStage?: string
+  progress: number // 0-100
+  errorMessage?: string
+  logs: TaskLogVo[]
+  /** 本次返回的最大顺序号，下次请求原样作为 lastSeq 传入 */
+  lastSeq: number
+}
+
 /** 任务执行日志查询/新增/修改 DTO */
 export interface TaskLogDto {
   taskId?: string
@@ -218,4 +240,62 @@ export interface TaskLogDto {
   stage?: string
   logLevel?: string
   content?: string
+}
+
+// ==================== 凭据模块类型 ====================
+
+/**
+ * 凭据 VO。
+ *
+ * 与后端 CredentialVo 一一对应：**不含密文与明文**。后端 credential.encrypted_value
+ * 从不在任何接口返回，页面编辑凭据时留空即表示不修改（AGENTS.md §7）。
+ */
+export interface CredentialVo {
+  id: string
+  createTime: string
+  updateTime: string
+  name: string
+  type: string // GIT_TOKEN / SSH_KEY / REGISTRY / SSH_PASSWORD（保留）
+  metadataJson?: string | null
+}
+
+/** 凭据查询/新增/修改 DTO */
+export interface CredentialDto {
+  name?: string
+  type?: string
+  /** 明文凭据（Git 令牌 / 私钥 / 仓库密码）：新增必填，修改选填且留空保留原凭据 */
+  credential?: string
+  /** 非敏感元数据 JSON，如 {"username":"light-deploy"}；禁止放明文密码 */
+  metadataJson?: string
+}
+
+// ==================== 镜像仓库模块类型 ====================
+
+/**
+ * 镜像仓库 VO。
+ *
+ * 与后端 RegistryVo 一一对应：只返回 credentialId（凭据引用），不返回凭据内容。
+ * 镜像仓库只服务于 DOCKER 运行时（AGENTS.md §23.4）。
+ */
+export interface RegistryVo {
+  id: string
+  createTime: string
+  updateTime: string
+  name: string
+  registryUrl: string
+  namespace?: string | null
+  credentialId?: string | null
+  status: number // 0 停用，1 启用
+  description?: string | null
+}
+
+/** 镜像仓库查询/新增/修改 DTO */
+export interface RegistryDto {
+  name?: string
+  registryUrl?: string
+  namespace?: string
+  /** 登录仓库的凭据 ID，必须是类型为 REGISTRY 的凭据；公共仓库留空 */
+  credentialId?: string
+  status?: number
+  description?: string
 }

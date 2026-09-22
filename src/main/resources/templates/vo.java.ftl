@@ -3,12 +3,6 @@ package ${package.Entity}.vo;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 import java.time.LocalDateTime;
-<#list importEntityFrameworkPackages as pkg>
-import ${pkg};
-</#list>
-<#list importEntityJavaPackages as pkg>
-import ${pkg};
-</#list>
 
 /**
  * ${table.comment!"业务"}响应对象。

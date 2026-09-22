@@ -3,6 +3,8 @@ package com.lx.deploy.server.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.lx.deploy.common.constants.EnableStatus;
+import com.lx.deploy.common.enums.task.TaskType;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.crypto.CredentialCrypto;
 import com.lx.deploy.common.model.PageQuery;
@@ -12,6 +14,9 @@ import com.lx.deploy.server.mapper.ServerMapper;
 import com.lx.deploy.server.model.Server;
 import com.lx.deploy.server.model.dto.ServerDto;
 import com.lx.deploy.server.model.vo.ServerVo;
+import com.lx.deploy.task.model.dto.TaskDto;
+import com.lx.deploy.task.model.vo.TaskVo;
+import com.lx.deploy.task.service.TaskService;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -34,6 +39,44 @@ public class ServerService extends ServiceImpl<ServerMapper, Server> {
     /** 平台统一 AES 凭据加解密组件。 */
     @Autowired
     private CredentialCrypto credentialCrypto;
+
+    /**
+     * 任务服务。
+     *
+     * <p>连通性测试本质是一次异步任务，服务器模块只负责提交任务，不直接执行远程操作，
+     * 因此这里依赖任务模块的服务而不是 SSH 执行层（AGENTS.md §12：Controller 不写执行逻辑）。</p>
+     */
+    @Autowired
+    private TaskService taskService;
+
+    /**
+     * 提交一次服务器连通性测试任务。
+     *
+     * <p>校验规则：服务器必须存在且处于启用状态；同一服务器不允许同时存在多个未完成的任务，
+     * 避免页面连点造成重复连接。任务创建后立即返回，真正的连接与探活由任务执行器异步完成，
+     * 页面通过 /taskLog/pull 增量拉取执行日志。</p>
+     *
+     * @param id 目标服务器主键
+     * @return 新建的异步任务响应对象，状态为 0（排队中）
+     * @throws DeployException 服务器不存在、已停用或已有未完成的连通性测试任务时抛出
+     */
+    public TaskVo submitConnectivityTest(String id) {
+        // 记录不存在或已逻辑删除时直接抛出，避免对不存在的服务器发起连接。
+        Server entity = getRequiredEntityById(id);
+        // 停用的服务器不参与任何远程操作（AGENTS.md §6.3：status 只表示是否允许被平台连接）。
+        if (entity.getStatus() == null || entity.getStatus() != EnableStatus.ENABLED) {
+            throw new DeployException(ResponseCode.DATA_CONFLICT, "服务器已停用，不允许执行连通性测试");
+        }
+        // 同一服务器已有排队中或执行中的测试任务时拒绝重复提交。
+        if (taskService.hasUnfinishedTask(TaskType.SERVER_TEST.getCode(), id)) {
+            throw new DeployException(ResponseCode.DATA_CONFLICT, "该服务器已有未完成的连通性测试任务，请等待其结束");
+        }
+        // 任务类型与关联业务主键由服务端决定，不接受调用方自定义，避免任务指向错误目标。
+        TaskDto dto = new TaskDto();
+        dto.setTaskType(TaskType.SERVER_TEST.getCode());
+        dto.setBizId(id);
+        return taskService.create(dto);
+    }
 
     /**
      * 根据非空条件分页查询部署服务器。

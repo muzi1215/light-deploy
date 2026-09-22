@@ -1,4 +1,4 @@
-package com.lx.deploy.project.enums;
+package com.lx.deploy.common.enums.project;
 
 import lombok.Getter;
 
@@ -9,16 +9,27 @@ import java.util.Arrays;
  *
  * <p>仅 DOCKER 运行时使用这些构建模式。AIops 项目使用分层构建：
  * 基础依赖镜像推送到阿里云镜像仓库，业务镜像基于基础镜像构建。</p>
+ *
+ * <p>对应数据库字段 project.build_mode。</p>
+ *
+ * @author lx
+ * @since 2026-09-05 19:32:43
  */
 @Getter
 public enum BuildMode {
 
     /** 平台内置 Dockerfile 模板构建。 */
     PLATFORM_TEMPLATE("PLATFORM_TEMPLATE", "平台模板"),
+
     /** 使用项目仓库内自带的 Dockerfile 构建。 */
     PROJECT_DOCKERFILE("PROJECT_DOCKERFILE", "项目Dockerfile"),
+
     /** Dockerfile.base 与 Dockerfile.app 分层构建。 */
     LAYERED_DOCKER("LAYERED_DOCKER", "分层构建"),
+
+    /** 脚本部署 */
+    SCRIPT_DEPLOY("SCRIPT_DEPLOY", "脚本部署"),
+
     /** 直接发布已有 JAR 或静态产物，不做构建。 */
     ARTIFACT_ONLY("ARTIFACT_ONLY", "仅发布产物");
 

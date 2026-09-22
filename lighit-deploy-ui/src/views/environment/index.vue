@@ -4,10 +4,10 @@
     <div class="search-div">
       <el-form :model="searchForm" inline>
         <el-form-item label="环境编码">
-          <el-input v-model="searchForm.code" placeholder="如 dev / test / prod" clearable style="width: 160px" @keyup.enter="handleSearch" />
+          <el-input v-model="searchForm.code" placeholder="如 dev / test / prod" clearable style="width: 180px" @keyup.enter="handleSearch" />
         </el-form-item>
         <el-form-item label="环境名称">
-          <el-input v-model="searchForm.name" placeholder="请输入环境名称" clearable style="width: 160px" @keyup.enter="handleSearch" />
+          <el-input v-model="searchForm.name" placeholder="请输入环境名称" clearable style="width: 180px" @keyup.enter="handleSearch" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
@@ -23,33 +23,33 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="code" label="环境编码" width="120">
+      <el-table-column prop="code" label="环境编码" min-width="120" align="center">
         <template #default="{ row }">
           <el-tag>{{ row.code }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="name" label="环境名称" min-width="140" show-overflow-tooltip />
-      <el-table-column prop="deployStrategy" label="部署策略" width="120" align="center">
+      <el-table-column prop="name" label="环境名称" min-width="140" show-overflow-tooltip align="center" />
+      <el-table-column prop="deployStrategy" label="部署策略" min-width="120" align="center">
         <template #default="{ row }">
           {{ STRATEGY_MAP[row.deployStrategy] || row.deployStrategy }}
         </template>
       </el-table-column>
-      <el-table-column prop="batchSize" label="批次大小" width="90" align="center" />
+      <el-table-column prop="batchSize" label="批次大小" min-width="90" align="center" />
       <el-table-column prop="defaultServerId" label="默认服务器" min-width="140" align="center" show-overflow-tooltip>
         <template #default="{ row }">
           {{ serverNameMap[row.defaultServerId] || row.defaultServerId || '-' }}
         </template>
       </el-table-column>
-      <el-table-column prop="aiopsEnabled" label="AIops联动" width="110" align="center">
+      <el-table-column prop="aiopsEnabled" label="AIops联动" min-width="110" align="center">
         <template #default="{ row }">
           <el-tag :type="row.aiopsEnabled === 1 ? 'success' : 'info'">
             {{ row.aiopsEnabled === 1 ? '开启' : '关闭' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="description" label="描述" min-width="140" show-overflow-tooltip />
-      <el-table-column prop="createTime" label="创建时间" width="170" align="center" />
-      <el-table-column label="操作" width="140" fixed="right" align="center">
+      <el-table-column prop="createTime" label="创建时间" min-width="200" align="center" />
+      <el-table-column prop="description" label="描述" min-width="140" show-overflow-tooltip align="center" />
+      <el-table-column label="操作" min-width="260" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" :icon="Edit" @click="handleEdit(row)">编辑</el-button>
           <el-button link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
@@ -69,48 +69,84 @@
       @current-change="fetchData"
     />
 
-    <!-- 新增/编辑对话框：统一宽度 720px、label 110px，文本域统一放表单底部 -->
+    <!-- 新增/编辑对话框：统一 800px + label 120px + 两列布局，文本域统一放表单底部（约定见 AGENTS.md §20.2） -->
     <el-dialog
       v-model="dialogVisible"
       :title="dialogTitle"
-      width="720px"
+      width="800px"
       :close-on-click-modal="false"
       @close="resetForm"
     >
-      <el-form ref="formRef" :model="formData" :rules="formRules" label-width="110px">
-        <el-form-item label="环境编码" prop="code">
-          <el-input v-model="formData.code" placeholder="小写字母开头，如 dev / test / prod" />
-        </el-form-item>
-        <el-form-item label="环境名称" prop="name">
-          <el-input v-model="formData.name" placeholder="请输入环境名称" />
-        </el-form-item>
-        <el-form-item label="部署策略" prop="deployStrategy">
-          <el-radio-group v-model="formData.deployStrategy">
-            <el-radio value="SINGLE_TARGET">单目标</el-radio>
-            <el-radio value="ALL_AT_ONCE">全量发布</el-radio>
-            <el-radio value="ROLLING">滚动发布</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="批次大小" prop="batchSize">
-          <el-input-number v-model="formData.batchSize" :min="1" :max="50" style="width: 160px" />
-          <span class="form-tip">滚动发布时每批同时更新的主机数量</span>
-        </el-form-item>
-        <el-form-item label="默认服务器" prop="defaultServerId">
-          <el-select v-model="formData.defaultServerId" placeholder="请选择（选填）" clearable filterable style="width: 280px">
-            <el-option v-for="s in serverOptions" :key="s.id" :label="`${s.serverName}（${s.host}）`" :value="s.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="AIops联动" prop="aiopsEnabled">
-          <el-switch v-model="formData.aiopsEnabled" :active-value="1" :inactive-value="0" />
-          <span class="form-tip">开启后发布期间自动创建 AIops 告警静默窗口</span>
-        </el-form-item>
-        <el-form-item label="环境描述" prop="description">
-          <el-input v-model="formData.description" type="textarea" :rows="2" placeholder="环境用途说明（选填）" />
-        </el-form-item>
-      </el-form>
+      <!-- 内容区滚动容器：顶部与标题栏留出间隔；左右 padding 抵消 el-row gutter 负边距并预留滚动条宽度 -->
+      <div style="max-height: 60vh; overflow-y: auto; padding: 16px 18px 0 10px;">
+        <el-form ref="formRef" :model="formData" :rules="formRules" label-width="120px" size="small">
+          <!-- 第一行：环境编码 + 环境名称 -->
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="环境编码" prop="code">
+                <el-input v-model="formData.code" placeholder="小写字母开头，如 dev / test / prod" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="环境名称" prop="name">
+                <el-input v-model="formData.name" placeholder="请输入环境名称" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <!-- 第二行：批次大小 + 默认服务器 -->
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="批次大小" prop="batchSize">
+                <el-input-number v-model="formData.batchSize" :min="1" :max="50" style="width: 100%" />
+                <span class="form-tip">滚动发布时每批同时更新的主机数量</span>
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="默认服务器" prop="defaultServerId">
+                <el-select v-model="formData.defaultServerId" placeholder="请选择（选填）" clearable filterable style="width: 100%">
+                  <el-option v-for="s in serverOptions" :key="s.id" :label="`${s.serverName}（${s.host}）`" :value="s.id" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <!-- 第三行：部署策略（三个选项，独占整行） -->
+          <el-row :gutter="20">
+            <el-col :span="24">
+              <el-form-item label="部署策略" prop="deployStrategy">
+                <el-radio-group v-model="formData.deployStrategy">
+                  <el-radio value="SINGLE_TARGET">单目标</el-radio>
+                  <el-radio value="ALL_AT_ONCE">全量发布</el-radio>
+                  <el-radio value="ROLLING">滚动发布</el-radio>
+                </el-radio-group>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <!-- 第四行：AIops 联动开关 -->
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="AIops联动" prop="aiopsEnabled">
+                <el-switch v-model="formData.aiopsEnabled" :active-value="1" :inactive-value="0" />
+                <span class="form-tip">开启后发布期间自动创建 AIops 告警静默窗口</span>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <!-- 第五行：环境描述（文本域，固定放表单最底部） -->
+          <el-row :gutter="20">
+            <el-col :span="24">
+              <el-form-item label="环境描述" prop="description">
+                <el-input v-model="formData.description" type="textarea" :rows="2" placeholder="环境用途说明（选填）" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </el-form>
+      </div>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitLoading" @click="handleSubmit">确定</el-button>
+        <el-button size="small" @click="dialogVisible = false">取 消</el-button>
+        <el-button type="primary" size="small" :loading="submitLoading" @click="handleSubmit">确 定</el-button>
       </template>
     </el-dialog>
   </div>
@@ -290,9 +326,6 @@ async function handleDelete(row: EnvironmentVo) {
 </script>
 
 <style lang="scss" scoped>
-.form-tip {
-  margin-left: 8px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
+// 使用全局工具类 .app-container / .search-div / .tools-div / .form-tip
+// 定义在 styles/index.scss 中
 </style>

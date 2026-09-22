@@ -1,6 +1,7 @@
 package com.lx.deploy.task.controller;
 
 import com.lx.deploy.task.model.dto.TaskLogDto;
+import com.lx.deploy.task.model.vo.TaskLogPullVo;
 import com.lx.deploy.task.model.vo.TaskLogVo;
 import com.lx.deploy.task.service.TaskLogService;
 import com.lx.deploy.common.model.PageQuery;
@@ -58,6 +59,27 @@ public class TaskLogController {
     public ApiResponse<List<TaskLogVo>> list(@ModelAttribute TaskLogDto condition,
                                                HttpServletRequest request) {
         return ApiResponse.success(service.listByCondition(condition), requestId(request));
+    }
+
+    /**
+     * 按顺序号增量拉取任务日志（页面实时查看执行过程使用）。
+     *
+     * <p>只返回顺序号大于 lastSeq 的日志，避免分页轮询带来的日志重复与乱序：
+     * 前端记住上一次响应里的 lastSeq，本次以它为锚点继续取增量；
+     * 响应中的 finished 为 true 时表示任务已结束，前端应停止轮询。</p>
+     *
+     * @param taskId 任务主键，必填
+     * @param lastSeq 已获取到的最大日志顺序号；首次拉取不传
+     * @param limit 单次最多返回条数；不传取默认值 200，最大 500
+     * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
+     * @return 增量日志、任务状态与下一次拉取的锚点
+     */
+    @GetMapping("/pull")
+    public ApiResponse<TaskLogPullVo> pull(@RequestParam String taskId,
+                                            @RequestParam(required = false) Long lastSeq,
+                                            @RequestParam(required = false) Integer limit,
+                                            HttpServletRequest request) {
+        return ApiResponse.success(service.pull(taskId, lastSeq, limit), requestId(request));
     }
 
     /**

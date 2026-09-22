@@ -47,9 +47,14 @@ public class User extends BaseEntity {
     @Schema(description = "统一权限中心用户ID")
     private String externalUserId;
 
+    /**
+     * 用户状态，数字编码。
+     *
+     * <p>0 停用 / 1 启用 / 2 锁定；用户表为过渡期实现，接入统一权限中心后逐步停用。</p>
+     */
     @TableField("status")
-    @Schema(description = "状态：ENABLED/DISABLED/LOCKED")
-    private String status;
+    @Schema(description = "状态：0停用，1启用，2锁定")
+    private Integer status;
 
     @TableField("last_login_time")
     @Schema(description = "最后登录时间")

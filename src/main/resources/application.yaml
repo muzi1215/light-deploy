@@ -77,8 +77,27 @@ light-deploy:
     # 只从环境变量注入，禁止将真实密钥写入 application.yaml 或提交到 Git。
     # aes-key: ${LIGHT_DEPLOY_AES_KEY:}
     aes-key: sCiAhDKE1xzqkAXnMECqPLvrFE3w7G2dqXSJPOffEOE=
-#  task:
-#    # 任务线程池基础并发配置，当前基线支持至少 6 台服务器并发调度。
-#    core-pool-size: 6
-#    max-pool-size: 6
-#    queue-capacity: 20
+
+  # SSH 执行层参数。只影响建立连接与执行远程命令的等待时长，不涉及凭据本身。
+  ssh:
+    # TCP 建连等待时间（毫秒），目标机网络不通时据此快速失败。
+    connect-timeout-ms: 10000
+    # SSH 认证等待时间（毫秒），密码或私钥校验的等待上限。
+    auth-timeout-ms: 10000
+    # 单条远程命令的等待时间（秒）；构建类长命令后续可单独放宽。
+    command-timeout-seconds: 120
+    # 单条命令输出保留的最大字符数，超出部分截断，避免大输出撑爆内存与日志。
+    max-output-chars: 20000
+
+  # 任务执行器参数。
+  task:
+    # 并发执行上限，等于线程池大小；AGENTS.md §1 的 6 台服务器基线据此设置。
+    pool-size: 6
+    # 排队任务轮询间隔（毫秒）。
+    poll-interval-ms: 1000
+    # 单次轮询最多领取的任务数。
+    poll-batch-size: 20
+
+  # 目标机上的平台部署根目录，连通性测试会检查它是否存在且可写。
+  agent:
+    base-dir: /opt/light-deploy

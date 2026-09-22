@@ -13,7 +13,8 @@ import type {
   TaskVo,
   TaskDto,
   TaskLogVo,
-  TaskLogDto
+  TaskLogDto,
+  TaskLogPullVo
 } from './deployTypes.ts'
 
 /** 条件分页查询异步任务 */
@@ -59,4 +60,24 @@ export function pageTaskLog(params: PageParams): Promise<ApiResponse<PageResult<
 /** 条件列表查询任务执行日志，结果按 sequenceNo 升序返回 */
 export function listTaskLogs(params?: ListParams): Promise<ApiResponse<TaskLogVo[]>> {
   return request({ url: '/taskLog/list', method: 'get', params })
+}
+
+/**
+ * 增量拉取任务执行日志（实时查看执行过程使用，对应后端 GET /taskLog/pull）。
+ *
+ * 增量锚点用日志顺序号而不是日志主键：主键是 32 位 UUID，不具备单调性。
+ * 响应中的 finished 为 true 时说明任务已结束，调用方应停止轮询；注意还要把本批
+ * 剩余日志拉完（返回条数等于 limit 时说明可能还有剩余）再停止，避免漏日志。
+ *
+ * @param taskId 任务主键
+ * @param lastSeq 已获取到的最大日志顺序号；首次拉取传 0
+ * @param limit 单次最多返回条数，后端上限 500，默认 200
+ * @returns 增量日志、任务状态、进度与下一次拉取的锚点 lastSeq
+ */
+export function pullTaskLog(
+  taskId: string,
+  lastSeq: number,
+  limit = 200
+): Promise<ApiResponse<TaskLogPullVo>> {
+  return request({ url: '/taskLog/pull', method: 'get', params: { taskId, lastSeq, limit } })
 }

@@ -25,7 +25,7 @@
 - 枚举状态码（`ResponseCode`）；
 - 业务异常与全局异常处理（`DeployException` / `GlobalExceptionHandler`）;
 - MyBatis-Plus 分页封装（`PageQuery` / `PageResult` / 分页插件配置）；
-- 通用工具类（`IdGenerator` 等）；
+- 通用工具类（`UuidIdentifierGenerator` 等）；
 - 请求链路追踪（`RequestTraceFilter` + requestId）；
 - 凭据加解密（`CredentialCrypto`，AES-GCM）。
 
@@ -61,7 +61,7 @@
 | F-02 | 全局异常处理 `GlobalExceptionHandler` 自动生效，可关闭 | P0 | Light Deploy 现有实现 |
 | F-03 | MyBatis-Plus 基座：`BaseEntity`、分页插件、字段自动填充、逻辑删除、UUID 主键策略 | P0 | Light Deploy 现有实现 |
 | F-04 | 通用分页模型 `PageQuery` / `PageResult` | P0 | Light Deploy 现有实现 |
-| F-05 | 主键生成器 `IdGenerator`（32 位 UUID） | P0 | Light Deploy 现有实现 |
+| F-05 | 主键生成器 `UuidIdentifierGenerator`（32 位 UUID） | P0 | Light Deploy 现有实现 |
 | F-06 | requestId 链路追踪过滤器 `RequestTraceFilter`，自动生效，可关闭 | P1 | Light Deploy 现有实现 |
 | F-07 | 凭据加解密 `CredentialCrypto`（AES-GCM），key 外部注入 | P1 | Light Deploy 现有实现 |
 | F-08 | 通用工具类沉淀（日期、字符串、JSON 等） | P1 | 持续沉淀 |
@@ -147,7 +147,7 @@
 
 | SDK 模块 | 内容 | 来源（Light Deploy 现有类） | Spring 依赖 |
 |---------|------|---------------------------|------------|
-| core | `ApiResponse<T>`、`ResponseCode`、`BizException`（由 `DeployException` 泛化）、`PageQuery` / `PageResult`、`IdGenerator` | `common/response/*`、`common/model/Page*`、`common/util/IdGenerator`、`common/exception/DeployException` | 无 |
+| core | `ApiResponse<T>`、`ResponseCode`、`BizException`（由 `DeployException` 泛化）、`PageQuery` / `PageResult`、`UuidIdentifierGenerator` | `common/response/*`、`common/model/Page*`、`common/util/IdGenerator`、`common/exception/DeployException` | 无 |
 | web-starter | `GlobalExceptionHandler`、`RequestTraceFilter`、Jackson 敏感字段序列化约定 | `common/exception/GlobalExceptionHandler`、`common/web/RequestTraceFilter` | spring-boot-starter-web |
 | mybatis-starter | `BaseEntity`、分页插件、`createTime`/`updateTime` 自动填充、`is_deleted` 逻辑删除、UUID 主键策略 | `common/model/BaseEntity`、`config/MybatisPlusConfig`、`config/UuidIdentifierGenerator` | mybatis-plus starter |
 | crypto | `CredentialCrypto`（AES-GCM）、key 注入配置项（泛化环境变量名）、`AesKeyGenerator` | `common/crypto/*` | 无或极轻 |
@@ -183,7 +183,7 @@ lx.common.web.trace-id.enabled=false
 - 分页插件注册使用 `@ConditionalOnMissingBean`，使用方可整体覆盖；
 - 逻辑删除值（0/1）、主键策略（`ASSIGN_UUID`）作为**默认值**而非强制约束，提供配置项：
   - `lx.common.mybatis.id-type=assign_uuid`（默认，可改为 assign_id 等）；
-- `IdGenerator` 保持独立工具类身份，主键策略配置引用它，遵循「禁止业务代码直接调用 `UUID.randomUUID()`」的既定约定。
+- `UuidIdentifierGenerator` 保持独立工具类身份，主键策略配置引用它，遵循「禁止业务代码直接调用 `UUID.randomUUID()`」的既定约定。
 
 ### 4.4 crypto 模块设计
 

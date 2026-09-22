@@ -2,12 +2,6 @@ package ${package.Entity}.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
-<#list importEntityFrameworkPackages as pkg>
-import ${pkg};
-</#list>
-<#list importEntityJavaPackages as pkg>
-import ${pkg};
-</#list>
 
 /**
  * ${table.comment!"业务"}请求对象。

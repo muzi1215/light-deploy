@@ -3,20 +3,24 @@ package com.lx.deploy.task.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.lx.deploy.common.constants.TaskStatus;
+import com.lx.deploy.common.enums.task.TaskLogLevel;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ResponseCode;
-import com.lx.deploy.task.enums.TaskLogLevel;
 import com.lx.deploy.task.mapper.TaskLogMapper;
 import com.lx.deploy.task.mapper.TaskMapper;
+import com.lx.deploy.task.model.Task;
 import com.lx.deploy.task.model.TaskLog;
 import com.lx.deploy.task.model.dto.TaskLogDto;
+import com.lx.deploy.task.model.vo.TaskLogPullVo;
 import com.lx.deploy.task.model.vo.TaskLogVo;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -31,6 +35,12 @@ import java.util.List;
  */
 @Service
 public class TaskLogService extends ServiceImpl<TaskLogMapper, TaskLog> {
+
+    /** 增量拉取未指定数量时的默认条数。 */
+    private static final int DEFAULT_PULL_LIMIT = 200;
+
+    /** 增量拉取单次最大条数：限制单次响应体大小，超出的部分留给下一次拉取。 */
+    private static final int MAX_PULL_LIMIT = 500;
 
     /** 任务 Mapper，用于写入日志前校验任务存在，避免日志悬空。 */
     private final TaskMapper taskMapper;
@@ -156,6 +166,66 @@ public class TaskLogService extends ServiceImpl<TaskLogMapper, TaskLog> {
         if (!removeById(id)) {
             throw new DeployException(ResponseCode.BUSINESS_ERROR, "删除任务执行日志失败");
         }
+    }
+
+    /**
+     * 按顺序号增量拉取任务日志，并返回任务当前状态。
+     *
+     * <p>这是页面实时查看执行过程的接口：只返回顺序号大于 lastSeq 的日志，
+     * 因此不会重复、不会乱序，也不需要在页面侧做去重。响应里同时带上任务状态与
+     * finished 标记，前端在一个请求里就能判断是继续拉还是停止轮询。</p>
+     *
+     * <p>增量锚点用 sequence_no（同一任务内递增的顺序号），不能用主键 id：
+     * 主键是 32 位 UUID 字符串，不具备单调递增性，{@code id > lastId} 没有意义。</p>
+     *
+     * @param taskId  任务主键，必填
+     * @param lastSeq 已获取到的最大顺序号；首次拉取传 null 或 0
+     * @param limit   单次最多返回条数；为空取默认 200，超出上限按上限截断
+     * @return 增量日志与任务状态
+     * @throws DeployException 任务主键为空或任务不存在时抛出
+     */
+    public TaskLogPullVo pull(String taskId, Long lastSeq, Integer limit) {
+        // 任务主键必填：日志必须挂在具体任务下才有展示意义。
+        if (!StringUtils.hasText(taskId)) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "任务ID不能为空");
+        }
+        // 任务必须存在；同时任务状态要随本次响应返回给前端。
+        Task task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new DeployException(ResponseCode.DATA_NOT_FOUND, "所属任务不存在");
+        }
+        // 顺序号锚点：负数没有意义，统一按 0 处理（即从头拉取）。
+        long afterSequence = lastSeq == null ? 0L : Math.max(lastSeq, 0L);
+        // 数量上限双端约束：至少 1 条，最多 MAX_PULL_LIMIT 条。
+        int size = limit == null ? DEFAULT_PULL_LIMIT : Math.min(Math.max(limit, 1), MAX_PULL_LIMIT);
+
+        // 只查增量：task_id + sequence_no 上有联合索引，查询不会随日志总量退化。
+        List<TaskLog> records = page(new Page<>(1, size, false), new LambdaQueryWrapper<TaskLog>()
+                .eq(TaskLog::getTaskId, taskId)
+                .gt(TaskLog::getSequenceNo, afterSequence)
+                .orderByAsc(TaskLog::getSequenceNo))
+                .getRecords();
+
+        // 逐条转 VO，并记录本批最大顺序号作为下一次拉取的锚点。
+        List<TaskLogVo> logs = new ArrayList<>(records.size());
+        long nextSequence = afterSequence;
+        for (TaskLog record : records) {
+            logs.add(toVo(record));
+            nextSequence = record.getSequenceNo();
+        }
+
+        TaskLogPullVo vo = new TaskLogPullVo();
+        vo.setTaskId(taskId);
+        vo.setStatus(task.getStatus());
+        // 状态文案由服务端统一转换，前端只负责展示。
+        vo.setStatusText(TaskStatus.describe(task.getStatus()));
+        vo.setFinished(TaskStatus.isFinal(task.getStatus()));
+        vo.setCurrentStage(task.getCurrentStage());
+        vo.setProgress(task.getProgress());
+        vo.setErrorMessage(task.getErrorMessage());
+        vo.setLogs(logs);
+        vo.setLastSeq(nextSequence);
+        return vo;
     }
 
     /**

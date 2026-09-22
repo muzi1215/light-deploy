@@ -1,15 +1,16 @@
 package com.lx.deploy.task.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.lx.deploy.common.enums.task.TaskType;
+import com.lx.deploy.common.constants.TaskStatus;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ResponseCode;
 import com.lx.deploy.common.util.IdGenerator;
-import com.lx.deploy.task.enums.TaskStatus;
-import com.lx.deploy.task.enums.TaskType;
 import com.lx.deploy.task.mapper.TaskMapper;
 import com.lx.deploy.task.model.Task;
 import com.lx.deploy.task.model.dto.TaskDto;
@@ -37,6 +38,9 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
 
     /** 任务编号时间部分格式。 */
     private static final DateTimeFormatter TASK_NO_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+
+    /** 启动时收敛中断任务的查询上限，防止异常数据下无边界查询。 */
+    private static final int RECOVERY_LIMIT = 200;
 
     /**
      * 根据 DTO 中的非空条件分页查询异步任务。
@@ -77,7 +81,7 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     /**
      * 根据请求 DTO 新增一条异步任务。
      *
-     * <p>任务编号未传入时按 TASK-时间戳-随机段 规则自动生成；状态强制初始化为 QUEUED，
+     * <p>任务编号未传入时按 TASK-时间戳-随机段 规则自动生成；状态强制初始化为 0（排队中），
      * 不允许调用方直接创建非排队状态的任务，保证任务一定经过执行器调度。</p>
      *
      * @param dto 待新增的请求参数，不包含主键和审计字段
@@ -102,7 +106,7 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
             throw new DeployException(ResponseCode.DATA_CONFLICT, "任务编号已存在：" + entity.getTaskNo());
         }
         // 新建任务强制从排队状态开始，不允许调用方指定其他初始状态。
-        entity.setStatus(TaskStatus.QUEUED.getCode());
+        entity.setStatus(TaskStatus.QUEUED);
         // 未指定进度时从 0 开始。
         entity.setProgress(entity.getProgress() == null ? 0 : entity.getProgress());
         if (!save(entity)) {
@@ -173,32 +177,40 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     // ==================== 状态流转（任务执行器骨架） ====================
 
     /**
-     * 将任务标记为执行中。
+     * 将任务标记为执行中（抢占式流转）。
      *
-     * <p>仅 QUEUED 状态允许进入 RUNNING；进入 RUNNING 时记录任务开始时间。
+     * <p>仅 0（排队中）允许进入 1（执行中）；进入执行中时记录任务开始时间。
      * 该方法供任务执行器在真正开始执行时调用。</p>
+     *
+     * <p>实现上使用「带状态条件的更新」而不是「先查后改」：更新语句本身就把
+     * status = 排队中 作为条件，因此并发调度下只有一个线程能把同一条任务改成执行中，
+     * 抢不到的线程会拿到明确异常。这是任务不会被重复执行的关键（AGENTS.md §1）。</p>
      *
      * @param id 任务主键
      * @return 流转后的最新任务 VO
-     * @throws DeployException 任务不存在或当前状态不允许开始时抛出
+     * @throws DeployException 任务不存在，或状态不是排队中（含已被其它线程抢占）时抛出
      */
     public TaskVo markRunning(String id) {
-        Task entity = getRequiredEntityById(id);
-        // 只有排队中的任务允许开始执行。
-        if (!TaskStatus.QUEUED.getCode().equals(entity.getStatus())) {
+        // 条件更新：只有当前仍是排队中的任务才会被改成执行中，返回值即抢占结果。
+        boolean claimed = update(new LambdaUpdateWrapper<Task>()
+                .eq(Task::getId, id)
+                .eq(Task::getStatus, TaskStatus.QUEUED)
+                .set(Task::getStatus, TaskStatus.RUNNING)
+                .set(Task::getStartedAt, LocalDateTime.now()));
+        if (!claimed) {
+            // 未抢占成功时区分两种原因：任务不存在（404 语义）与状态不允许开始（冲突语义）。
+            Task entity = getRequiredEntityById(id);
             throw new DeployException(ResponseCode.DATA_CONFLICT,
-                    "任务当前状态为 " + entity.getStatus() + "，不允许开始执行");
+                    "任务当前状态为 " + TaskStatus.describe(entity.getStatus()) + "，不允许开始执行");
         }
-        entity.setStatus(TaskStatus.RUNNING.getCode());
-        entity.setStartedAt(LocalDateTime.now());
-        updateById(entity);
-        return toVo(entity);
+        // 重新读取，返回与数据库完全一致的流转结果。
+        return getRequiredById(id);
     }
 
     /**
      * 将任务标记为成功。
      *
-     * <p>仅 RUNNING 状态允许进入 SUCCESS，成功时记录结束时间并清空失败原因。</p>
+     * <p>仅 1（执行中）允许进入 2（成功），成功时记录结束时间并清空失败原因。</p>
      *
      * @param id 任务主键
      * @return 流转后的最新任务 VO
@@ -207,11 +219,11 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     public TaskVo markSuccess(String id) {
         Task entity = getRequiredEntityById(id);
         // 只有执行中的任务允许标记成功。
-        if (!TaskStatus.RUNNING.getCode().equals(entity.getStatus())) {
+        if (entity.getStatus() == null || entity.getStatus() != TaskStatus.RUNNING) {
             throw new DeployException(ResponseCode.DATA_CONFLICT,
-                    "任务当前状态为 " + entity.getStatus() + "，不允许标记成功");
+                    "任务当前状态为 " + TaskStatus.describe(entity.getStatus()) + "，不允许标记成功");
         }
-        entity.setStatus(TaskStatus.SUCCESS.getCode());
+        entity.setStatus(TaskStatus.SUCCESS);
         entity.setFinishedAt(LocalDateTime.now());
         entity.setErrorMessage(null);
         updateById(entity);
@@ -221,7 +233,7 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     /**
      * 将任务标记为失败。
      *
-     * <p>仅 RUNNING 状态允许进入 FAILED，失败原因必须提供并记录到 error_message，
+     * <p>仅 1（执行中）允许进入 3（失败），失败原因必须提供并记录到 error_message，
      * 保证任务失败可追溯。禁止在失败原因中携带凭据等敏感信息。</p>
      *
      * @param id 任务主键
@@ -236,11 +248,11 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
         }
         Task entity = getRequiredEntityById(id);
         // 只有执行中的任务允许标记失败。
-        if (!TaskStatus.RUNNING.getCode().equals(entity.getStatus())) {
+        if (entity.getStatus() == null || entity.getStatus() != TaskStatus.RUNNING) {
             throw new DeployException(ResponseCode.DATA_CONFLICT,
-                    "任务当前状态为 " + entity.getStatus() + "，不允许标记失败");
+                    "任务当前状态为 " + TaskStatus.describe(entity.getStatus()) + "，不允许标记失败");
         }
-        entity.setStatus(TaskStatus.FAILED.getCode());
+        entity.setStatus(TaskStatus.FAILED);
         entity.setFinishedAt(LocalDateTime.now());
         entity.setErrorMessage(errorMessage);
         updateById(entity);
@@ -250,7 +262,7 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     /**
      * 取消任务。
      *
-     * <p>QUEUED 和 RUNNING 状态允许取消，终态任务取消无意义直接拒绝；
+     * <p>0（排队中）和 1（执行中）允许取消，终态任务取消无意义直接拒绝；
      * 取消时记录结束时间。该方法供人工干预或执行器超时兜底调用。</p>
      *
      * @param id 任务主键
@@ -262,9 +274,9 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
         // 终态任务不允许取消。
         if (TaskStatus.isFinal(entity.getStatus())) {
             throw new DeployException(ResponseCode.DATA_CONFLICT,
-                    "任务当前状态为 " + entity.getStatus() + "，不允许取消");
+                    "任务当前状态为 " + TaskStatus.describe(entity.getStatus()) + "，不允许取消");
         }
-        entity.setStatus(TaskStatus.CANCELED.getCode());
+        entity.setStatus(TaskStatus.CANCELED);
         entity.setFinishedAt(LocalDateTime.now());
         updateById(entity);
         return toVo(entity);
@@ -273,7 +285,7 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     /**
      * 更新任务执行进度。
      *
-     * <p>仅 RUNNING 状态允许更新进度，进度取值 0 到 100。
+     * <p>仅 1（执行中）允许更新进度，进度取值 0 到 100。
      * 该方法供任务执行器在执行过程中定期汇报进度时调用。</p>
      *
      * @param id 任务主键
@@ -288,13 +300,66 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
         }
         Task entity = getRequiredEntityById(id);
         // 只有执行中的任务允许更新进度。
-        if (!TaskStatus.RUNNING.getCode().equals(entity.getStatus())) {
+        if (entity.getStatus() == null || entity.getStatus() != TaskStatus.RUNNING) {
             throw new DeployException(ResponseCode.DATA_CONFLICT,
-                    "任务当前状态为 " + entity.getStatus() + "，不允许更新进度");
+                    "任务当前状态为 " + TaskStatus.describe(entity.getStatus()) + "，不允许更新进度");
         }
         entity.setCurrentStage(stage);
         entity.setProgress(progress);
         updateById(entity);
+    }
+
+    // ==================== 执行器调度查询 ====================
+
+    /**
+     * 查询排队中的任务，按创建时间升序返回，供任务执行器按顺序领取。
+     *
+     * <p>只返回排队中的任务：执行中、终态任务不允许被再次调度。
+     * 按创建时间升序保证先提交的任务先执行，避免后提交的任务饿死前面的任务。</p>
+     *
+     * @param limit 单次最多返回条数，必须大于 0
+     * @return 排队中的任务实体列表，可能为空
+     */
+    public List<Task> listQueued(int limit) {
+        // 只取数据不做总数统计（searchCount=false），调度场景不需要分页总数。
+        return page(new Page<>(1, limit, false), new LambdaQueryWrapper<Task>()
+                .eq(Task::getStatus, TaskStatus.QUEUED)
+                .orderByAsc(Task::getCreateTime))
+                .getRecords();
+    }
+
+    /**
+     * 按状态查询任务，用于启动时收敛上次运行残留的中断任务。
+     *
+     * <p>查询上限取 {@link #RECOVERY_LIMIT}：中断任务的数量受执行器并发上限约束正常很小，
+     * 这里仍然限制上限，避免异常数据下把全表读进内存。</p>
+     *
+     * @param status 任务状态数字编码，取值见 {@link TaskStatus}
+     * @return 指定状态的任务实体列表，可能为空
+     */
+    public List<Task> listByStatus(int status) {
+        return page(new Page<>(1, RECOVERY_LIMIT, false), new LambdaQueryWrapper<Task>()
+                .eq(Task::getStatus, status)
+                .orderByAsc(Task::getCreateTime))
+                .getRecords();
+    }
+
+    /**
+     * 判断某个业务对象是否已有未完成的任务。
+     *
+     * <p>用于避免同一服务器/同一构建被重复提交任务：排队中和执行中都算未完成，
+     * 终态（成功/失败/已取消）不再阻塞新的提交。</p>
+     *
+     * @param taskType 任务类型编码，取值见 {@code TaskType} 枚举
+     * @param bizId 关联业务主键，例如服务器主键
+     * @return true 表示存在排队中或执行中的任务
+     */
+    public boolean hasUnfinishedTask(String taskType, String bizId) {
+        // 未完成 = 排队中(0) 或 执行中(1)，任一存在即返回 true。
+        return count(new LambdaQueryWrapper<Task>()
+                .eq(Task::getTaskType, taskType)
+                .eq(Task::getBizId, bizId)
+                .in(Task::getStatus, TaskStatus.QUEUED, TaskStatus.RUNNING)) > 0;
     }
 
     /**
@@ -372,8 +437,8 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
         // 关联业务主键：非空字符串使用等值条件查询。
         wrapper.eq(StringUtils.hasText(condition.getBizId()),
                 Task::getBizId, condition.getBizId());
-        // 任务状态：非空字符串使用等值条件查询。
-        wrapper.eq(StringUtils.hasText(condition.getStatus()),
+        // 任务状态：传入数字编码时使用等值条件查询。
+        wrapper.eq(condition.getStatus() != null,
                 Task::getStatus, condition.getStatus());
         // 默认按创建时间倒序返回，优先展示最近提交的任务。
         wrapper.orderByDesc(Task::getCreateTime);

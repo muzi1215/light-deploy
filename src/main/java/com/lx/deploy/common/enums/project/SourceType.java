@@ -1,4 +1,4 @@
-package com.lx.deploy.project.enums;
+package com.lx.deploy.common.enums.project;
 
 import lombok.Getter;
 
@@ -9,6 +9,11 @@ import java.util.Arrays;
  *
  * <p>区别代码从 Git 仓库拉取和由用户直接上传产物两种来源。
  * GIT 来源在发布时按分支拉取代码构建，UPLOAD 来源直接使用上传的产物。</p>
+ *
+ * <p>对应数据库字段 project.source_type。GIT 来源必须提供 gitUrl。</p>
+ *
+ * @author lx
+ * @since 2026-09-05 19:32:43
  */
 @Getter
 public enum SourceType {

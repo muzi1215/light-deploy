@@ -105,10 +105,19 @@ public class ProjectVo {
     private String gitCredentialId;
 
     /**
+     * 镜像仓库 ID。
+     *
+     * <p>指向 registry 表的外键引用，不是仓库凭据内容；仅 DOCKER 运行时项目会有值，
+     * JAR / STATIC 项目为 null。</p>
+     */
+    @Schema(description = "镜像仓库ID，仅DOCKER运行时使用，指向registry表")
+    private String registryId;
+
+    /**
      * 构建模式。
      *
-     * <p>取值与后端 BuildMode 枚举一致：
-     * PLATFORM_TEMPLATE / PROJECT_DOCKERFILE / LAYERED_DOCKER / ARTIFACT_ONLY。</p>
+     * <p>取值与后端 BuildMode 枚举一致：PLATFORM_TEMPLATE / PROJECT_DOCKERFILE /
+     * LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY。</p>
      */
     @Schema(description = "构建模式")
     private String buildMode;
@@ -148,11 +157,11 @@ public class ProjectVo {
     /**
      * 项目状态。
      *
-     * <p>取值 ENABLED / DISABLED，与后端 EnableStatus 枚举一致；
+     * <p>取值 0 停用 / 1 启用，由服务端维护；
      * 前端渲染为启用/停用标签。</p>
      */
-    @Schema(description = "状态：ENABLED/DISABLED")
-    private String status;
+    @Schema(description = "状态：0停用，1启用")
+    private Integer status;
 
     /**
      * 项目描述。

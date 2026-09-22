@@ -1,4 +1,4 @@
-package com.lx.deploy.task.enums;
+package com.lx.deploy.common.enums.task;
 
 import lombok.Getter;
 
@@ -9,6 +9,11 @@ import java.util.Arrays;
  *
  * <p>任务执行日志保存在 lds_task_log.content 中，与服务器本地 logs 文件互相独立：
  * 本地日志面向运维排障，任务日志面向页面展示执行过程。</p>
+ *
+ * <p>对应数据库字段 lds_task_log.log_level。</p>
+ *
+ * @author lx
+ * @since 2026-09-05 19:32:43
  */
 @Getter
 public enum TaskLogLevel {

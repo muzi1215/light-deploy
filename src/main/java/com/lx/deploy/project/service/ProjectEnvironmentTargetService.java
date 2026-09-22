@@ -5,11 +5,11 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lx.deploy.common.constants.EnableStatus;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ResponseCode;
-import com.lx.deploy.project.enums.EnableStatus;
 import com.lx.deploy.project.mapper.EnvironmentMapper;
 import com.lx.deploy.project.mapper.ProjectEnvironmentTargetMapper;
 import com.lx.deploy.project.mapper.ProjectMapper;
@@ -205,7 +205,8 @@ public class ProjectEnvironmentTargetService
         if (server == null) {
             throw new DeployException(ResponseCode.DATA_NOT_FOUND, "目标服务器不存在");
         }
-        if (server.getStatus() == null || server.getStatus() != 1) {
+        // 目标服务器必须是启用状态（status=1），停用服务器不允许绑定为部署目标。
+        if (server.getStatus() == null || server.getStatus() != EnableStatus.ENABLED) {
             throw new DeployException(ResponseCode.DATA_CONFLICT, "目标服务器已停用，不允许绑定");
         }
         // 主目标标记传入时只能是 0 或 1。
@@ -217,8 +218,8 @@ public class ProjectEnvironmentTargetService
             throw new DeployException(ResponseCode.VALIDATION_ERROR, "多目标发布顺序必须大于等于 1");
         }
         // 状态可选，传入时必须是受支持的枚举值。
-        if (dto.getStatus() != null && EnableStatus.fromCode(dto.getStatus()) == null) {
-            throw new DeployException(ResponseCode.VALIDATION_ERROR, "状态必须为 ENABLED 或 DISABLED");
+        if (dto.getStatus() != null && !EnableStatus.isValid(dto.getStatus())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "状态必须为 0（停用）或 1（启用）");
         }
         // 差异化运行配置传入时必须是合法 JSON。
         if (StringUtils.hasText(dto.getRuntimeConfigJson())) {
@@ -256,9 +257,9 @@ public class ProjectEnvironmentTargetService
         if (entity.getDeployOrder() == null) {
             entity.setDeployOrder(1);
         }
-        // 未指定状态时默认启用。
-        if (!StringUtils.hasText(entity.getStatus())) {
-            entity.setStatus(EnableStatus.ENABLED.getCode());
+        // 未指定状态时默认启用（1）。
+        if (entity.getStatus() == null) {
+            entity.setStatus(EnableStatus.ENABLED);
         }
     }
 
@@ -352,7 +353,7 @@ public class ProjectEnvironmentTargetService
         wrapper.eq(condition.getIsPrimary() != null,
                 ProjectEnvironmentTarget::getIsPrimary, condition.getIsPrimary());
         // 状态：非空字符串使用等值条件查询。
-        wrapper.eq(StringUtils.hasText(condition.getStatus()),
+        wrapper.eq(condition.getStatus() != null,
                 ProjectEnvironmentTarget::getStatus, condition.getStatus());
         // 先按创建时间倒序分组，再按发布顺序升序排列。
         wrapper.orderByDesc(ProjectEnvironmentTarget::getCreateTime);

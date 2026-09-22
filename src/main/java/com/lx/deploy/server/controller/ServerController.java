@@ -3,6 +3,7 @@ package com.lx.deploy.server.controller;
 import com.lx.deploy.server.model.dto.ServerDto;
 import com.lx.deploy.server.model.vo.ServerVo;
 import com.lx.deploy.server.service.ServerService;
+import com.lx.deploy.task.model.vo.TaskVo;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
@@ -114,6 +115,21 @@ public class ServerController {
                                          HttpServletRequest request) {
         // Service 始终使用路径中的 ID，避免请求体主键覆盖其他数据。
         return ApiResponse.success(service.update(id, dto), requestId(request));
+    }
+
+    /**
+     * 提交一次服务器连通性测试任务。
+     *
+     * <p>接口只负责创建异步任务并立即返回，真正的 SSH 连接与探活命令由任务执行器执行；
+     * 页面用返回的任务主键轮询 /taskLog/pull 查看实时执行日志。</p>
+     *
+     * @param id 目标服务器主键
+     * @param request 当前 HTTP 请求，用于读取请求追踪ID
+     * @return 新建的异步任务（状态为 0 排队中）
+     */
+    @PostMapping("/{id}/test")
+    public ApiResponse<TaskVo> test(@PathVariable String id, HttpServletRequest request) {
+        return ApiResponse.success(service.submitConnectivityTest(id), requestId(request));
     }
 
     /**

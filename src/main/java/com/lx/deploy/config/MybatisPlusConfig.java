@@ -37,6 +37,12 @@ public class MybatisPlusConfig {
      * <p>新增数据时填充 createTime 和 updateTime，更新数据时只刷新 updateTime。
      * 实体字段必须配置相应的 FieldFill 策略，处理器才会执行填充。</p>
      *
+     * <p>更新时间必须使用「无条件覆盖」而不是 strictUpdateFill：修改类 Service 的写法是
+     * 先从数据库查出实体、再覆盖 DTO 字段后 updateById，此时实体上的 updateTime 已经是
+     * 库里的旧值（非 null），而 strictUpdateFill 只在字段为 null 时才填充，结果旧值被显式
+     * 写进 SET 子句，MySQL 的 ON UPDATE CURRENT_TIMESTAMP 因为「列被显式赋值」而不再生效，
+     * 表现为「改了数据但 update_time 不变」。</p>
+     *
      * @return MyBatis-Plus 元对象字段填充处理器
      */
     @Bean
@@ -61,8 +67,11 @@ public class MybatisPlusConfig {
              */
             @Override
             public void updateFill(MetaObject metaObject) {
-                // 只更新 updateTime，不修改原始 createTime。
-                strictUpdateFill(metaObject, "updateTime", LocalDateTime.class, LocalDateTime.now());
+                // 只刷新 updateTime，不修改原始 createTime。
+                // 无条件覆盖：实体上的 updateTime 可能带着从库里读出的旧值，strictUpdateFill 会因此跳过填充。
+                if (metaObject.hasSetter("updateTime")) {
+                    metaObject.setValue("updateTime", LocalDateTime.now());
+                }
             }
         };
     }

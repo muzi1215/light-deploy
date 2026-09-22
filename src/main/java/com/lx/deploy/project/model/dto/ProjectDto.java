@@ -87,6 +87,16 @@ public class ProjectDto {
     private String buildMode;
 
     /**
+     * 镜像仓库 ID，取值见 registry 表主键。
+     *
+     * <p>选填，且**只允许 DOCKER 运行时填写**：脚本部署与仅发布产物不产出镜像，
+     * 填写了会被 Service 拒绝（AGENTS.md §23.4）。填写时必须存在且状态为启用；
+     * 公共仓库可以留空。查询时等值过滤。</p>
+     */
+    @Schema(description = "镜像仓库ID，仅DOCKER运行时使用")
+    private String registryId;
+
+    /**
      * 构建配置 JSON。
      *
      * <p>选填，必须为合法 JSON；不参与查询条件。</p>
@@ -119,12 +129,13 @@ public class ProjectDto {
     private Integer retainReleaseCount;
 
     /**
-     * 项目状态，取值见后端 EnableStatus 枚举。
+     * 项目状态，数字编码。
      *
-     * <p>选填，默认 ENABLED；查询时等值过滤。</p>
+     * <p>选填，取值 0 停用 / 1 启用，未传时 Service 填充默认值 1；
+     * 查询时等值过滤。传入其他数字返回参数校验失败。</p>
      */
-    @Schema(description = "状态：ENABLED/DISABLED，默认ENABLED")
-    private String status;
+    @Schema(description = "状态：0停用，1启用，默认1")
+    private Integer status;
 
     /**
      * 项目描述。

@@ -50,13 +50,14 @@ public class TaskDto {
     private String bizId;
 
     /**
-     * 任务状态。
+     * 任务状态，数字编码，由服务端维护。
      *
-     * <p>仅查询时可用作等值过滤条件；新增/修改请求中传入无效，
-     * 状态只能通过流转接口（开始/取消）变更。</p>
+     * <p>0 排队中 / 1 执行中 / 2 成功 / 3 失败 / 4 已取消。仅查询时可用作等值过滤条件；
+     * 新增/修改请求中传入无效，状态只能通过流转方法（markRunning/markSuccess/
+     * markFailed/cancel）变更。</p>
      */
-    @Schema(description = "任务状态：QUEUED/RUNNING/SUCCESS/FAILED/CANCELED，仅查询时有效")
-    private String status;
+    @Schema(description = "任务状态：0排队中，1执行中，2成功，3失败，4已取消，仅查询时有效")
+    private Integer status;
 
     /**
      * 当前执行阶段。

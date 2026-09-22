@@ -1,4 +1,4 @@
-package com.lx.deploy.server.enums;
+package com.lx.deploy.common.enums.server;
 
 import lombok.Getter;
 
@@ -7,6 +7,11 @@ import lombok.Getter;
  *
  * <p>环境标签不是服务器运行状态，也不代替项目环境绑定关系；它只表示服务器的默认归属环境，
  * 用于服务器列表展示和基础筛选。正式发布目标仍应以项目环境目标配置为准。</p>
+ *
+ * <p>对应数据库字段 server.environment_tag。</p>
+ *
+ * @author lx
+ * @since 2026-08-23 21:11:11
  */
 @Getter
 public enum EnvironmentTag {

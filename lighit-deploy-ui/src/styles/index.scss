@@ -621,6 +621,38 @@ div:focus {
   color: var(--text-secondary);
 }
 
+// ==================== 表单字段提示文案 ====================
+// 弹窗表单统一骨架的一部分（AGENTS.md §20.2）：块级显示，换行落在控件下方，不挤占同列控件宽度
+.form-tip {
+  display: block;
+  margin-top: 2px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+// ==================== 表单 label 上的说明图标 ====================
+// 复杂配置字段在 label 后加「?」图标，鼠标悬浮展示完整示例（AGENTS.md §20.2）
+.form-label-tip {
+  margin-left: 4px;
+  color: var(--el-text-color-secondary);
+  vertical-align: -2px;
+  cursor: help;
+}
+
+// ==================== 悬浮提示里的配置示例 ====================
+// tooltip 内容被 teleport 到 body，页面 scoped 样式对它无效，必须定义在全局
+.tooltip-json {
+  margin: 0;
+  max-width: 420px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  // 保留示例中的换行与缩进，超长单行自动折行
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 // ==================== 走马灯 ====================
 .el-carousel__arrow {
   background: var(--card-bg);
@@ -639,6 +671,46 @@ div:focus {
 
 .el-notification__content {
   color: var(--text-regular);
+}
+
+// ==================== 任务执行日志控制台 ====================
+// 任务详情、服务器连通性测试等多处都要展示任务执行日志，样式统一在这里定义，
+// 页面不再各自写一份 scoped 样式，避免同一控制台在不同页面出现不同观感。
+.log-console {
+  // 与统一弹窗的内容区滚动高度保持一致
+  max-height: 60vh;
+  overflow-y: auto;
+  background: #1e1e1e;
+  border-radius: 4px;
+  padding: 12px;
+  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.log-line {
+  color: #d4d4d4;
+  word-break: break-all;
+}
+
+.log-seq {
+  color: #6a9955;
+  margin-right: 8px;
+}
+
+.log-level {
+  margin-right: 8px;
+}
+
+.log-stage {
+  color: #9cdcfe;
+  margin-right: 8px;
+}
+
+.log-time {
+  color: #808080;
+  margin-left: 8px;
+  float: right;
 }
 
 // ==================== 暗色主题全局滚动条 ====================

@@ -58,14 +58,16 @@ public class Task extends BaseEntity {
     private String bizId;
 
     /**
-     * 任务状态，取值见 {@code TaskStatus} 枚举。
+     * 任务状态，数字编码，由服务端状态机维护。
      *
-     * <p>只能通过 TaskService 的 markRunning/markSuccess/markFailed/cancel 流转方法变更，
-     * 新建任务强制从 QUEUED 开始，终态（SUCCESS/FAILED/CANCELED）不允许再流转。</p>
+     * <p>0 排队中 / 1 执行中 / 2 成功 / 3 失败 / 4 已取消，含义见
+     * {@link com.lx.deploy.common.constants.TaskStatus}。只能通过 TaskService 的
+     * markRunning/markSuccess/markFailed/cancel 流转方法变更，新建任务强制从 0 开始，
+     * 终态（2/3/4）不允许再流转。普通更新接口不允许修改本字段。</p>
      */
     @TableField("status")
-    @Schema(description = "任务状态：QUEUED/RUNNING/SUCCESS/FAILED/CANCELED")
-    private String status;
+    @Schema(description = "任务状态：0排队中，1执行中，2成功，3失败，4已取消")
+    private Integer status;
 
     /**
      * 当前执行阶段。

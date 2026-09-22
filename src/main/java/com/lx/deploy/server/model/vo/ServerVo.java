@@ -11,8 +11,8 @@ import java.time.LocalDateTime;
  * <p>Controller 只返回该 VO，不返回 Server 数据库实体。SSH 密码或私钥密文不在本类中声明，
  * 从类型结构上避免凭据字段出现在查询、新增和修改接口的响应中。</p>
  *
- * <p>前端消费方式：authType/envTag/status 分别对应 ServerAuthType/EnvironmentTag/
- * ServerStatus 枚举，页面渲染为标签；credential/ciphertext 永不返回。</p>
+ * <p>前端消费方式：authType/envTag 为字符串枚举，status 为数字编码（0 停用 / 1 启用），
+ * 页面渲染为标签；credential/ciphertext 永不返回。</p>
  *
  * @author lx
  * @since 2026-08-23 19:56:21
@@ -99,11 +99,11 @@ public class ServerVo {
     /**
      * 服务器状态。
      *
-     * <p>取值 0 停用，1 启用，与后端 ServerStatus 枚举一致；
+     * <p>取值 0 停用 / 1 启用，由服务端维护；
      * 前端渲染为状态标签，表示服务器是否允许被平台连接和参与部署。</p>
      */
     @Schema(description = "服务器状态：0停用，1启用")
-    private Byte status;
+    private Integer status;
 
     /**
      * 服务器描述。

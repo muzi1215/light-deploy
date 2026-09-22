@@ -93,14 +93,15 @@ public class Server extends BaseEntity {
     private Byte envTag;
 
     /**
-     * 服务器状态，取值见 {@code ServerStatus} 枚举。
+     * 服务器状态，数字编码。
      *
-     * <p>0 停用，1 启用；只表示服务器是否允许被平台连接和参与部署，
-     * 不能用来表达开发、测试或生产环境。停用服务器不允许绑定新部署目标。</p>
+     * <p>0 停用 / 1 启用，含义见 {@link com.lx.deploy.common.constants.EnableStatus}；
+     * 只表示服务器是否允许被平台连接和参与部署，不能用来表达开发、测试或生产环境。
+     * 停用服务器不允许绑定新部署目标。</p>
      */
     @TableField("status")
     @Schema(description = "服务器状态：0停用，1启用")
-    private Byte status;
+    private Integer status;
 
     /**
      * 服务器描述。

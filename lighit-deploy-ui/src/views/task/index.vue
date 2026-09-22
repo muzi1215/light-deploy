@@ -2,9 +2,9 @@
   <div class="app-container">
     <!-- 搜索区域：文本输入框支持回车触发查询 -->
     <div class="search-div">
-      <el-form :model="searchForm" inline @submit.prevent>
+      <el-form :model="searchForm" inline>
         <el-form-item label="任务编号">
-          <el-input v-model="searchForm.taskNo" placeholder="请输入任务编号" clearable style="width: 200px" @keyup.enter="handleSearch" />
+          <el-input v-model="searchForm.taskNo" placeholder="请输入任务编号" clearable style="width: 180px" @keyup.enter="handleSearch" />
         </el-form-item>
         <el-form-item label="任务类型">
           <el-select v-model="searchForm.taskType" placeholder="请选择" clearable style="width: 160px">
@@ -14,12 +14,12 @@
           </el-select>
         </el-form-item>
         <el-form-item label="状态">
-          <el-select v-model="searchForm.status" placeholder="请选择" clearable style="width: 130px">
-            <el-option label="排队中" value="QUEUED" />
-            <el-option label="执行中" value="RUNNING" />
-            <el-option label="成功" value="SUCCESS" />
-            <el-option label="失败" value="FAILED" />
-            <el-option label="已取消" value="CANCELED" />
+          <el-select v-model="searchForm.status" placeholder="请选择" clearable style="width: 160px">
+            <el-option label="排队中" :value="0" />
+            <el-option label="执行中" :value="1" />
+            <el-option label="成功" :value="2" />
+            <el-option label="失败" :value="3" />
+            <el-option label="已取消" :value="4" />
           </el-select>
         </el-form-item>
         <el-form-item>
@@ -31,35 +31,35 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="taskNo" label="任务编号" min-width="200" show-overflow-tooltip />
-      <el-table-column prop="taskType" label="任务类型" width="140" align="center">
+      <el-table-column prop="taskNo" label="任务编号" min-width="200" show-overflow-tooltip align="center" />
+      <el-table-column prop="taskType" label="任务类型" min-width="140" align="center">
         <template #default="{ row }">
           <el-tag :type="TASK_TYPE_TAG[row.taskType] || 'info'">
             {{ TASK_TYPE_MAP[row.taskType] || row.taskType }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="状态" width="100" align="center">
+      <el-table-column prop="status" label="状态" min-width="130" align="center">
         <template #default="{ row }">
-          <el-tag :type="STATUS_TAG_MAP[row.status] || 'info'">
-            {{ STATUS_LABEL_MAP[row.status] || row.status }}
+          <el-tag :type="getTaskStatusStyle(row.status).tag">
+            {{ getTaskStatusStyle(row.status).label }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="进度" width="150" align="center">
+      <el-table-column label="进度" min-width="150" align="center">
         <template #default="{ row }">
           <el-progress :percentage="row.progress" :status="progressStatus(row)" :stroke-width="8" />
         </template>
       </el-table-column>
-      <el-table-column prop="currentStage" label="当前阶段" min-width="120" show-overflow-tooltip />
-      <el-table-column prop="startedAt" label="开始时间" width="170" align="center" />
-      <el-table-column prop="finishedAt" label="结束时间" width="170" align="center" />
-      <el-table-column prop="errorMessage" label="失败原因" min-width="150" show-overflow-tooltip />
-      <el-table-column label="操作" width="180" fixed="right" align="center">
+      <el-table-column prop="currentStage" label="当前阶段" min-width="120" show-overflow-tooltip align="center" />
+      <el-table-column prop="startedAt" label="开始时间" min-width="170" align="center" />
+      <el-table-column prop="finishedAt" label="结束时间" min-width="170" align="center" />
+      <el-table-column prop="errorMessage" label="失败原因" min-width="150" show-overflow-tooltip align="center" />
+      <el-table-column label="操作" min-width="260" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" :icon="Document" @click="handleShowLogs(row)">执行日志</el-button>
-          <el-button v-if="!isFinal(row.status)" link type="warning" :icon="CircleClose" @click="handleCancel(row)">取消</el-button>
-          <el-button v-if="isFinal(row.status)" link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
+          <el-button v-if="!isTaskFinal(row.status)" link type="warning" :icon="CircleClose" @click="handleCancel(row)">取消</el-button>
+          <el-button v-if="isTaskFinal(row.status)" link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -76,16 +76,16 @@
       @current-change="fetchData"
     />
 
-    <!-- 执行日志对话框：按 sequenceNo 升序展示任务执行过程 -->
+    <!-- 执行日志对话框：按 sequenceNo 升序展示任务执行过程；宽度与页脚按钮沿用统一弹窗规格（AGENTS.md §20.2） -->
     <el-dialog
       v-model="logDialogVisible"
       :title="`执行日志 - ${currentTask?.taskNo || ''}`"
-      width="720px"
+      width="800px"
       :close-on-click-modal="false"
     >
-      <div v-loading="logLoading" class="task-log-body">
+      <div v-loading="logLoading" class="log-console" style="margin-top: 16px">
         <el-empty v-if="!logLoading && logList.length === 0" description="该任务还没有执行日志" />
-        <div v-for="log in logList" :key="log.id" class="task-log-line">
+        <div v-for="log in logList" :key="log.id" class="log-line">
           <span class="log-seq">#{{ log.sequenceNo }}</span>
           <el-tag size="small" :type="LOG_LEVEL_TAG[log.logLevel] || 'info'" class="log-level">
             {{ log.logLevel }}
@@ -96,8 +96,8 @@
         </div>
       </div>
       <template #footer>
-        <el-button @click="logDialogVisible = false">关闭</el-button>
-        <el-button type="primary" :loading="logLoading" @click="fetchLogs">刷新</el-button>
+        <el-button size="small" @click="logDialogVisible = false">关 闭</el-button>
+        <el-button type="primary" size="small" :loading="logLoading" @click="fetchLogs">刷 新</el-button>
       </template>
     </el-dialog>
   </div>
@@ -108,17 +108,19 @@
  * 任务列表页面。
  *
  * 对接后端 /task 与 /taskLog 接口。业务约定：
- * 1. 任务由系统各业务模块创建（连通性测试/构建/发布），状态机为
- *    QUEUED → RUNNING → SUCCESS/FAILED，QUEUED/RUNNING 可被人工取消；
- * 2. 终态任务（SUCCESS/FAILED/CANCELED）才显示删除按钮，非终态显示取消按钮；
+ * 1. 任务由系统各业务模块创建（连通性测试/构建/发布），状态为数字编码：
+ *    0 排队中 → 1 执行中 → 2 成功 / 3 失败，0/1 可被人工取消，4 为已取消；
+ * 2. 终态任务（2 成功 / 3 失败 / 4 已取消）才显示删除按钮，非终态显示取消按钮；
  * 3. 执行日志按 sequenceNo 升序展示，与实际执行顺序一致；
- * 4. 任务执行器尚未落地，当前页面主要用于查询与人工取消。
+ * 4. 任务执行器已落地：任务会被自动领取执行（当前支持 SERVER_TEST），状态与进度由执行器更新；
+ * 5. 状态与日志级别的文案/颜色统一取自 @/constants/taskStatus.ts，不在页面内重复定义。
  */
 import { ref, reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, Document, CircleClose, Delete } from '@element-plus/icons-vue'
 import { pageTask, deleteTask, cancelTask, listTaskLogs } from '@/api/task.ts'
 import type { TaskVo, TaskLogVo } from '@/api/deployTypes.ts'
+import { LOG_LEVEL_TAG, getTaskStatusStyle, isTaskFinal } from '@/constants/taskStatus.ts'
 
 defineOptions({ name: 'TaskList' })
 
@@ -136,34 +138,9 @@ const TASK_TYPE_TAG: Record<string, string> = {
   DEPLOY: 'warning'
 }
 
-/** 任务状态展示映射（对应后端 TaskStatus 枚举） */
-const STATUS_LABEL_MAP: Record<string, string> = {
-  QUEUED: '排队中',
-  RUNNING: '执行中',
-  SUCCESS: '成功',
-  FAILED: '失败',
-  CANCELED: '已取消'
-}
-
-/** 任务状态对应的标签颜色（对应后端 TaskStatus 枚举） */
-const STATUS_TAG_MAP: Record<string, string> = {
-  QUEUED: 'info',
-  RUNNING: 'primary',
-  SUCCESS: 'success',
-  FAILED: 'danger',
-  CANCELED: 'warning'
-}
-
-/** 日志级别对应的标签颜色（对应后端 TaskLogLevel 枚举） */
-const LOG_LEVEL_TAG: Record<string, string> = {
-  DEBUG: 'info',
-  INFO: 'primary',
-  WARN: 'warning',
-  ERROR: 'danger'
-}
 
 // ==================== 搜索 ====================
-const searchForm = reactive({ taskNo: '', taskType: '', status: '' })
+const searchForm = reactive({ taskNo: '', taskType: '', status: undefined as number | undefined })
 
 /** 触发查询：页码重置为第一页后重新加载数据 */
 function handleSearch() {
@@ -175,7 +152,7 @@ function handleSearch() {
 function handleReset() {
   searchForm.taskNo = ''
   searchForm.taskType = ''
-  searchForm.status = ''
+  searchForm.status = undefined
   handleSearch()
 }
 
@@ -193,7 +170,7 @@ async function fetchData() {
       pageSize: pagination.pageSize,
       taskNo: searchForm.taskNo || undefined,
       taskType: searchForm.taskType || undefined,
-      status: searchForm.status || undefined
+      status: searchForm.status
     })
     tableData.value = res.data.records
     pagination.total = Number(res.data.total)
@@ -205,24 +182,14 @@ async function fetchData() {
 fetchData()
 
 /**
- * 判断任务是否为终态（成功/失败/已取消）。
- *
- * @param status 任务状态编码，与后端 TaskStatus 枚举一致
- * @returns 终态返回 true，终态任务只显示删除按钮
- */
-function isFinal(status: string): boolean {
-  return status === 'SUCCESS' || status === 'FAILED' || status === 'CANCELED'
-}
-
-/**
  * 计算进度条展示状态。
  *
  * @param row 当前行任务数据
  * @returns 成功返回 success，失败返回 exception，其余不指定
  */
 function progressStatus(row: TaskVo): string | undefined {
-  if (row.status === 'SUCCESS') return 'success'
-  if (row.status === 'FAILED') return 'exception'
+  if (row.status === 2) return 'success'
+  if (row.status === 3) return 'exception'
   return undefined
 }
 
@@ -283,40 +250,6 @@ async function fetchLogs() {
 </script>
 
 <style lang="scss" scoped>
-// 执行日志展示区：等宽字体 + 终端风格底色，模拟控制台输出
-.task-log-body {
-  max-height: 420px;
-  overflow-y: auto;
-  background: #1e1e1e;
-  border-radius: 4px;
-  padding: 12px;
-  font-family: 'JetBrains Mono', Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.8;
-}
-
-.task-log-line {
-  color: #d4d4d4;
-  word-break: break-all;
-}
-
-.log-seq {
-  color: #6a9955;
-  margin-right: 8px;
-}
-
-.log-level {
-  margin-right: 8px;
-}
-
-.log-stage {
-  color: #9cdcfe;
-  margin-right: 8px;
-}
-
-.log-time {
-  color: #808080;
-  margin-left: 8px;
-  float: right;
-}
+// 执行日志控制台样式统一定义在 styles/index.scss 的「任务执行日志控制台」小节，
+// 任务列表页与服务器连通性测试抽屉共用，页面不重复定义
 </style>

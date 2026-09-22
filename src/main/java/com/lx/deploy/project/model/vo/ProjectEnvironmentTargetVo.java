@@ -98,9 +98,9 @@ public class ProjectEnvironmentTargetVo {
     /**
      * 目标状态。
      *
-     * <p>取值 ENABLED / DISABLED，与后端 EnableStatus 枚举一致。</p>
+     * <p>取值 0 停用 / 1 启用，由服务端维护。</p>
      */
-    @Schema(description = "状态：ENABLED/DISABLED")
-    private String status;
+    @Schema(description = "状态：0停用，1启用")
+    private Integer status;
 
 }

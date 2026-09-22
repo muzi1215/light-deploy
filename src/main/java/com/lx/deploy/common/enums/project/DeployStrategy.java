@@ -1,4 +1,4 @@
-package com.lx.deploy.project.enums;
+package com.lx.deploy.common.enums.project;
 
 import lombok.Getter;
 
@@ -10,14 +10,21 @@ import java.util.Arrays;
  * <p>默认策略为 SINGLE_TARGET，即一个项目在一个环境只绑定一台服务器。
  * 多副本项目可选择 ALL_AT_ONCE 全量发布或 ROLLING 按批次滚动发布，
  * 任一批次失败后停止后续批次。</p>
+ *
+ * <p>对应数据库字段 environment.deploy_strategy。</p>
+ *
+ * @author lx
+ * @since 2026-09-05 19:32:43
  */
 @Getter
 public enum DeployStrategy {
 
     /** 单目标部署，一个环境只部署到一台服务器。 */
     SINGLE_TARGET("SINGLE_TARGET", "单目标部署"),
+
     /** 全量发布，所有目标主机同时更新。 */
     ALL_AT_ONCE("ALL_AT_ONCE", "全量发布"),
+
     /** 滚动发布，按批次大小逐批更新目标主机。 */
     ROLLING("ROLLING", "滚动发布");
 

@@ -11,8 +11,9 @@ import java.time.LocalDateTime;
  * <p>VO 只用于 Controller 出参，由 TaskService 从数据库实体转换而来。
  * 敏感字段不会生成到 VO，避免密码、密文、Token 或私钥被返回给调用方。</p>
  *
- * <p>前端依据 status 渲染状态标签、依据 progress 渲染进度条，
- * 枚举取值与后端 TaskStatus/TaskType 保持一致，变更时需两侧同步。</p>
+ * <p>前端依据 status 渲染状态标签、依据 progress 渲染进度条；
+ * status 为数字编码（含义见 common.constants.TaskStatus），taskType 为字符串枚举，
+ * 变更时需前后端两侧同步。</p>
  *
  * @author lx
  * @since 2026-09-03 02:01:00
@@ -57,11 +58,11 @@ public class TaskVo {
     /**
      * 任务状态。
      *
-     * <p>取值 QUEUED / RUNNING / SUCCESS / FAILED / CANCELED，与后端 TaskStatus 枚举一致；
-     * 终态任务不允许取消，非终态任务可人工取消。</p>
+     * <p>取值 0 排队中 / 1 执行中 / 2 成功 / 3 失败 / 4 已取消，由服务端状态机维护；
+     * 终态任务（2/3/4）不允许取消与修改，非终态任务可人工取消。</p>
      */
-    @Schema(description = "任务状态：QUEUED/RUNNING/SUCCESS/FAILED/CANCELED")
-    private String status;
+    @Schema(description = "任务状态：0排队中，1执行中，2成功，3失败，4已取消")
+    private Integer status;
 
     /**
      * 当前执行阶段。

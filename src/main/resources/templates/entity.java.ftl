@@ -5,12 +5,6 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import com.lx.deploy.common.model.BaseEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
-<#list importEntityFrameworkPackages as pkg>
-import ${pkg};
-</#list>
-<#list importEntityJavaPackages as pkg>
-import ${pkg};
-</#list>
 
 /**
  * ${table.comment!"业务实体"}。

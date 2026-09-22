@@ -1,4 +1,4 @@
-package com.lx.deploy.server.enums;
+package com.lx.deploy.common.enums.server;
 
 import lombok.Getter;
 
@@ -7,6 +7,11 @@ import lombok.Getter;
  *
  * <p>数据库只保存稳定的数字编码，业务代码使用枚举区分密码和私钥认证。
  * 两种认证方式的 AES-GCM 加密内容都保存在 server.ciphertext 字段中。</p>
+ *
+ * <p>对应数据库字段 server.auth_type。</p>
+ *
+ * @author lx
+ * @since 2026-08-23 21:11:11
  */
 @Getter
 public enum ServerAuthType {
