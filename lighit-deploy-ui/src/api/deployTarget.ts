@@ -26,20 +26,20 @@ export function listDeployTargets(params?: ListParams): Promise<ApiResponse<Depl
 
 /** 根据主键查询部署目标详情 */
 export function getDeployTarget(id: string): Promise<ApiResponse<DeployTargetVo>> {
-  return request({ url: `/projectEnvironmentTarget/${id}`, method: 'get' })
+  return request({ url: `/projectEnvironmentTarget/detail/${id}`, method: 'get' })
 }
 
 /** 新增部署目标（同一项目环境同一服务器唯一；主目标互斥由后端保证） */
 export function createDeployTarget(data: DeployTargetDto): Promise<ApiResponse<DeployTargetVo>> {
-  return request({ url: '/projectEnvironmentTarget', method: 'post', data })
+  return request({ url: '/projectEnvironmentTarget/create', method: 'post', data })
 }
 
 /** 修改部署目标 */
 export function updateDeployTarget(id: string, data: DeployTargetDto): Promise<ApiResponse<DeployTargetVo>> {
-  return request({ url: `/projectEnvironmentTarget/${id}`, method: 'put', data })
+  return request({ url: `/projectEnvironmentTarget/update/${id}`, method: 'put', data })
 }
 
 /** 逻辑删除部署目标 */
 export function deleteDeployTarget(id: string): Promise<ApiResponse<void>> {
-  return request({ url: `/projectEnvironmentTarget/${id}`, method: 'delete' })
+  return request({ url: `/projectEnvironmentTarget/delete/${id}`, method: 'delete' })
 }

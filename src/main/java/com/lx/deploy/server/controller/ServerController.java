@@ -81,7 +81,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 对应的业务实体
      */
-    @GetMapping("/{id}")
+    @GetMapping("/detail/{id}")
     public ApiResponse<ServerVo> detail(@PathVariable String id, HttpServletRequest request) {
         // Service 在记录不存在时抛出统一 DATA_NOT_FOUND 业务异常。
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -94,7 +94,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 保存完成且不包含 SSH 密文的响应对象
      */
-    @PostMapping
+    @PostMapping("/create")
     public ApiResponse<ServerVo> create(@Valid @RequestBody ServerDto dto,
                                          HttpServletRequest request) {
         // Service 会清空调用方传入的主键，并由 MyBatis-Plus 生成 UUID。
@@ -109,7 +109,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 修改完成且不包含 SSH 密文的响应对象
      */
-    @PutMapping("/{id}")
+    @PutMapping("/update/{id}")
     public ApiResponse<ServerVo> update(@PathVariable String id,
                                          @Valid @RequestBody ServerDto dto,
                                          HttpServletRequest request) {
@@ -127,7 +127,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 新建的异步任务（状态为 0 排队中）
      */
-    @PostMapping("/{id}/test")
+    @PostMapping("/test/{id}")
     public ApiResponse<TaskVo> test(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.submitConnectivityTest(id), requestId(request));
     }
@@ -139,7 +139,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 不包含业务数据的统一成功响应
      */
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         // Service 使用 MyBatis-Plus removeById，将 is_deleted 更新为1而不是物理删除记录。
         service.delete(id);

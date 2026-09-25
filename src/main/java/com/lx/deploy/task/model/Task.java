@@ -40,17 +40,17 @@ public class Task extends BaseEntity {
     /**
      * 任务类型，取值见 {@code TaskType} 枚举。
      *
-     * <p>SERVER_TEST 连通性测试 / BUILD 构建 / DEPLOY 发布，
+     * <p>SERVER_TEST 服务器连通性测试 / PROJECT_TEST 项目连通性测试 / BUILD 构建 / DEPLOY 发布，
      * 通过 bizId 关联各类型对应的具体业务记录。</p>
      */
     @TableField("task_type")
-    @Schema(description = "任务类型：SERVER_TEST/BUILD/DEPLOY")
+    @Schema(description = "任务类型：SERVER_TEST/PROJECT_TEST/BUILD/DEPLOY")
     private String taskType;
 
     /**
      * 关联业务主键。
      *
-     * <p>按任务类型指向不同业务表：SERVER_TEST 指向服务器 ID，
+     * <p>按任务类型指向不同业务表：SERVER_TEST 指向服务器 ID，PROJECT_TEST 指向项目 ID，
      * BUILD 指向构建记录 ID，DEPLOY 指向部署记录 ID；允许为空。</p>
      */
     @TableField("biz_id")

@@ -72,6 +72,15 @@ logging:
     com.lx.deploy: info
 
 light-deploy:
+  # 访问日志参数（见 AGENTS.md §14.2）。
+  access-log:
+    # 静默路径前缀（不含 server.servlet.context-path 的 /deploy）：
+    # 命中且响应码 < 400 时降为 DEBUG，>= 400 仍记 WARN，保住接口出错与任务不存在这类线索。
+    # 前端日志查看器每 1.5 秒轮询一次 /taskLog/pull，不静默会把 info.log 刷满；
+    # 后续新增轮询接口时加在这里即可，不必改代码。
+    silent-paths:
+      - /taskLog/pull
+
   crypto:
     # AES-256 密钥必须是 Base64 编码后解码为32字节的随机密钥。
     # 只从环境变量注入，禁止将真实密钥写入 application.yaml 或提交到 Git。
@@ -84,8 +93,11 @@ light-deploy:
     connect-timeout-ms: 10000
     # SSH 认证等待时间（毫秒），密码或私钥校验的等待上限。
     auth-timeout-ms: 10000
-    # 单条远程命令的等待时间（秒）；构建类长命令后续可单独放宽。
+    # 单条远程命令的等待时间（秒）；探活、检目录、systemctl 这类秒级命令用它。
     command-timeout-seconds: 120
+    # 耗时类命令（克隆仓库、构建、镜像构建/推送、发布）的等待时间（秒）。
+    # 首次构建要从仓库下载上百 MB 依赖，分钟级属于正常，用 120 秒会把它误判成卡死。
+    long-command-timeout-seconds: 1800
     # 单条命令输出保留的最大字符数，超出部分截断，避免大输出撑爆内存与日志。
     max-output-chars: 20000
 
@@ -97,7 +109,14 @@ light-deploy:
     poll-interval-ms: 1000
     # 单次轮询最多领取的任务数。
     poll-batch-size: 20
+    # 任务日志是否同步打印到服务端控制台与 info.log（带 taskId 与阶段前缀）。
+    # 关闭后任务日志只在平台页面可见；构建类任务输出行多，日志量敏感时可设为 false。
+    log-echo-enabled: true
 
-  # 目标机上的平台部署根目录，连通性测试会检查它是否存在且可写。
-  agent:
-    base-dir: /opt/light-deploy
+  # 构建模块参数（专用构建机方案）。
+  # 注意：构建工作区目录、构建产物持久目录、各机器的部署根目录都已下沉为 server 表的列，
+  # 在服务器页面按机器维护（默认值由数据库列的 DEFAULT 定义），本文件不再提供这些路径配置。
+  build:
+    # 默认构建机服务器 ID：留空则每次构建请求必须显式指定 buildServerId。
+    # 生产环境建议在外部配置或环境变量中设置，不把真实服务器 ID 提交到 Git。
+    server-id: 908f73d91848486bade3d3bf1654dff0

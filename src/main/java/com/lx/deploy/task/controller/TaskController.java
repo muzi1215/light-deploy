@@ -67,7 +67,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
-    @GetMapping("/{id}")
+    @GetMapping("/detail/{id}")
     public ApiResponse<TaskVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
     }
@@ -79,7 +79,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
-    @PostMapping
+    @PostMapping("/create")
     public ApiResponse<TaskVo> create(@Valid @RequestBody TaskDto dto,
                                            HttpServletRequest request) {
         return ApiResponse.success(service.create(dto), requestId(request));
@@ -93,7 +93,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
-    @PutMapping("/{id}")
+    @PutMapping("/update/{id}")
     public ApiResponse<TaskVo> update(@PathVariable String id,
                                            @Valid @RequestBody TaskDto dto,
                                            HttpServletRequest request) {
@@ -107,7 +107,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);
         return ApiResponse.success(requestId(request));
@@ -123,7 +123,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 取消后的最新任务 VO
      */
-    @PutMapping("/{id}/cancel")
+    @PutMapping("/cancel/{id}")
     public ApiResponse<TaskVo> cancel(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.cancel(id), requestId(request));
     }

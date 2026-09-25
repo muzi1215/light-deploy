@@ -25,7 +25,9 @@ target/
 /dist/
 /nbdist/
 /.nb-gradle/
-build/
+# Gradle 根构建目录：必须根锚定，写成 build/ 会把任意层级的 build 目录一并忽略。
+# 曾因此把前端页面目录 lighit-deploy-ui/src/views/build/（构建列表页）整个漏在版本库之外。
+/build/
 !**/src/main/**/build/
 !**/src/test/**/build/
 

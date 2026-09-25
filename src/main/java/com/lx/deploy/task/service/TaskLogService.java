@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.lx.deploy.common.constants.TaskStatus;
 import com.lx.deploy.common.enums.task.TaskLogLevel;
+import com.lx.deploy.common.enums.task.TaskType;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
@@ -14,12 +15,17 @@ import com.lx.deploy.task.mapper.TaskMapper;
 import com.lx.deploy.task.model.Task;
 import com.lx.deploy.task.model.TaskLog;
 import com.lx.deploy.task.model.dto.TaskLogDto;
+import com.lx.deploy.task.model.vo.TaskLogExportVo;
 import com.lx.deploy.task.model.vo.TaskLogPullVo;
 import com.lx.deploy.task.model.vo.TaskLogVo;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,9 +36,14 @@ import java.util.List;
  * 在执行过程中写入，sequence_no 由本服务按任务内递增分配，查询结果按顺序号升序返回，
  * 保证页面展示的执行过程与实际执行顺序一致。</p>
  *
+ * <p>写入数据库的日志会同步输出到应用日志（控制台与 info.log），运维在服务器上
+ * 直接 tail 日志就能看到与页面一致的执行过程，不必登录平台页面；同步输出可通过
+ * light-deploy.task.log-echo-enabled 关闭。</p>
+ *
  * @author lx
  * @since 2026-09-03 02:01:01
  */
+@Slf4j
 @Service
 public class TaskLogService extends ServiceImpl<TaskLogMapper, TaskLog> {
 
@@ -42,16 +53,38 @@ public class TaskLogService extends ServiceImpl<TaskLogMapper, TaskLog> {
     /** 增量拉取单次最大条数：限制单次响应体大小，超出的部分留给下一次拉取。 */
     private static final int MAX_PULL_LIMIT = 500;
 
+    /** 导出日志的时间格式：含日期，构建类任务可能跨天，只给时分秒无法定位。 */
+    private static final DateTimeFormatter EXPORT_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    /** 导出正文的换行符固定为 LF：导出件会被贴进工单、邮件与差异对比工具，LF 兼容性最好。 */
+    private static final String EXPORT_LINE_SEPARATOR = "\n";
+
+    /** 导出正文中任务头部摘要与日志区之间的分隔行。 */
+    private static final String EXPORT_SEPARATOR =
+            "--------------------------------------------------------------------------------";
+
     /** 任务 Mapper，用于写入日志前校验任务存在，避免日志悬空。 */
     private final TaskMapper taskMapper;
 
     /**
+     * 任务日志是否同步输出到应用日志。
+     *
+     * <p>开启后每条任务日志都会按级别打印到控制台与 info.log，便于脱离页面排障；
+     * 构建类任务输出行较多，日志量敏感时可关闭本开关，页面日志不受影响。</p>
+     */
+    private final boolean echoEnabled;
+
+    /**
      * 注入任务 Mapper。
      *
-     * @param taskMapper 任务 Mapper
+     * @param taskMapper  任务 Mapper
+     * @param echoEnabled 任务日志是否同步输出到应用日志，默认开启
      */
-    public TaskLogService(TaskMapper taskMapper) {
+    public TaskLogService(TaskMapper taskMapper,
+                          @Value("${light-deploy.task.log-echo-enabled:true}") boolean echoEnabled) {
         this.taskMapper = taskMapper;
+        this.echoEnabled = echoEnabled;
     }
 
     /**
@@ -108,7 +141,7 @@ public class TaskLogService extends ServiceImpl<TaskLogMapper, TaskLog> {
         }
         // 日志级别可选，传入时必须是受支持的枚举值。
         if (dto.getLogLevel() != null && TaskLogLevel.fromCode(dto.getLogLevel()) == null) {
-            throw new DeployException(ResponseCode.VALIDATION_ERROR, "日志级别必须为 DEBUG、INFO、WARN 或 ERROR");
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "日志级别必须为 INFO 或 ERROR");
         }
         // 任务 ID 必填且任务必须真实存在，避免日志指向不存在的任务。
         if (!StringUtils.hasText(dto.getTaskId()) || taskMapper.selectById(dto.getTaskId()) == null) {
@@ -125,6 +158,8 @@ public class TaskLogService extends ServiceImpl<TaskLogMapper, TaskLog> {
         if (!save(entity)) {
             throw new DeployException(ResponseCode.BUSINESS_ERROR, "新增任务执行日志失败");
         }
+        // 同步打印到应用日志，服务端控制台与页面看到的执行过程保持一致。
+        echoToConsole(entity);
         return toVo(entity);
     }
 
@@ -226,6 +261,164 @@ public class TaskLogService extends ServiceImpl<TaskLogMapper, TaskLog> {
         vo.setLogs(logs);
         vo.setLastSeq(nextSequence);
         return vo;
+    }
+
+    /**
+     * 把指定任务的全部执行日志导出为纯文本。
+     *
+     * <p>导出件是「任务头部摘要 + 全部日志行」：头部给出任务编号、类型、状态、关联业务主键、
+     * 起止时间与失败原因，日志行按顺序号升序排列。任务列表的失败原因只有一行、页面日志区也
+     * 可能被滚动淹没，导出件必须自带完整上下文，运维把它贴进工单或与同事协查时不需要再回平台截图。</p>
+     *
+     * <p>不做条数上限：导出的意义就是拿全量。单条日志的长度在写入侧已由处理器限制，
+     * 不会出现一条日志撑爆整个文件的情况。</p>
+     *
+     * <p>换行统一用 LF，正文始终以换行结尾：方便直接 diff 两次构建的日志差异，
+     * 也避免部分 Windows 编辑器把末尾一行吞掉。</p>
+     *
+     * @param taskId 任务主键，必填
+     * @return 建议的下载文件名与导出正文
+     * @throws DeployException 任务主键为空或任务不存在时抛出
+     */
+    public TaskLogExportVo exportText(String taskId) {
+        // 任务主键必填：日志必须挂在具体任务下才有导出意义。
+        if (!StringUtils.hasText(taskId)) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "任务ID不能为空");
+        }
+        // 任务必须存在：头部摘要与文件名都要用到任务编号与状态。
+        Task task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new DeployException(ResponseCode.DATA_NOT_FOUND, "所属任务不存在");
+        }
+        // 顺序号升序取全量：导出件要能顺序阅读，也要便于按行对比两次执行的差异。
+        List<TaskLog> records = list(new LambdaQueryWrapper<TaskLog>()
+                .eq(TaskLog::getTaskId, taskId)
+                .orderByAsc(TaskLog::getSequenceNo));
+
+        StringBuilder text = new StringBuilder();
+        appendExportHeader(text, task);
+        if (records.isEmpty()) {
+            // 排队中或刚创建的任务可能还没有日志，明确写出来，避免打开文件后误以为导出失败。
+            text.append("（该任务还没有执行日志）").append(EXPORT_LINE_SEPARATOR);
+        } else {
+            for (TaskLog record : records) {
+                text.append(formatExportLine(record)).append(EXPORT_LINE_SEPARATOR);
+            }
+        }
+        // 结尾补导出时间与条数：导出件可能被转发多次，需要能判断它是哪个时间点的快照。
+        text.append(EXPORT_SEPARATOR).append(EXPORT_LINE_SEPARATOR)
+                .append("共 ").append(records.size()).append(" 条日志，导出时间：")
+                .append(LocalDateTime.now().format(EXPORT_TIME_FORMAT)).append(EXPORT_LINE_SEPARATOR);
+
+        return new TaskLogExportVo(buildExportFileName(task), text.toString());
+    }
+
+    /**
+     * 追加导出正文的任务头部摘要。
+     *
+     * <p>任务类型与状态都按中文描述输出，而不是数据库编码：导出件的读者是运维，
+     * 不应该要求他去查 `DEPLOY` 与 `3` 分别代表什么。</p>
+     *
+     * @param text 导出正文缓冲
+     * @param task 任务实体
+     */
+    private void appendExportHeader(StringBuilder text, Task task) {
+        TaskType type = TaskType.fromCode(task.getTaskType());
+        text.append("任务编号：").append(orDash(task.getTaskNo())).append(EXPORT_LINE_SEPARATOR);
+        text.append("任务类型：")
+                .append(type == null ? orDash(task.getTaskType()) : type.getMessage())
+                .append(EXPORT_LINE_SEPARATOR);
+        text.append("任务状态：").append(TaskStatus.describe(task.getStatus())).append(EXPORT_LINE_SEPARATOR);
+        text.append("关联业务主键：").append(orDash(task.getBizId())).append(EXPORT_LINE_SEPARATOR);
+        text.append("当前阶段：").append(orDash(task.getCurrentStage())).append(EXPORT_LINE_SEPARATOR);
+        text.append("执行进度：")
+                .append(task.getProgress() == null ? "-" : task.getProgress() + "%")
+                .append(EXPORT_LINE_SEPARATOR);
+        text.append("开始时间：").append(formatExportTime(task.getStartedAt())).append(EXPORT_LINE_SEPARATOR);
+        text.append("结束时间：").append(formatExportTime(task.getFinishedAt())).append(EXPORT_LINE_SEPARATOR);
+        // 失败原因只在失败任务上出现，未失败时整行省略，避免导出件里堆一串「失败原因：-」。
+        if (StringUtils.hasText(task.getErrorMessage())) {
+            text.append("失败原因：").append(task.getErrorMessage()).append(EXPORT_LINE_SEPARATOR);
+        }
+        text.append(EXPORT_SEPARATOR).append(EXPORT_LINE_SEPARATOR);
+    }
+
+    /**
+     * 把一条日志格式化为导出正文中的一行。
+     *
+     * <p>列顺序与页面控制台一致（顺序号 / 时间 / 级别 / 阶段 / 内容），顺序号左对齐补空格，
+     * 便于在编辑器里竖排扫读，也便于用 grep 按级别过滤。</p>
+     *
+     * @param record 日志实体
+     * @return 不含换行的单行文本
+     */
+    private String formatExportLine(TaskLog record) {
+        String seq = record.getSequenceNo() == null ? "-" : String.valueOf(record.getSequenceNo());
+        String stage = StringUtils.hasText(record.getStage()) ? "[" + record.getStage() + "] " : "";
+        return String.format("#%-4s %s  %-5s  %s%s",
+                seq, formatExportTime(record.getCreateTime()), orDash(record.getLogLevel()),
+                stage, record.getContent());
+    }
+
+    /**
+     * 生成下载文件名。
+     *
+     * <p>优先用任务编号（形如 TASK-20260925155150-985a7990），运维在下载目录里一眼能对上
+     * 平台上的哪条任务；任务编号缺失属于异常数据，回落到任务主键，保证文件名始终可生成。</p>
+     *
+     * @param task 任务实体
+     * @return 形如 {@code TASK-20260925155150-985a7990-执行日志.txt}
+     */
+    private String buildExportFileName(Task task) {
+        return (StringUtils.hasText(task.getTaskNo()) ? task.getTaskNo() : task.getId()) + "-执行日志.txt";
+    }
+
+    /**
+     * 格式化导出正文中的时间。
+     *
+     * @param time 时间，允许为空（任务尚未开始或尚未结束）
+     * @return 形如 2026-09-25 15:51:51 的文本；为空时返回短横线
+     */
+    private String formatExportTime(LocalDateTime time) {
+        return time == null ? "-" : time.format(EXPORT_TIME_FORMAT);
+    }
+
+    /**
+     * 把空值统一替换为短横线，避免导出件里出现「任务编号：」这种读不出信息的空行。
+     *
+     * @param value 原始值
+     * @return 原值；为空时返回 {@code -}
+     */
+    private String orDash(String value) {
+        return StringUtils.hasText(value) ? value : "-";
+    }
+
+    /**
+     * 把已落库的任务日志按级别同步输出到应用日志。
+     *
+     * <p>输出行固定带上任务 ID 与阶段，运维在服务端日志里按任务 ID 检索即可还原整条执行过程；
+     * 级别沿用任务日志自身级别，ERROR 会同时进入 error.log，便于告警采集。</p>
+     *
+     * <p>级别只有 INFO 与 ERROR 两级：ERROR 同时进入 error.log，便于告警采集；
+     * 服务端日志里只需检索 ERROR 就能定位失败任务，不必在控制台分辨多种级别。</p>
+     *
+     * @param entity 已保存的任务日志实体
+     */
+    private void echoToConsole(TaskLog entity) {
+        if (!echoEnabled) {
+            return;
+        }
+        TaskLogLevel level = TaskLogLevel.fromCode(entity.getLogLevel());
+        if (level == null) {
+            level = TaskLogLevel.INFO;
+        }
+        String stage = StringUtils.hasText(entity.getStage()) ? entity.getStage() : "-";
+        String message = "[task=" + entity.getTaskId() + "][" + stage + "] " + entity.getContent();
+        if (level == TaskLogLevel.ERROR) {
+            log.error(message);
+        } else {
+            log.info(message);
+        }
     }
 
     /**

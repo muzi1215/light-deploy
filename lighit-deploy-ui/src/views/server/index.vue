@@ -172,7 +172,108 @@
             </el-col>
           </el-row>
 
-          <!-- 第六行：描述（文本域，固定放表单最底部） -->
+          <!-- 第六行：部署根目录（决定应用最终跑在这台机器的哪个目录下） -->
+          <el-row :gutter="20">
+            <el-col :span="24">
+              <el-form-item prop="agentBaseDir">
+                <template #label>
+                  <span>部署根目录
+                    <el-tooltip placement="top" :show-after="120">
+                      <template #content>
+                        <div style="max-width: 400px; line-height: 1.7">
+                          <div><b>作用</b>：平台在这台机器上的根目录。项目最终跑在哪，主要由它决定。</div>
+                          <div style="margin-top: 4px">· JAR：应用部署并运行在 <code>{该目录}/apps/{项目编码}/{版本号}/</code>，由 systemd 从该目录启动。</div>
+                          <div>· STATIC：产物解压到 <code>{该目录}/apps/{项目编码}/{版本号}/</code>，Nginx 根目录指向它（可在项目里用 static_root 覆盖）。</div>
+                          <div>· DOCKER：容器由 Docker 管理，不使用该目录，但目录仍需存在且可写。</div>
+                          <div style="margin-top: 4px; color: #E6A23C">连通性测试只检查它是否存在且可写，<b>不会自动创建</b>；不存在时测试结果会给 WARN，需在机器上手工创建并授权。</div>
+                        </div>
+                      </template>
+                      <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </span>
+                </template>
+                <el-input v-model="formData.agentBaseDir" placeholder="平台在该机器上的根目录，应用部署在其 apps 子目录下" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <!-- 第七行：构建机专用目录（纯部署目标机保持默认即可，不影响部署） -->
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item prop="buildWorkspaceDir">
+                <template #label>
+                  <span>构建工作区
+                    <el-tooltip placement="top" :show-after="120">
+                      <template #content>
+                        <div style="max-width: 400px; line-height: 1.7">
+                          <div><b>作用</b>：构建临时目录，<b>仅在这台机器被当作构建机时生效</b>；纯部署目标机填什么都不影响。</div>
+                          <div style="margin-top: 4px">· 每次构建在其下建 <code>{该目录}/{项目编码}_{构建ID}/</code>，拉代码、执行构建命令。</div>
+                          <div>· 构建结束（成功或失败）<b>自动删除</b>，不要在这里放任何需要保留的东西。</div>
+                          <div>· 要求登录用户可读写，空间按单次构建体积预留。</div>
+                        </div>
+                      </template>
+                      <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </span>
+                </template>
+                <el-input v-model="formData.buildWorkspaceDir" placeholder="仅构建机使用：构建临时目录，结束后清理" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item prop="buildArtifactDir">
+                <template #label>
+                  <span>产物持久目录
+                    <el-tooltip placement="top" :show-after="120">
+                      <template #content>
+                        <div style="max-width: 400px; line-height: 1.7">
+                          <div><b>作用</b>：存放构建产物，<b>仅构建机使用</b>；发布时平台从这里把产物拉到目标机。</div>
+                          <div style="margin-top: 4px">· JAR / STATIC 构建成功后转存到 <code>{该目录}/{项目编码}/{版本号}/</code>。</div>
+                          <div>· DOCKER 不使用：产物是镜像，直接推到镜像仓库。</div>
+                          <div style="margin-top: 4px; color: #E6A23C"><b>必须落在构建工作区之外</b>，否则会被构建收尾的清理删除，发布时下载到不存在的路径。</div>
+                          <div style="margin-top: 4px">改这个值不影响历史版本：产物绝对路径在构建时已快照，老版本仍从原路径发布与回滚。</div>
+                        </div>
+                      </template>
+                      <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </span>
+                </template>
+                <el-input v-model="formData.buildArtifactDir" placeholder="仅构建机使用：须在工作区之外，否则会被清理" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <!-- 第八行：构建环境初始化脚本（构建机专用，单行命令，整行宽度） -->
+          <el-row :gutter="20">
+            <el-col :span="24">
+              <el-form-item prop="buildEnvScript">
+                <template #label>
+                  <span>构建环境初始化脚本
+                    <el-tooltip placement="top" :show-after="120">
+                      <template #content>
+                        <div style="max-width: 430px; line-height: 1.7">
+                          <div><b>作用</b>：执行构建命令前，在当前 shell 里先执行这段命令，<b>仅在这台机器被当作构建机时生效</b>。</div>
+                          <div style="margin-top: 6px"><b>为什么需要</b>：平台通过 SSH 执行构建，走的是<b>非交互式 shell</b>，不加载 /etc/profile、~/.bashrc，PATH 里往往没有「已安装但靠 profile 导出路径」的工具，最典型的是 mvn —— 报错只有 <code>bash: mvn: command not found</code>，很难定位。</div>
+                          <div style="margin-top: 6px"><b>平台已有的兜底</b>：每条构建命令前会自动执行一次 <code>. /etc/profile</code>（输出丢弃，不污染构建日志）。本字段用于补 profile 里也没有的路径。</div>
+                          <div style="margin-top: 6px"><b>常见写法</b>（单行，多个用 <code>;</code> 分隔）：</div>
+                          <div><code>export PATH=/opt/apache-maven-3.8.8/bin:$PATH</code></div>
+                          <div><code>export JAVA_HOME=/usr/lib/jdk1.8.0_121; export PATH=$JAVA_HOME/bin:$PATH</code></div>
+                          <div style="margin-top: 6px">留空即只走平台兜底。改这个值只影响之后发起的构建，不影响历史版本。</div>
+                        </div>
+                      </template>
+                      <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                    </el-tooltip>
+                  </span>
+                </template>
+                <el-input
+                  v-model="formData.buildEnvScript"
+                  placeholder="仅构建机使用，如 export PATH=/opt/apache-maven-3.8.8/bin:$PATH（选填，单行）"
+                  style="width: 100%"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <!-- 第九行：描述（文本域，固定放表单最底部） -->
           <el-row :gutter="20">
             <el-col :span="24">
               <el-form-item label="描述" prop="description">
@@ -190,31 +291,32 @@
 
     <!-- 连通性测试抽屉：上方任务状态与进度，下方实时日志控制台 -->
     <!-- 日志使用增量拉取（/taskLog/pull + lastSeq 锚点），不做分页轮询，避免日志重复与错乱 -->
+    <!-- 关闭不拦截：只停前端轮询，后端探活任务照跑，重新打开会重新拉全量日志 -->
     <el-drawer
       v-model="testDrawerVisible"
       :title="`连通性测试 - ${testServer?.serverName || ''}`"
       size="800px"
       :close-on-click-modal="false"
-      @closed="handleTestDrawerClosed"
+      @closed="stop"
     >
       <!-- 任务状态区：状态标签、任务编号、当前阶段，与日志区留出间隔 -->
       <div class="test-summary">
-        <el-tag :type="getTaskStatusStyle(testTask?.status).tag">
-          {{ getTaskStatusStyle(testTask?.status).label }}
+        <el-tag :type="getTaskStatusStyle(task?.status).tag">
+          {{ getTaskStatusStyle(task?.status).label }}
         </el-tag>
-        <span class="test-meta">任务编号：{{ testTask?.taskNo || '-' }}</span>
-        <span v-if="testTask?.currentStage" class="test-meta">当前阶段：{{ testTask.currentStage }}</span>
+        <span class="test-meta">任务编号：{{ task?.taskNo || '-' }}</span>
+        <span v-if="task?.currentStage" class="test-meta">当前阶段：{{ task.currentStage }}</span>
       </div>
       <el-progress
-        :percentage="testTask?.progress ?? 0"
-        :status="testProgressStatus"
+        :percentage="task?.progress ?? 0"
+        :status="progressStatus"
         :stroke-width="8"
         style="margin-bottom: 16px"
       />
       <!-- 失败原因单独提示：失败任务只在日志区显示容易被忽略 -->
       <el-alert
-        v-if="testTask?.errorMessage"
-        :title="testTask.errorMessage"
+        v-if="task?.errorMessage"
+        :title="task.errorMessage"
         type="error"
         :closable="false"
         show-icon
@@ -222,9 +324,9 @@
       />
 
       <!-- 实时日志控制台：等宽字体 + 终端底色，自动滚动到最新一行 -->
-      <div ref="testLogBodyRef" class="log-console">
-        <el-empty v-if="testLogs.length === 0" description="正在等待执行日志…" :image-size="60" />
-        <div v-for="log in testLogs" :key="log.id" class="log-line">
+      <div ref="bodyRef" class="log-console">
+        <el-empty v-if="logs.length === 0" description="正在等待执行日志…" :image-size="60" />
+        <div v-for="log in logs" :key="log.id" class="log-line">
           <span class="log-seq">#{{ log.sequenceNo }}</span>
           <el-tag size="small" :type="LOG_LEVEL_TAG[log.logLevel] || 'info'" class="log-level">
             {{ log.logLevel }}
@@ -236,12 +338,14 @@
       </div>
 
       <template #footer>
-        <el-button size="small" @click="testDrawerVisible = false">关 闭</el-button>
+        <el-text v-if="running" size="small" type="info" style="margin-right: 12px">任务执行中，关闭窗口不影响执行</el-text>
+        <el-button size="small" :icon="Download" :loading="downloading" @click="download">下载日志</el-button>
+        <el-button size="small" @click="closeLog">关 闭</el-button>
         <el-button
           size="small"
           type="primary"
           :icon="Refresh"
-          :disabled="!isTaskFinal(testTask?.status)"
+          :disabled="!isTaskFinal(task?.status)"
           :loading="testSubmitting"
           @click="retryConnectivityTest"
         >
@@ -266,23 +370,18 @@
  * 5. 日志拉取使用「顺序号锚点 + 增量返回」而不是分页轮询：每次只取 sequenceNo 大于 lastSeq 的
  *    增量，因此不会出现日志重复、乱序或漏读，也不需要在前端做去重（AGENTS.md §20.3）。
  */
-import { ref, reactive, computed, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, Plus, Edit, Delete, Connection } from '@element-plus/icons-vue'
+import { Search, Refresh, Plus, Edit, Delete, Connection, QuestionFilled, Download } from '@element-plus/icons-vue'
 import { pageServer, createServer, updateServer, deleteServer, testServerConnectivity } from '@/api/server.ts'
-import { pullTaskLog } from '@/api/task.ts'
-import type { ServerVo, ServerDto, TaskVo, TaskLogVo } from '@/api/deployTypes.ts'
+import type { ServerVo, ServerDto } from '@/api/deployTypes.ts'
 // 环境标签的文案与颜色统一来自常量模块，页面不再自行定义（约定见 AGENTS.md §20.7）
 import { getEnvTagStyle } from '@/constants/tagStyle.ts'
 // 任务状态与日志级别的文案、颜色同样集中在常量模块，避免与任务列表页出现两套口径
 import { LOG_LEVEL_TAG, getTaskStatusStyle, isTaskFinal } from '@/constants/taskStatus.ts'
-
-/** 连通性测试日志每页拉取条数，与后端 /taskLog/pull 的 limit 对应 */
-const TEST_LOG_PAGE_SIZE = 200
-
-/** 连通性测试日志轮询间隔（毫秒）：1.5 秒是「看起来实时」与数据库压力的折中 */
-const TEST_LOG_POLL_INTERVAL = 1500
+// 日志查看器与日志时间格式化：5 处日志视图共用同一份实现
+import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.ts'
 
 defineOptions({ name: 'ServerList' })
 
@@ -334,6 +433,16 @@ const submitLoading = ref(false)
 const isEdit = ref(false)
 const formRef = ref<FormInstance>()
 
+/**
+ * 三个目录的默认值，与 server 表对应列的 DEFAULT 保持一致。
+ *
+ * 目录路径由页面按机器维护、数据库列提供默认值，代码里不保留第二套兜底：
+ * 这里的值只用于新增表单的预填，真正生效的永远是提交后存进数据库的值。
+ */
+const DEFAULT_AGENT_BASE_DIR = '/opt/light-deploy'
+const DEFAULT_BUILD_WORKSPACE_DIR = '/opt/light-deploy/build-workspace'
+const DEFAULT_BUILD_ARTIFACT_DIR = '/opt/light-deploy/artifacts'
+
 const formData = reactive<ServerDto & { credential: string }>({
   serverName: '',
   host: '',
@@ -343,7 +452,12 @@ const formData = reactive<ServerDto & { credential: string }>({
   credential: '',
   envTag: 1,
   status: 1,
-  description: ''
+  description: '',
+  agentBaseDir: DEFAULT_AGENT_BASE_DIR,
+  buildWorkspaceDir: DEFAULT_BUILD_WORKSPACE_DIR,
+  buildArtifactDir: DEFAULT_BUILD_ARTIFACT_DIR,
+  // 构建环境初始化脚本：无默认值，留空即只用平台的 . /etc/profile 兜底
+  buildEnvScript: ''
 })
 
 const formRules: FormRules = {
@@ -387,6 +501,12 @@ function handleEdit(row: ServerVo) {
   formData.envTag = row.envTag
   formData.status = row.status
   formData.description = row.description || ''
+  // 目录按机器回填实际值；历史数据可能为空，此时回落到默认常量，保证表单不出现空路径。
+  formData.agentBaseDir = row.agentBaseDir || DEFAULT_AGENT_BASE_DIR
+  formData.buildWorkspaceDir = row.buildWorkspaceDir || DEFAULT_BUILD_WORKSPACE_DIR
+  formData.buildArtifactDir = row.buildArtifactDir || DEFAULT_BUILD_ARTIFACT_DIR
+  // 环境脚本无默认值：库里是 null 时表单显示空串
+  formData.buildEnvScript = row.buildEnvScript || ''
   formData.credential = ''
   dialogVisible.value = true
 }
@@ -402,6 +522,10 @@ function resetForm() {
   formData.envTag = 1
   formData.status = 1
   formData.description = ''
+  formData.agentBaseDir = DEFAULT_AGENT_BASE_DIR
+  formData.buildWorkspaceDir = DEFAULT_BUILD_WORKSPACE_DIR
+  formData.buildArtifactDir = DEFAULT_BUILD_ARTIFACT_DIR
+  formData.buildEnvScript = ''
   formData.credential = ''
   editId.value = ''
   formRef.value?.resetFields()
@@ -450,25 +574,10 @@ const testDrawerVisible = ref(false)
 const testSubmitting = ref(false)
 /** 当前测试对应的服务器行，用于抽屉标题与「重新测试」 */
 const testServer = ref<ServerVo | null>(null)
-/** 当前测试任务，状态、进度、失败原因都取自它 */
-const testTask = ref<TaskVo | null>(null)
-/** 已拉取到的日志，按顺序号追加，不做排序与去重（后端保证增量且有序） */
-const testLogs = ref<TaskLogVo[]>([])
-/** 增量锚点：已拉取到的最大日志顺序号 */
-const testLastSeq = ref(0)
-/** 日志控制台容器，用于自动滚动到底部 */
-const testLogBodyRef = ref<HTMLElement | null>(null)
-/** 轮询定时器；抽屉关闭或任务结束必须清理，否则会一直请求后端 */
-let testPollTimer: ReturnType<typeof setInterval> | null = null
-/** 请求中的标记：上一轮还没返回时不重复发起，避免慢响应时请求堆积 */
-let testPolling = false
 
-/** 进度条状态：成功绿色、失败红色，其余保持主题色 */
-const testProgressStatus = computed(() => {
-  if (testTask.value?.status === 2) return 'success'
-  if (testTask.value?.status === 3) return 'exception'
-  return undefined
-})
+/** 日志查看器：轮询、增量锚点、自动滚动、下载与运行中禁止关闭统一由它负责 */
+const { bodyRef, logs, task, running, downloading, progressStatus, start, stop, download } =
+  useTaskLogViewer()
 
 /**
  * 发起连通性测试并打开日志抽屉。
@@ -476,26 +585,20 @@ const testProgressStatus = computed(() => {
  * @param row 目标服务器行数据，必须处于启用状态（停用服务器后端会拒绝）
  */
 async function handleConnectivityTest(row: ServerVo) {
-  // 每次测试都重置上一次的日志与状态，避免两次测试的日志混在同一个控制台里
   testServer.value = row
-  testTask.value = null
-  testLogs.value = []
-  testLastSeq.value = 0
   testSubmitting.value = true
   try {
     const res = await testServerConnectivity(row.id)
-    testTask.value = res.data
     testDrawerVisible.value = true
-    // 立即拉一次日志，让用户不用等第一个轮询周期
-    await pullLogs()
-    startPolling()
+    // 任务由本次请求刚创建，返回值本身就是任务对象，状态与进度可直接作初值。
+    start({ taskId: res.data.id, taskNo: res.data.taskNo, status: res.data.status, progress: res.data.progress })
   } finally {
     testSubmitting.value = false
   }
 }
 
 /**
- * 重新测试：关闭抽屉后以同一台服务器再发起一次。
+ * 重新测试：以同一台服务器再发起一次，抽屉里的日志由查看器重置。
  *
  * 仅在任务已结束时可用，避免与正在执行的任务重复提交（后端也会返回数据冲突）。
  */
@@ -504,92 +607,10 @@ async function retryConnectivityTest() {
   await handleConnectivityTest(testServer.value)
 }
 
-/** 启动日志轮询；已在轮询时不重复启动，任务已结束时不启动 */
-function startPolling() {
-  stopPolling()
-  // 首次拉取时任务可能就已经结束（例如秒级失败），此时不应再启动轮询
-  if (isTaskFinal(testTask.value?.status)) return
-  testPollTimer = setInterval(pullLogs, TEST_LOG_POLL_INTERVAL)
+/** 关闭日志抽屉；@closed 会触发 stop 停掉轮询，后端探活任务不受影响 */
+function closeLog() {
+  testDrawerVisible.value = false
 }
-
-/** 停止日志轮询并清理定时器 */
-function stopPolling() {
-  if (testPollTimer !== null) {
-    clearInterval(testPollTimer)
-    testPollTimer = null
-  }
-}
-
-/**
- * 增量拉取一次执行日志。
- *
- * 用上次响应的 lastSeq 作为锚点，只取新增日志并按顺序追加；任务进入终态后停止轮询。
- * 停止条件写成「已结束 且 本批日志不足一页」：本批正好满一页说明可能还有剩余日志，
- * 需要再拉一次把尾巴取完，否则最后一屏日志会丢。
- */
-async function pullLogs() {
-  if (!testTask.value || testPolling) return
-  testPolling = true
-  try {
-    const res = await pullTaskLog(testTask.value.id, testLastSeq.value, TEST_LOG_PAGE_SIZE)
-    const data = res.data
-    // 状态与进度以本次响应为准，保证状态与日志来自同一时刻的快照
-    if (testTask.value) {
-      testTask.value.status = data.status
-      testTask.value.progress = data.progress
-      testTask.value.currentStage = data.currentStage
-      testTask.value.errorMessage = data.errorMessage
-    }
-    if (data.logs.length > 0) {
-      testLogs.value.push(...data.logs)
-      testLastSeq.value = data.lastSeq
-      await scrollLogToBottom()
-    }
-    if (data.finished && data.logs.length < TEST_LOG_PAGE_SIZE) {
-      stopPolling()
-    }
-  } catch {
-    // 网络或后端异常时停止轮询，避免持续刷错误提示；用户可重新点「重新测试」
-    stopPolling()
-  } finally {
-    testPolling = false
-  }
-}
-
-/** 日志追加后滚动到最新一行，等待 DOM 更新完成再设置滚动位置 */
-async function scrollLogToBottom() {
-  await nextTick()
-  const body = testLogBodyRef.value
-  if (body) {
-    body.scrollTop = body.scrollHeight
-  }
-}
-
-/**
- * 抽屉关闭后的清理。
- *
- * 必须停止轮询：抽屉已不可见，继续请求只会浪费后端与数据库资源。
- */
-function handleTestDrawerClosed() {
-  stopPolling()
-}
-
-/**
- * 裁剪日志时间，控制台只显示到秒。
- *
- * @param createTime 后端返回的日志创建时间，形如 2026-09-23T01:44:56.608429
- * @returns 形如 01:44:56 的时间片段；格式不符合预期时原样返回
- */
-function formatLogTime(createTime?: string): string {
-  if (!createTime) return ''
-  const timePart = createTime.split('T')[1]
-  return timePart ? timePart.slice(0, 8) : createTime
-}
-
-// 组件卸载时兜底清理，避免页面切换后定时器继续运行
-onUnmounted(() => {
-  stopPolling()
-})
 </script>
 
 <style lang="scss" scoped>
@@ -602,6 +623,15 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+// 目录配置项标签后的问号图标：提示有悬浮说明，鼠标移上去看含义与作用
+.tip-icon {
+  margin-left: 4px;
+  font-size: 14px;
+  color: #909399;
+  cursor: help;
+  vertical-align: -2px;
 }
 
 .test-meta {

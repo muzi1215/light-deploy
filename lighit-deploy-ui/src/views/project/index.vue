@@ -60,6 +60,13 @@
         </template>
       </el-table-column>
       <el-table-column prop="gitBranch" label="Git分支" min-width="120" show-overflow-tooltip align="center" />
+      <el-table-column prop="buildServerName" label="构建机" min-width="140" show-overflow-tooltip align="center">
+        <template #default="{ row }">
+          <span v-if="row.buildServerName">{{ row.buildServerName }}</span>
+          <!-- 未绑定时明确写出会走系统默认构建机，避免误以为配置缺失 -->
+          <el-text v-else type="info" size="small">默认构建机</el-text>
+        </template>
+      </el-table-column>
       <el-table-column prop="retainReleaseCount" label="保留版本" min-width="90" align="center" />
       <el-table-column prop="status" label="状态" min-width="130" align="center">
         <template #default="{ row }">
@@ -70,9 +77,12 @@
       </el-table-column>
       <el-table-column prop="createTime" label="创建时间" min-width="200" align="center" />
       <el-table-column prop="description" label="描述" min-width="150" align="center" show-overflow-tooltip />
-      <el-table-column label="操作" min-width="260" fixed="right" align="center">
+      <el-table-column label="操作" min-width="380" fixed="right" align="center">
         <template #default="{ row }">
+          <el-button link type="info" :icon="View" @click="handleDetail(row)">详情</el-button>
           <el-button link type="primary" :icon="Edit" @click="handleEdit(row)">编辑</el-button>
+          <el-button link type="success" :icon="Connection" @click="handleConnectivityTest(row)">连通性测试</el-button>
+          <el-button link type="warning" :icon="VideoPlay" @click="handleBuild(row)">构建</el-button>
           <el-button link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -90,325 +100,187 @@
       @current-change="fetchData"
     />
 
-    <!-- 新增/编辑对话框：统一 800px + label 120px + 两列布局，文本域统一放表单底部（约定见 AGENTS.md §20.2） -->
+    <!-- 构建触发对话框：未触发时选择构建机，触发后切换为实时日志控制台 -->
+    <!-- 新增 / 编辑 / 详情已迁移到独立页面（/project/add、/project/edit/:id、/project/detail/:id） -->
+    <!-- 关闭不拦截：只停前端轮询，后端构建任务照跑，重新打开会重新拉全量日志 -->
     <el-dialog
-      v-model="dialogVisible"
-      :title="dialogTitle"
+      v-model="buildDialogVisible"
+      title="触发构建"
       width="800px"
       :close-on-click-modal="false"
-      @close="resetForm"
+      @close="stop"
     >
-      <!-- 内容区滚动容器：顶部与标题栏留出间隔；左右 padding 抵消 el-row gutter 负边距并预留滚动条宽度 -->
-      <div style="max-height: 60vh; overflow-y: auto; padding: 16px 18px 0 10px;">
-        <el-form ref="formRef" :model="formData" :rules="formRules" label-width="120px" size="small">
-          <!-- 第一行：项目编码 + 项目名称 -->
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="项目编码" prop="code">
-                <el-input v-model="formData.code" placeholder="字母、数字、下划线和中划线，2-64位" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="项目名称" prop="name">
-                <el-input v-model="formData.name" placeholder="请输入项目名称" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <!-- 第二行：保留版本数 + 构建模式 -->
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="保留版本数" prop="retainReleaseCount">
-                <el-input-number v-model="formData.retainReleaseCount" :min="1" :max="100" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="构建模式" prop="buildMode">
-                <el-select v-model="formData.buildMode" placeholder="请选择" style="width: 100%">
-                  <!-- 选项随运行时变化：Docker 类构建模式产出镜像，脚本 / 仅发布产物产出文件，不可交叉（AGENTS.md §23.4） -->
-                  <el-option v-for="item in buildModeOptions" :key="item.value" :label="item.label" :value="item.value" />
-                </el-select>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <!-- 第三行：运行时（三个选项，独占整行） -->
-          <el-row :gutter="20">
-            <el-col :span="24">
-              <el-form-item label="运行时" prop="runtimeType">
-                <el-radio-group v-model="formData.runtimeType" @change="handleRuntimeTypeChange">
-                  <el-radio value="DOCKER">Docker容器</el-radio>
-                  <el-radio value="JAR">Java JAR</el-radio>
-                  <el-radio value="STATIC">静态产物</el-radio>
-                </el-radio-group>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <!-- 第四行：代码来源 + 启用状态 -->
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="代码来源" prop="sourceType">
-                <el-radio-group v-model="formData.sourceType">
-                  <el-radio value="GIT">Git仓库</el-radio>
-                  <el-radio value="UPLOAD">本地上传</el-radio>
-                </el-radio-group>
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="状态" prop="status">
-                <el-radio-group v-model="formData.status">
-                  <el-radio :value="1">启用</el-radio>
-                  <el-radio :value="0">停用</el-radio>
-                </el-radio-group>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <!-- 第五、六行：Git 仓库信息，条件字段紧跟控制它的"代码来源"，仅在 GIT 来源下出现 -->
-          <template v-if="formData.sourceType === 'GIT'">
-            <!-- 第五行：仓库地址独占整行，地址较长，半行放不下 -->
-            <el-row :gutter="20">
-              <el-col :span="24">
-                <el-form-item label="Git仓库地址" prop="gitUrl">
-                  <el-input v-model="formData.gitUrl" placeholder="https://gitee.com/group/repo.git" style="width: 100%" />
-                </el-form-item>
-              </el-col>
-            </el-row>
-            <!-- 第六行：分支 + 凭据 ID（凭据只存外键引用，不含凭据内容） -->
-            <el-row :gutter="20">
-              <el-col :span="12">
-                <el-form-item label="Git分支" prop="gitBranch">
-                  <el-input v-model="formData.gitBranch" placeholder="默认分支，如 master（选填）" style="width: 100%" />
-                </el-form-item>
-              </el-col>
-              <el-col :span="12">
-                <el-form-item label="Git凭据" prop="gitCredentialId">
-                  <el-select v-model="formData.gitCredentialId" placeholder="私有仓库凭据（选填）" clearable style="width: 100%">
-                    <el-option
-                      v-for="item in gitCredentials"
-                      :key="item.id"
-                      :label="`${item.name}（${CREDENTIAL_TYPE_MAP[item.type] || item.type}）`"
-                      :value="item.id"
-                    />
-                  </el-select>
-                </el-form-item>
-              </el-col>
-            </el-row>
-          </template>
-
-          <!-- 第六行补充：镜像仓库绑定，仅 DOCKER 运行时出现（脚本部署与仅发布产物不产出镜像） -->
-          <el-row v-if="formData.runtimeType === 'DOCKER'" :gutter="20">
-            <el-col :span="24">
-              <el-form-item label="镜像仓库" prop="registryId">
-                <el-select v-model="formData.registryId" placeholder="选择镜像推送目标（选填）" clearable style="width: 100%">
-                  <el-option
-                    v-for="item in registries"
-                    :key="item.id"
-                    :label="item.namespace ? `${item.name}（${item.registryUrl}/${item.namespace}）` : `${item.name}（${item.registryUrl}）`"
-                    :value="item.id"
-                  />
-                </el-select>
-                <span class="form-tip">构建出的镜像推送到该仓库；只在「运行时 = Docker容器」时可配置（AGENTS.md §23.4）</span>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <!-- 第七至九行：三段 JSON 高级配置（文本域统一放表单底部，键名 schema 见 docs/项目模块.md §2.3） -->
-          <el-row :gutter="20">
-            <el-col :span="24">
-              <!-- label 上的 ? 图标悬浮展示完整示例，与 placeholder 共用同一个常量 -->
-              <el-form-item prop="buildConfigJson">
-                <template #label>
-                  <span>构建配置</span>
-                  <el-tooltip placement="top" effect="dark" :show-after="100">
-                    <template #content>
-                      <pre class="tooltip-json">{{ BUILD_CONFIG_EXAMPLE }}</pre>
-                    </template>
-                    <el-icon class="form-label-tip"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </template>
-                <el-input v-model="formData.buildConfigJson" type="textarea" :rows="4" :placeholder="BUILD_CONFIG_EXAMPLE" />
-                <span class="form-tip">构建模块消费：多模块仓库用它指定子模块与构建命令，单模块仓库可留空（选填，须为合法 JSON）</span>
-              </el-form-item>
-            </el-col>
-          </el-row>
-          <el-row :gutter="20">
-            <el-col :span="24">
-              <el-form-item prop="runtimeConfigJson">
-                <template #label>
-                  <span>运行配置</span>
-                  <el-tooltip placement="top" effect="dark" :show-after="100">
-                    <template #content>
-                      <pre class="tooltip-json">{{ RUNTIME_CONFIG_EXAMPLE }}</pre>
-                    </template>
-                    <el-icon class="form-label-tip"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </template>
-                <el-input v-model="formData.runtimeConfigJson" type="textarea" :rows="4" :placeholder="RUNTIME_CONFIG_EXAMPLE" />
-                <span class="form-tip">发布模块消费：部署目录、端口、环境变量、启动命令等，按运行时类型取用（选填，须为合法 JSON）</span>
-              </el-form-item>
-            </el-col>
-          </el-row>
-          <el-row :gutter="20">
-            <el-col :span="24">
-              <el-form-item prop="healthConfigJson">
-                <template #label>
-                  <span>健康检查配置</span>
-                  <el-tooltip placement="top" effect="dark" :show-after="100">
-                    <template #content>
-                      <pre class="tooltip-json">{{ HEALTH_CONFIG_EXAMPLE }}</pre>
-                    </template>
-                    <el-icon class="form-label-tip"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </template>
-                <el-input v-model="formData.healthConfigJson" type="textarea" :rows="3" :placeholder="HEALTH_CONFIG_EXAMPLE" />
-                <span class="form-tip">健康检查消费：探活方式、端口、路径、间隔、超时、重试（选填，须为合法 JSON；不填按 TCP 端口探活兜底）</span>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <!-- 第十行：项目描述（文本域，固定放表单最底部） -->
-          <el-row :gutter="20">
-            <el-col :span="24">
-              <el-form-item label="项目描述" prop="description">
-                <el-input v-model="formData.description" type="textarea" :rows="2" placeholder="项目用途说明（选填）" />
-              </el-form-item>
-            </el-col>
-          </el-row>
+      <!-- 配置阶段：展示项目基本信息并选择专用构建机（可选），未触发前显示 -->
+      <div v-if="!buildStarted">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="项目">{{ buildProject?.name }}</el-descriptions-item>
+          <el-descriptions-item label="项目编码">{{ buildProject?.code }}</el-descriptions-item>
+          <el-descriptions-item label="运行时">{{ RUNTIME_TYPE_MAP[buildProject?.runtimeType || ''] || buildProject?.runtimeType }}</el-descriptions-item>
+          <el-descriptions-item label="构建模式">{{ BUILD_MODE_MAP[buildProject?.buildMode || ''] || buildProject?.buildMode }}</el-descriptions-item>
+        </el-descriptions>
+        <el-form label-width="110px" style="margin-top:16px">
+          <el-form-item label="版本序号">
+            <el-input-number
+              v-model="versionSeq"
+              :min="1"
+              :step="1"
+              :precision="0"
+              controls-position="right"
+              placeholder="留空自动取号"
+              style="width:100%"
+            />
+            <span class="form-tip">留空由平台自动递增取号；填写将生成 {项目编码}-v{序号}-{提交短码}，且需该项目内未被占用</span>
+          </el-form-item>
+          <el-form-item label="构建机">
+            <el-select v-model="buildServerId" placeholder="不指定则使用默认构建机" clearable style="width:100%">
+              <el-option v-for="s in buildServers" :key="s.id" :label="`${s.serverName}（${s.host}）`" :value="s.id" />
+            </el-select>
+            <span class="form-tip">指定专用构建机；留空由后端解析项目默认构建机</span>
+          </el-form-item>
         </el-form>
       </div>
+
+      <!-- 执行阶段：触发后显示任务状态与实时日志，日志使用增量拉取 -->
+      <div v-else>
+        <div class="build-summary">
+          <el-tag :type="getTaskStatusStyle(task?.status).tag">
+            {{ getTaskStatusStyle(task?.status).label }}
+          </el-tag>
+          <span class="test-meta">任务编号：{{ task?.taskNo || '-' }}</span>
+          <span v-if="task?.currentStage" class="test-meta">当前阶段：{{ task.currentStage }}</span>
+        </div>
+        <el-progress
+          :percentage="task?.progress ?? 0"
+          :status="progressStatus"
+          :stroke-width="8"
+          style="margin-bottom: 16px"
+        />
+        <el-alert
+          v-if="task?.errorMessage"
+          :title="task.errorMessage"
+          type="error"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 12px"
+        />
+        <div ref="bodyRef" class="log-console">
+          <el-empty v-if="logs.length === 0" description="正在等待执行日志…" :image-size="60" />
+          <div v-for="log in logs" :key="log.id" class="log-line">
+            <span class="log-seq">#{{ log.sequenceNo }}</span>
+            <el-tag size="small" :type="LOG_LEVEL_TAG[log.logLevel] || 'info'" class="log-level">
+              {{ log.logLevel }}
+            </el-tag>
+            <span v-if="log.stage" class="log-stage">[{{ log.stage }}]</span>
+            <span class="log-content">{{ log.content }}</span>
+            <span class="log-time">{{ formatLogTime(log.createTime) }}</span>
+          </div>
+        </div>
+      </div>
+
       <template #footer>
-        <el-button size="small" @click="dialogVisible = false">取 消</el-button>
-        <el-button type="primary" size="small" :loading="submitLoading" @click="handleSubmit">确 定</el-button>
+        <el-button v-if="!buildStarted" size="small" @click="buildDialogVisible = false">取 消</el-button>
+        <el-button v-if="!buildStarted" type="primary" size="small" :loading="buildSubmitting" @click="submitBuild">开始构建</el-button>
+        <template v-else>
+          <el-text v-if="running" size="small" type="info" style="margin-right: 12px">构建执行中，关闭窗口不影响执行</el-text>
+          <el-button size="small" :icon="Download" :loading="downloading" @click="download">下载日志</el-button>
+          <el-button size="small" @click="closeBuildDialog">关 闭</el-button>
+        </template>
       </template>
     </el-dialog>
+
+    <!-- 连通性测试抽屉：上方任务状态与进度，下方实时日志控制台 -->
+    <!-- 校验发生在项目的构建机上（与真实构建同一网络、同一环境），不是平台所在机器 -->
+    <!-- 关闭不拦截：只停前端轮询，后端测试任务照跑，重新打开会重新拉全量日志 -->
+    <el-drawer
+      v-model="testDrawerVisible"
+      :title="`连通性测试 - ${testProject?.name || ''}`"
+      size="800px"
+      :close-on-click-modal="false"
+      @closed="stopTestLog"
+    >
+      <div class="test-summary">
+        <el-tag :type="getTaskStatusStyle(testTask?.status).tag">
+          {{ getTaskStatusStyle(testTask?.status).label }}
+        </el-tag>
+        <span class="test-meta">任务编号：{{ testTask?.taskNo || '-' }}</span>
+        <span v-if="testTask?.currentStage" class="test-meta">当前阶段：{{ testTask.currentStage }}</span>
+      </div>
+      <el-progress
+        :percentage="testTask?.progress ?? 0"
+        :status="testProgressStatus"
+        :stroke-width="8"
+        style="margin-bottom: 16px"
+      />
+      <el-alert
+        v-if="testTask?.errorMessage"
+        :title="testTask.errorMessage"
+        type="error"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+      />
+
+      <div ref="testBodyRef" class="log-console">
+        <el-empty v-if="testLogs.length === 0" description="正在等待执行日志…" :image-size="60" />
+        <div v-for="log in testLogs" :key="log.id" class="log-line">
+          <span class="log-seq">#{{ log.sequenceNo }}</span>
+          <el-tag size="small" :type="LOG_LEVEL_TAG[log.logLevel] || 'info'" class="log-level">
+            {{ log.logLevel }}
+          </el-tag>
+          <span v-if="log.stage" class="log-stage">[{{ log.stage }}]</span>
+          <span class="log-content">{{ log.content }}</span>
+          <span class="log-time">{{ formatLogTime(log.createTime) }}</span>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-text v-if="testRunning" size="small" type="info" style="margin-right: 12px">任务执行中，关闭窗口不影响执行</el-text>
+        <el-button size="small" :icon="Download" :loading="testDownloading" @click="downloadTestLog">下载日志</el-button>
+        <el-button size="small" @click="closeTestDrawer">关 闭</el-button>
+        <el-button
+          size="small"
+          type="primary"
+          :icon="Refresh"
+          :disabled="!isTaskFinal(testTask?.status)"
+          :loading="testSubmitting"
+          @click="retryConnectivityTest"
+        >
+          重新测试
+        </el-button>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
 /**
- * 项目管理页面。
+ * 项目列表页。
  *
  * 对接后端 /project 标准六接口。业务约定：
- * 1. 项目编码创建后不允许修改（编辑时输入框禁用），由后端做唯一性校验；
- * 2. GIT 来源必须填写 Git 仓库地址（后端强制校验，表单联动显示 Git 字段）；
+ * 1. 新增 / 编辑 / 详情走独立页面（/project/add、/project/edit/:id、/project/detail/:id），
+ *    本页只保留列表、搜索、删除与构建触发；
+ * 2. 项目编码创建后不允许修改，由后端做唯一性校验；
  * 3. 一个 project = 一个可部署的服务模块：同一 Git 地址分支下允许存在多条记录，
  *    多模块仓库靠 buildConfigJson.module_name 区分（见 docs/项目模块.md §2.3.1）；
- * 4. 构建配置/运行配置/健康检查三段 JSON 为高级配置，表单提供原始文本编辑入口，
- *    前端只镜像后端做 JSON 语法校验，键名 schema 见 docs/项目模块.md §2.3。
+ * 4. 三段 JSON 高级配置的表单 / JSON 双模式编辑见 ConfigEditor 组件与 constants/projectConfig.ts。
  */
-import { ref, reactive, computed } from 'vue'
-import type { FormInstance, FormRules } from 'element-plus'
+import { ref, reactive, onActivated } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, Plus, Edit, Delete, QuestionFilled } from '@element-plus/icons-vue'
-import { pageProject, createProject, updateProject, deleteProject } from '@/api/project.ts'
-import { listCredentials } from '@/api/credential.ts'
-import { listRegistries } from '@/api/registry.ts'
-import type { ProjectVo, ProjectDto, CredentialVo, RegistryVo } from '@/api/deployTypes.ts'
-import { CREDENTIAL_TYPE_MAP, GIT_CREDENTIAL_TYPES } from '@/constants/credentialType.ts'
+import { Search, Refresh, Plus, Edit, Delete, View, VideoPlay, Download, Connection } from '@element-plus/icons-vue'
+import { pageProject, deleteProject, testProjectConnectivity } from '@/api/project.ts'
+import { listServers } from '@/api/server.ts'
+import { createBuild } from '@/api/build.ts'
+import type { ProjectVo, BuildVo, ServerVo } from '@/api/deployTypes.ts'
+import { LOG_LEVEL_TAG, getTaskStatusStyle, isTaskFinal } from '@/constants/taskStatus.ts'
+import { RUNTIME_TYPE_MAP, BUILD_MODE_OPTIONS, BUILD_MODE_MAP } from '@/constants/projectConfig.ts'
+import { usePageRefreshStore } from '@/store/pageRefresh.ts'
+// 日志查看器与日志时间格式化：5 处日志视图共用同一份实现
+import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.ts'
 
 defineOptions({ name: 'ProjectList' })
 
-/** 运行时展示映射（与后端 RuntimeType 枚举一致） */
-const RUNTIME_TYPE_MAP: Record<string, string> = {
-  DOCKER: 'Docker容器',
-  JAR: 'Java JAR',
-  STATIC: '静态产物'
-}
-
-/**
- * 构建模式选项（与后端 BuildMode 枚举一一对应，枚举变更时必须同步本数组）。
- *
- * label 用于新增/编辑表单（空间充足，展示完整名称）；
- * shortLabel 用于搜索下拉与列表列（宽度只有 160px / 130px，必须用短名）；
- * runtimes 是该构建模式允许的运行时，镜像自后端 RuntimeType.supports()：Docker 类构建模式
- * 产出镜像、只配 DOCKER，脚本 / 仅发布产物产出文件、只配 JAR 与 STATIC（AGENTS.md §23.4）。
- */
-const BUILD_MODE_OPTIONS: { value: string; label: string; shortLabel: string; runtimes: string[] }[] = [
-  { value: 'PLATFORM_TEMPLATE', label: '平台 Dockerfile 模板', shortLabel: '平台模板', runtimes: ['DOCKER'] },
-  { value: 'PROJECT_DOCKERFILE', label: '项目自带 Dockerfile', shortLabel: '项目Dockerfile', runtimes: ['DOCKER'] },
-  { value: 'LAYERED_DOCKER', label: '分层构建（base + app）', shortLabel: '分层构建', runtimes: ['DOCKER'] },
-  { value: 'SCRIPT_DEPLOY', label: '脚本部署', shortLabel: '脚本部署', runtimes: ['JAR', 'STATIC'] },
-  { value: 'ARTIFACT_ONLY', label: '仅发布已有产物', shortLabel: '仅发布产物', runtimes: ['JAR', 'STATIC'] }
-]
-
-/**
- * 按运行时过滤后的构建模式选项（表单下拉使用）。
- *
- * 未选运行时时返回全部选项，避免出现空下拉。
- */
-const buildModeOptions = computed(() => {
-  // 取到局部变量再做过滤：reactive 对象的字段在回调里无法保持类型收窄
-  const runtimeType = formData.runtimeType
-  if (!runtimeType) {
-    return BUILD_MODE_OPTIONS
-  }
-  return BUILD_MODE_OPTIONS.filter((item) => item.runtimes.includes(runtimeType))
-})
-
-/** 构建模式展示映射，从 BUILD_MODE_OPTIONS 派生，用于列表列渲染 */
-const BUILD_MODE_MAP: Record<string, string> = Object.fromEntries(
-  BUILD_MODE_OPTIONS.map((item) => [item.value, item.shortLabel])
-)
-
-// ==================== 三段 JSON 配置的示例文案 ====================
-// 同时用于输入框 placeholder 与 label 上「?」图标的悬浮提示，保证示例只有一份来源（AGENTS.md §20.2）。
-// 键名 schema 以 docs/项目模块.md §2.3 为准，改动示例必须同步该文档。
-
-/** 构建配置示例（多模块仓库：同一仓库下只构建 auth-tool 子模块） */
-const BUILD_CONFIG_EXAMPLE = `{
-  "module_name": "auth-tool",
-  "module_dir": "auth-tool",
-  "build_command": "mvn clean package -pl auth-tool -am -DskipTests",
-  "dockerfile_path": "auth-tool/Dockerfile",
-  "artifact_path": "auth-tool/target/auth-tool.jar"
-}`
-
-/** 运行配置示例（发布模块消费，按运行时类型取对应键） */
-const RUNTIME_CONFIG_EXAMPLE = `{
-  "deploy_dir": "/opt/apps/auth-tool",
-  "container_name": "auth-tool",
-  "ports": ["8080:8080"],
-  "env": { "SPRING_PROFILES_ACTIVE": "prod" },
-  "restart_policy": "unless-stopped"
-}`
-
-/** 健康检查配置示例（不配置时按 TCP 端口探活兜底） */
-const HEALTH_CONFIG_EXAMPLE = `{
-  "type": "HTTP",
-  "port": 8080,
-  "path": "/actuator/health",
-  "expected_status": 200,
-  "interval_seconds": 10,
-  "timeout_seconds": 3,
-  "retries": 3,
-  "start_period_seconds": 30
-}`
-
-// ==================== 下拉数据源 ====================
-/** Git 凭据下拉数据，只含类型为 GIT_TOKEN / SSH_KEY 的凭据（与后端 Git 类型校验一致） */
-const gitCredentials = ref<CredentialVo[]>([])
-
-/** 镜像仓库下拉数据，只含启用中的仓库（停用仓库不允许被新项目绑定） */
-const registries = ref<RegistryVo[]>([])
-
-/**
- * 加载表单下拉需要的外部资源。
- *
- * 凭据与仓库都属于「系统设置」下的全局资源，本页面只读取列表用于下拉选择：
- * 凭据不返回密文，仓库不返回凭据内容，因此这里不存在敏感信息泄漏面。
- */
-async function fetchFormOptions() {
-  // 凭据接口支持按类型过滤，这里取全量后在前端按 Git 类型筛选，避免发两次请求
-  const credentialRes = await listCredentials()
-  gitCredentials.value = credentialRes.data.filter((item) => GIT_CREDENTIAL_TYPES.includes(item.type))
-  // 仓库下拉只列启用中的仓库
-  const registryRes = await listRegistries({ status: 1 })
-  registries.value = registryRes.data
-}
-
-fetchFormOptions()
+const router = useRouter()
 
 // ==================== 搜索 ====================
 const searchForm = reactive({
@@ -459,201 +331,37 @@ async function fetchData() {
 
 fetchData()
 
-// ==================== 新增/编辑 ====================
-const dialogVisible = ref(false)
-const submitLoading = ref(false)
-const isEdit = ref(false)
-const formRef = ref<FormInstance>()
-const editId = ref('')
-
-const formData = reactive<ProjectDto>({
-  code: '',
-  name: '',
-  runtimeType: 'DOCKER',
-  sourceType: 'GIT',
-  gitUrl: '',
-  gitBranch: '',
-  gitCredentialId: '',
-  buildMode: 'PLATFORM_TEMPLATE',
-  registryId: '',
-  buildConfigJson: '',
-  runtimeConfigJson: '',
-  healthConfigJson: '',
-  retainReleaseCount: 5,
-  status: 1,
-  description: ''
+// 本页被 keep-alive 缓存（切走再切回不重跑 setup），新增/编辑页保存成功后会打刷新标记：
+// 激活时消费标记决定是否重新拉数据，普通标签页切换不产生多余请求
+const pageRefreshStore = usePageRefreshStore()
+onActivated(() => {
+  if (pageRefreshStore.consumeDirty('project-list')) {
+    fetchData()
+  }
 })
 
-/**
- * 校验文本是否为合法 JSON。
- *
- * 与后端 ProjectService.validateJsonFormat 规则一致：空白视为未配置直接放行，
- * 否则必须是合法 JSON；前端只校验语法，不校验内部键名（语义由下游模块负责）。
- *
- * @param label 字段中文名，用于错误提示
- * @returns Element Plus 表单校验器
- */
-function buildJsonValidator(label: string) {
-  return (_rule: any, value: string, callback: (err?: Error) => void) => {
-    if (!value) {
-      callback()
-      return
-    }
-    try {
-      JSON.parse(value)
-      callback()
-    } catch {
-      callback(new Error(`${label}不是合法的 JSON 格式`))
-    }
-  }
-}
-
-const formRules: FormRules = {
-  code: [
-    { required: true, message: '请输入项目编码', trigger: 'blur' },
-    { pattern: /^[A-Za-z0-9_-]{2,64}$/, message: '只允许字母、数字、下划线和中划线，2-64位', trigger: 'blur' }
-  ],
-  name: [{ required: true, message: '请输入项目名称', trigger: 'blur' }],
-  runtimeType: [{ required: true, message: '请选择运行时', trigger: 'change' }],
-  // GIT 来源必须填写仓库地址，与后端校验规则一致
-  gitUrl: [{
-    validator: (_rule: any, value: string, callback: (err?: Error) => void) => {
-      if (formData.sourceType === 'GIT' && !value) {
-        callback(new Error('Git 来源项目必须填写 Git 仓库地址'))
-      } else {
-        callback()
-      }
-    },
-    trigger: 'blur'
-  }],
-  // 三段 JSON 高级配置：只做语法校验，与后端一致
-  buildConfigJson: [{ validator: buildJsonValidator('构建配置'), trigger: 'blur' }],
-  runtimeConfigJson: [{ validator: buildJsonValidator('运行配置'), trigger: 'blur' }],
-  healthConfigJson: [{ validator: buildJsonValidator('健康检查配置'), trigger: 'blur' }]
-}
-
-const dialogTitle = computed(() => (isEdit.value ? '编辑项目' : '新增项目'))
-
+// ==================== 新增 / 编辑 / 详情入口 ====================
+/** 新增：跳独立页面（表单字段多，弹框空间不够，见 docs/前端工程.md） */
 function handleAdd() {
-  isEdit.value = false
-  dialogVisible.value = true
+  router.push('/project/add')
 }
 
 /**
- * 运行时切换时校正构建模式与镜像仓库绑定。
- *
- * 两个字段都受运行时约束（AGENTS.md §23.4）：
- * 1. 当前构建模式不被新运行时支持时，自动切到该运行时的第一个可选模式，避免提交必然失败的组合；
- * 2. 运行时不是 DOCKER 时清空镜像仓库绑定，因为脚本 / 仅发布产物的项目没有镜像推送目标。
- *
- * @param value 切换后的运行时编码（DOCKER / JAR / STATIC），由 el-radio-group 的 change 事件传入
- */
-function handleRuntimeTypeChange(value: string | number | boolean | undefined) {
-  const runtimeType = String(value ?? '')
-  if (!BUILD_MODE_OPTIONS.find((item) => item.value === formData.buildMode)?.runtimes.includes(runtimeType)) {
-    formData.buildMode = BUILD_MODE_OPTIONS.find((item) => item.runtimes.includes(runtimeType))?.value || ''
-  }
-  if (runtimeType !== 'DOCKER') {
-    formData.registryId = ''
-  }
-}
-
-/**
- * 打开编辑对话框并回填字段。
+ * 编辑：跳独立页面，表单数据由编辑页按 id 自行加载。
  *
  * @param row 待编辑的项目行数据
  */
 function handleEdit(row: ProjectVo) {
-  isEdit.value = true
-  editId.value = row.id
-  formData.code = row.code
-  formData.name = row.name
-  formData.runtimeType = row.runtimeType
-  formData.sourceType = row.sourceType
-  formData.gitUrl = row.gitUrl || ''
-  formData.gitBranch = row.gitBranch || ''
-  formData.gitCredentialId = row.gitCredentialId || ''
-  formData.buildMode = row.buildMode
-  formData.registryId = row.registryId || ''
-  formData.buildConfigJson = row.buildConfigJson || ''
-  formData.runtimeConfigJson = row.runtimeConfigJson || ''
-  formData.healthConfigJson = row.healthConfigJson || ''
-  formData.retainReleaseCount = row.retainReleaseCount
-  formData.status = row.status
-  formData.description = row.description || ''
-  dialogVisible.value = true
-}
-
-function resetForm() {
-  formData.code = ''
-  formData.name = ''
-  formData.runtimeType = 'DOCKER'
-  formData.sourceType = 'GIT'
-  formData.gitUrl = ''
-  formData.gitBranch = ''
-  formData.gitCredentialId = ''
-  formData.buildMode = 'PLATFORM_TEMPLATE'
-  formData.registryId = ''
-  formData.buildConfigJson = ''
-  formData.runtimeConfigJson = ''
-  formData.healthConfigJson = ''
-  formData.retainReleaseCount = 5
-  formData.status = 1
-  formData.description = ''
-  editId.value = ''
-  formRef.value?.resetFields()
-}
-
-async function handleSubmit() {
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) return
-
-  submitLoading.value = true
-  try {
-    const payload = buildSubmitPayload()
-    if (isEdit.value) {
-      // 后端修改接口同样校验编码必填且做唯一性预检（排除当前记录自身）
-      await updateProject(editId.value, payload)
-      ElMessage.success('修改成功')
-    } else {
-      await createProject(payload)
-      ElMessage.success('新增成功')
-    }
-    dialogVisible.value = false
-    fetchData()
-  } finally {
-    submitLoading.value = false
-  }
+  router.push(`/project/edit/${row.id}`)
 }
 
 /**
- * 组装提交给后端的请求体。
+ * 查看详情：跳只读页面，不进编辑表单。
  *
- * 文本域（Git 分支、Git 凭据 ID、三段 JSON、项目描述）未填写时统一提交 undefined，
- * 避免把空串写进后端 JSON 列；后端 ProjectService 仍会把空白值归一为 null 兜底。
- *
- * @returns 与后端 ProjectDto 字段一一对应的请求对象
+ * @param row 待查看的项目行数据
  */
-function buildSubmitPayload(): ProjectDto {
-  return {
-    code: formData.code,
-    name: formData.name,
-    runtimeType: formData.runtimeType,
-    sourceType: formData.sourceType,
-    // 仅 GIT 来源提交仓库信息，UPLOAD 来源保持为空
-    gitUrl: formData.sourceType === 'GIT' ? formData.gitUrl || undefined : undefined,
-    gitBranch: formData.sourceType === 'GIT' ? formData.gitBranch || undefined : undefined,
-    gitCredentialId: formData.sourceType === 'GIT' ? formData.gitCredentialId || undefined : undefined,
-    buildMode: formData.buildMode,
-    // 只有 DOCKER 运行时提交镜像仓库绑定；其它运行时即使残留值也不提交（后端同样会拒绝）
-    registryId: formData.runtimeType === 'DOCKER' ? formData.registryId || undefined : undefined,
-    buildConfigJson: formData.buildConfigJson || undefined,
-    runtimeConfigJson: formData.runtimeConfigJson || undefined,
-    healthConfigJson: formData.healthConfigJson || undefined,
-    retainReleaseCount: formData.retainReleaseCount,
-    status: formData.status,
-    description: formData.description || undefined
-  }
+function handleDetail(row: ProjectVo) {
+  router.push(`/project/detail/${row.id}`)
 }
 
 // ==================== 删除 ====================
@@ -669,9 +377,167 @@ async function handleDelete(row: ProjectVo) {
   ElMessage.success('删除成功')
   fetchData()
 }
+
+// ==================== 构建触发 ====================
+/**
+ * 触发构建对话框状态。
+ *
+ * 与后端 /build 的「创建即执行」约定一致：POST /build 创建 build 并生成 BUILD 异步任务后立即返回，
+ * 真正的克隆 / 构建 / 推送异步进行，本页在对话框内用 /taskLog/pull 增量展示实时日志。
+ * 日志区与其余四处日志视图共用 useTaskLogViewer：支持下载导出，任务执行中不允许关闭对话框。
+ */
+const buildDialogVisible = ref(false)
+const buildSubmitting = ref(false)
+/** 是否已触发构建：false 显示「选择构建机」配置，true 切换到实时日志 */
+const buildStarted = ref(false)
+/** 当前触发构建的项目，用于对话框展示项目信息 */
+const buildProject = ref<ProjectVo | null>(null)
+/** 用户选择的专用构建机；留空由后端解析默认构建机 */
+const buildServerId = ref('')
+/**
+ * 版本序号（可选）。
+ *
+ * 留空时由后端在构建成功时自动取号（项目内最大序号 +1），这是常规用法；
+ * 填写则生成 {项目编码}-v{序号}-{提交短码}，后端在创建构建时即校验该项目内未被占用。
+ */
+const versionSeq = ref<number | undefined>(undefined)
+/** 启用中的服务器列表，供构建机下拉选择 */
+const buildServers = ref<ServerVo[]>([])
+
+/** 日志查看器：轮询、增量锚点、自动滚动、下载与运行中禁止关闭统一由它负责 */
+const { bodyRef, logs, task, running, downloading, progressStatus, start, reset, stop, download } =
+  useTaskLogViewer()
+
+/**
+ * 打开构建触发对话框，并加载启用中的服务器用于构建机下拉。
+ *
+ * @param row 待构建的项目行数据
+ */
+function handleBuild(row: ProjectVo) {
+  buildProject.value = row
+  // 默认带出项目档案绑定的构建机：多数项目固定在一台机器上构建，每次手选是纯负担。
+  // 仍可清空或改选，后端解析顺序是「请求 > 项目档案 > 系统默认」。
+  buildServerId.value = row.buildServerId || ''
+  buildStarted.value = false
+  buildSubmitting.value = false
+  // 清掉上一次触发的日志与任务状态，避免两次构建的日志混在同一个控制台里
+  reset()
+  // 只列启用中的服务器，停用服务器不允许参与构建
+  listServers({ status: 1 }).then((res) => { buildServers.value = res.data }).catch(() => {})
+  buildDialogVisible.value = true
+}
+
+/**
+ * 提交构建：调用 createBuild 后立即进入实时日志阶段。
+ *
+ * 后端只创建记录与异步任务后立即返回，因此这里拿到 taskId 就开始轮询日志，
+ * 不再等待后端「构建完成」（构建是分钟级异步任务）。
+ */
+async function submitBuild() {
+  if (!buildProject.value) return
+  buildSubmitting.value = true
+  try {
+    const res = await createBuild({ projectId: buildProject.value.id, buildServerId: buildServerId.value || undefined })
+    buildStarted.value = true
+    const build: BuildVo = res.data
+    // 任务由本次请求刚创建：状态、进度一律以首次拉取为准，不拿构建状态当任务状态。
+    start({ taskId: build.taskId, taskNo: build.taskNo })
+    ElMessage.success('已触发构建，可在「构建管理」查看完整进度')
+  } finally {
+    buildSubmitting.value = false
+  }
+}
+
+/** 关闭构建对话框；@close 会触发 stop 停掉轮询，后端构建任务不受影响 */
+function closeBuildDialog() {
+  buildDialogVisible.value = false
+}
+
+// ==================== 项目连通性测试 ====================
+/**
+ * 连通性测试：在项目的**构建机**上验证构建前置条件。
+ *
+ * 校验项见后端 ProjectConnectTestTaskHandler：SSH 可达、git/docker 工具链、
+ * Git 仓库可否 ls-remote（可达 + 凭据有效 + 分支存在）、镜像仓库可否 docker login。
+ * 目的是把这些配置问题在「点构建之前」暴露，而不是以一次失败的构建来暴露。
+ *
+ * 与构建对话框的日志查看器**各用一份实例**：两个容器可能同时挂在 DOM 上，
+ * 共用一个 bodyRef 与 logs 会让自动滚动与日志归属串台。
+ */
+const testDrawerVisible = ref(false)
+const testSubmitting = ref(false)
+const testProject = ref<ProjectVo | null>(null)
+
+const {
+  bodyRef: testBodyRef,
+  logs: testLogs,
+  task: testTask,
+  running: testRunning,
+  downloading: testDownloading,
+  progressStatus: testProgressStatus,
+  start: startTestLog,
+  reset: resetTestLog,
+  stop: stopTestLog,
+  download: downloadTestLog
+} = useTaskLogViewer()
+
+/**
+ * 打开连通性测试抽屉并立即提交一次测试任务。
+ *
+ * @param row 待测试的项目行数据；未绑定构建机时后端返回参数校验错误并提示先去绑定
+ */
+async function handleConnectivityTest(row: ProjectVo) {
+  testProject.value = row
+  testSubmitting.value = true
+  resetTestLog()
+  testDrawerVisible.value = true
+  try {
+    const res = await testProjectConnectivity(row.id)
+    // 任务刚创建：状态与进度一律以首次 pull 的响应为准，这里只传任务主键与编号。
+    startTestLog({ taskId: res.data.id, taskNo: res.data.taskNo })
+  } catch {
+    // 失败原因（未绑定构建机 / 已有未完成任务）由 request.ts 统一提示，这里收起抽屉
+    testDrawerVisible.value = false
+  } finally {
+    testSubmitting.value = false
+  }
+}
+
+/** 任务结束后重新发起一次测试，用于改完配置后立刻复验 */
+async function retryConnectivityTest() {
+  if (!testProject.value) return
+  await handleConnectivityTest(testProject.value)
+}
+
+/** 关闭测试抽屉；@closed 会触发 stopTestLog 停掉轮询，后端任务不受影响 */
+function closeTestDrawer() {
+  testDrawerVisible.value = false
+}
 </script>
 
 <style lang="scss" scoped>
 // 使用全局工具类 .app-container / .search-div / .tools-div
 // 定义在 styles/index.scss 中
+// 实时日志控制台复用全局 .log-console / .log-line 样式，与服务器连通性测试、构建列表页保持一致
+
+// 构建对话框顶部任务状态区：与下方日志控制台留出统一间隔
+.build-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+// 连通性测试抽屉顶部状态区：与服务器页的同名区块保持一致
+.test-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.test-meta {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
 </style>

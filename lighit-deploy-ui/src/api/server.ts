@@ -27,21 +27,21 @@ export function listServers(params?: ListParams): Promise<ApiResponse<ServerVo[]
 
 /** 根据主键查询服务器详情 */
 export function getServer(id: string): Promise<ApiResponse<ServerVo>> {
-  return request({ url: `/server/${id}`, method: 'get' })
+  return request({ url: `/server/detail/${id}`, method: 'get' })
 }
 
 /** 新增服务器，credential 必填，后端 AES-GCM 加密后落库 */
 export function createServer(data: ServerDto): Promise<ApiResponse<ServerVo>> {
-  return request({ url: '/server', method: 'post', data })
+  return request({ url: '/server/create', method: 'post', data })
 }
 
 /** 修改服务器，credential 选填（不传保留旧凭据） */
 export function updateServer(id: string, data: ServerDto): Promise<ApiResponse<ServerVo>> {
-  return request({ url: `/server/${id}`, method: 'put', data })
+  return request({ url: `/server/update/${id}`, method: 'put', data })
 }
 
 /**
- * 提交一次服务器连通性测试（对应后端 POST /server/{id}/test）。
+ * 提交一次服务器连通性测试（对应后端 POST /server/test/{id}）。
  *
  * 后端只创建异步任务并立即返回，任务状态为 0（排队中）；真正的 SSH 连接与探活命令
  * 由任务执行器执行。调用方拿到 taskId 后应轮询 pullTaskLog(taskId, lastSeq) 展示实时日志。
@@ -51,10 +51,10 @@ export function updateServer(id: string, data: ServerDto): Promise<ApiResponse<S
  * @returns 新建的异步任务（含 id 与 taskNo）
  */
 export function testServerConnectivity(id: string): Promise<ApiResponse<TaskVo>> {
-  return request({ url: `/server/${id}/test`, method: 'post' })
+  return request({ url: `/server/test/${id}`, method: 'post' })
 }
 
 /** 逻辑删除服务器 */
 export function deleteServer(id: string): Promise<ApiResponse<void>> {
-  return request({ url: `/server/${id}`, method: 'delete' })
+  return request({ url: `/server/delete/${id}`, method: 'delete' })
 }

@@ -5,6 +5,7 @@ import com.lx.deploy.common.enums.server.ServerAuthType;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.response.ResponseCode;
 import com.lx.deploy.server.model.Server;
+import com.lx.deploy.ssh.SshSession;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
 import org.apache.sshd.client.session.ClientSession;
@@ -57,6 +58,9 @@ public class SshSessionFactory {
     /** 单条远程命令的等待时间（秒），透传给 SshSession。 */
     private final int commandTimeoutSeconds;
 
+    /** 耗时类远程命令（克隆、构建、镜像操作、发布）的等待时间（秒），透传给 SshSession。 */
+    private final int longCommandTimeoutSeconds;
+
     /** 单条命令输出保留的最大字符数，透传给 SshSession。 */
     private final int maxOutputChars;
 
@@ -66,18 +70,21 @@ public class SshSessionFactory {
      * @param credentialCrypto     平台统一凭据加解密组件
      * @param connectTimeoutMs     TCP 建连等待时间（毫秒），默认 10000
      * @param authTimeoutMs        SSH 认证等待时间（毫秒），默认 10000
-     * @param commandTimeoutSeconds 单条命令等待时间（秒），默认 120
+     * @param commandTimeoutSeconds 秒级命令等待时间（秒），默认 120
+     * @param longCommandTimeoutSeconds 耗时类命令等待时间（秒），默认 1800
      * @param maxOutputChars       单条命令输出保留的最大字符数，默认 20000
      */
     public SshSessionFactory(CredentialCrypto credentialCrypto,
                             @Value("${light-deploy.ssh.connect-timeout-ms:10000}") int connectTimeoutMs,
                             @Value("${light-deploy.ssh.auth-timeout-ms:10000}") int authTimeoutMs,
                             @Value("${light-deploy.ssh.command-timeout-seconds:120}") int commandTimeoutSeconds,
+                            @Value("${light-deploy.ssh.long-command-timeout-seconds:1800}") int longCommandTimeoutSeconds,
                             @Value("${light-deploy.ssh.max-output-chars:20000}") int maxOutputChars) {
         this.credentialCrypto = credentialCrypto;
         this.connectTimeoutMs = connectTimeoutMs;
         this.authTimeoutMs = authTimeoutMs;
         this.commandTimeoutSeconds = commandTimeoutSeconds;
+        this.longCommandTimeoutSeconds = longCommandTimeoutSeconds;
         this.maxOutputChars = maxOutputChars;
     }
 
@@ -125,7 +132,8 @@ public class SshSessionFactory {
             session.auth().verify(authTimeoutMs);
             log.info("SSH 连接成功，serverId={}, host={}, port={}, authType={}",
                     serverId, host, port, authType.getMessage());
-            return new SshSession(session, client, serverId, host, commandTimeoutSeconds, maxOutputChars);
+            return new SshSession(session, client, serverId, host, commandTimeoutSeconds,
+                    longCommandTimeoutSeconds, maxOutputChars);
         } catch (DeployException e) {
             // 私钥解析失败等业务异常：先把客户端关掉再原样抛出，保留具体原因。
             closeQuietly(client);

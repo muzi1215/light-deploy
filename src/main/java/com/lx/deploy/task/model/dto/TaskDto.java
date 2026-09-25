@@ -35,16 +35,16 @@ public class TaskDto {
     /**
      * 任务类型。
      *
-     * <p>新增必填；取值必须为 SERVER_TEST、BUILD 或 DEPLOY，
+     * <p>新增必填；取值必须为 SERVER_TEST、PROJECT_TEST、BUILD 或 DEPLOY，
      * 与后端 TaskType 枚举一致，非法值返回参数校验错误。</p>
      */
-    @Schema(description = "任务类型：SERVER_TEST/BUILD/DEPLOY")
+    @Schema(description = "任务类型：SERVER_TEST/PROJECT_TEST/BUILD/DEPLOY")
     private String taskType;
 
     /**
      * 关联业务主键。
      *
-     * <p>按任务类型指向对应业务记录（服务器 ID / 构建记录 ID / 部署记录 ID），可选。</p>
+     * <p>按任务类型指向对应业务记录（服务器 ID / 项目 ID / 构建记录 ID / 部署记录 ID），可选。</p>
      */
     @Schema(description = "关联业务主键，按任务类型指向不同业务记录")
     private String bizId;

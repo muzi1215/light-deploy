@@ -16,7 +16,6 @@ import com.lx.deploy.task.model.dto.TaskLogDto;
 import com.lx.deploy.task.service.TaskLogService;
 import com.lx.deploy.task.service.TaskService;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -27,10 +26,12 @@ import java.util.List;
  *
  * <p>这是平台第一个真正执行远程操作的任务类型，用于验证「凭据解密 → SSH 连接 → 命令执行 →
  * 日志回传」整条链路。执行内容是一组只读探活命令，不修改目标机任何状态：
- * 检查系统信息、运行时（Java/Docker）、磁盘容量和部署目录是否可写。</p>
+ * 检查系统信息、构建依赖（git / Maven）、运行时（Java / Docker）、磁盘容量，
+ * 以及部署根目录是否可写。</p>
  *
- * <p>探活项分两类：必需项失败直接判定服务器不可用（任务失败），可选项失败只记 WARN。
- * 这样「能连上但没装 Docker」会被如实报告为警告，而不是把整次测试判成不通。</p>
+ * <p>探活项分两类：必需项失败直接判定服务器不可用（任务失败），可选项失败只记 INFO 并在
+ * 带 hint 时给出补装建议。这样「能连上但没装 Docker / Maven」会被如实报告为环境提示，
+ * 而不是把整次测试判成不通。</p>
  *
  * <p>同一服务器同一时刻只允许一个任务：互斥键为 {@code server:服务器ID}，
  * 由 {@link TaskExecutor} 保证串行（AGENTS.md §1）。</p>
@@ -67,18 +68,34 @@ public class ServerTestTaskHandler implements TaskHandler {
      * @param command  远程执行的命令
      * @param progress 进入该探活项时汇报的进度百分比（0-100）
      * @param required 是否为必需项：true 表示失败即判定服务器不可用
+     * @param hint     失败时追加的可操作提示，如"怎么补上这个依赖"；无提示时为 null
      */
-    private record Probe(String stage, String command, int progress, boolean required) {
+    private record Probe(String stage, String command, int progress, boolean required, String hint) {
     }
 
-    /** 固定探活项，全部为只读命令，不产生副作用。 */
+    /**
+     * 固定探活项，全部为只读命令，不产生副作用。
+     *
+     * <p>探活项不区分「构建机」与「目标机」：服务器档案的三个目录都有数据库默认值，
+     * 无法据此判断用途，而同一台机器也可能既构建又部署。因此统一按「可选依赖清单」检查，
+     * 缺什么就提示什么——git / mvn 缺失会让构建阶段直接失败（典型报错是 bash: mvn: command not found），
+     * 提前在这里暴露并给出补装或补 PATH 的办法，比等构建任务失败更容易定位。</p>
+     */
     private static final List<Probe> PROBES = List.of(
             // 必需项：能执行 uname 说明 SSH 通道与登录 shell 均可用，是连通的基本判据。
-            new Probe("系统信息", "uname -a", 30, true),
-            new Probe("系统信息", "cat /etc/os-release 2>/dev/null | head -2", 35, false),
-            new Probe("运行时检查", "java -version 2>&1 | head -3", 50, false),
-            new Probe("运行时检查", "docker --version 2>&1 | head -1", 60, false),
-            new Probe("磁盘容量", "df -h /", 75, false));
+            new Probe("系统信息", "uname -a", 30, true, null),
+            new Probe("系统信息", "cat /etc/os-release 2>/dev/null | head -2", 35, false, null),
+            new Probe("运行时检查", "java -version 2>&1 | head -3", 45, false,
+                    "JAR 运行时需要 Java：安装 JDK（yum install -y java-1.8.0-openjdk）或在运行配置的 java_bin 里写绝对路径"),
+            // 构建依赖：非交互式 SSH 会话不加载 /etc/profile，靠 profile 导出 PATH 的工具可能找不到。
+            new Probe("构建依赖", "git --version 2>&1 | head -1", 55, false,
+                    "构建需要 git 克隆代码：安装（yum install -y git）"),
+            new Probe("构建依赖", "mvn -v 2>&1 | head -1", 60, false,
+                    "构建需要 Maven：安装（yum install -y maven）后若仍找不到，请在服务器档案的「构建环境初始化脚本」里补 PATH，"
+                            + "例如 export PATH=/opt/apache-maven-3.8.8/bin:$PATH"),
+            new Probe("运行时检查", "docker --version 2>&1 | head -1", 68, false,
+                    "Docker 构建模式需要 Docker：安装 Docker 并启动 dockerd"),
+            new Probe("磁盘容量", "df -h /", 75, false, null));
 
     /** 服务器 Mapper，用于读取目标服务器配置（跨模块只依赖 Mapper，不依赖对方 Service）。 */
     private final ServerMapper serverMapper;
@@ -92,28 +109,25 @@ public class ServerTestTaskHandler implements TaskHandler {
     /** 任务日志服务，用于把每一步执行过程写入 lds_task_log。 */
     private final TaskLogService taskLogService;
 
-    /** 部署根目录，用于检查目标机是否已做好部署准备。 */
-    private final String agentBaseDir;
-
     /**
      * 创建连通性测试处理器。
+     *
+     * <p>部署根目录不再由配置项注入：它是「这台机器上的目录」，由服务器页面按机器维护，
+     * 执行时从服务器档案读取，因此不同机器可以有不同挂载点。</p>
      *
      * @param serverMapper       服务器 Mapper
      * @param sshSessionFactory  SSH 会话工厂
      * @param taskService        任务服务
      * @param taskLogService     任务日志服务
-     * @param agentBaseDir       目标机部署根目录，默认 /opt/light-deploy
      */
     public ServerTestTaskHandler(ServerMapper serverMapper,
                                 SshSessionFactory sshSessionFactory,
                                 TaskService taskService,
-                                TaskLogService taskLogService,
-                                @Value("${light-deploy.agent.base-dir:/opt/light-deploy}") String agentBaseDir) {
+                                TaskLogService taskLogService) {
         this.serverMapper = serverMapper;
         this.sshSessionFactory = sshSessionFactory;
         this.taskService = taskService;
         this.taskLogService = taskLogService;
-        this.agentBaseDir = agentBaseDir;
     }
 
     /**
@@ -185,7 +199,7 @@ public class ServerTestTaskHandler implements TaskHandler {
                 }
             }
             // 部署目录检查依赖配置且结论要分等级，因此独立实现而不放进固定的 PROBES 列表。
-            if (!checkDeployDirectory(task, session)) {
+            if (!checkDeployDirectory(task, session, server)) {
                 return;
             }
             // 全部探活项完成，进度收敛到 100，保证页面进度条与任务终态一致。
@@ -211,13 +225,20 @@ public class ServerTestTaskHandler implements TaskHandler {
      *
      * @param task    当前任务
      * @param session 已认证的 SSH 会话
+     * @param server  目标服务器，部署根目录从其档案读取
      * @return true 表示可以继续；false 表示任务已被取消，调用方应立即停止
      */
-    private boolean checkDeployDirectory(Task task, SshSession session) {
+    private boolean checkDeployDirectory(Task task, SshSession session, Server server) {
         String stage = "部署目录";
         if (!reportProgress(task, stage, 85)) {
             return false;
         }
+        // 数据库列带默认值，走到这里为空说明被手工改过；连通性本身不受影响，只提示补齐配置。
+        if (!StringUtils.hasText(server.getAgentBaseDir())) {
+            appendLog(task, stage, TaskLogLevel.INFO, "服务器未配置部署根目录，请在服务器页面补充后再做部署");
+            return true;
+        }
+        String agentBaseDir = server.getAgentBaseDir().strip();
         // 只做只读检查，不在连通性测试阶段创建目录：写操作留给部署流程，测试不产生副作用。
         String command = "test -d " + agentBaseDir + " && test -w " + agentBaseDir
                 + " && echo LIGHT_DEPLOY_DIR_READY || echo LIGHT_DEPLOY_DIR_MISSING";
@@ -227,7 +248,7 @@ public class ServerTestTaskHandler implements TaskHandler {
             appendLog(task, stage, TaskLogLevel.INFO, "部署目录存在且可写：" + agentBaseDir);
             return true;
         }
-        appendLog(task, stage, TaskLogLevel.WARN,
+        appendLog(task, stage, TaskLogLevel.INFO,
                 "部署目录 " + agentBaseDir + " 不存在或当前用户无写权限，首次发布前需要创建该目录并授权");
         return true;
     }
@@ -263,9 +284,12 @@ public class ServerTestTaskHandler implements TaskHandler {
                     "服务器连通性测试未通过：命令 " + probe.command() + " 执行失败（exit=" + result.exitCode() + "）");
         }
         // 可选项失败只提示不判定失败：例如目标机没有安装 Docker，属于环境现状而非连接问题。
-        appendLog(task, probe.stage(), TaskLogLevel.WARN,
+        // 带 hint 的探活项（git / mvn 等构建依赖）在失败时追加可操作建议，避免用户只知道缺什么、不知道怎么办。
+        String advice = StringUtils.hasText(probe.hint()) ? "；建议：" + probe.hint() : "";
+        appendLog(task, probe.stage(), TaskLogLevel.INFO,
                 "探活命令返回非零退出码，exit=" + result.exitCode() + "，"
-                        + (StringUtils.hasText(result.stderr()) ? "stderr：" + result.stderr().strip() : "该环境可能未安装对应组件"));
+                        + (StringUtils.hasText(result.stderr()) ? "stderr：" + result.stderr().strip()
+                        : "该环境可能未安装对应组件") + advice);
         return true;
     }
 
@@ -286,7 +310,7 @@ public class ServerTestTaskHandler implements TaskHandler {
             taskService.updateProgress(task.getId(), stage, progress);
             return true;
         } catch (Exception e) {
-            appendLog(task, stage, TaskLogLevel.WARN, "任务已不在执行中，停止后续远程操作：" + e.getMessage());
+            appendLog(task, stage, TaskLogLevel.INFO, "任务已不在执行中，停止后续远程操作：" + e.getMessage());
             return false;
         }
     }
@@ -313,7 +337,7 @@ public class ServerTestTaskHandler implements TaskHandler {
             appendLog(task, stage, level, lines[i]);
         }
         if (lines.length > MAX_OUTPUT_LINES) {
-            appendLog(task, stage, TaskLogLevel.WARN,
+            appendLog(task, stage, TaskLogLevel.INFO,
                     "（输出共 " + lines.length + " 行，仅保留前 " + MAX_OUTPUT_LINES + " 行）");
         }
     }

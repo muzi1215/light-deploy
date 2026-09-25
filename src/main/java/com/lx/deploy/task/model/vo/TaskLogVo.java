@@ -57,10 +57,10 @@ public class TaskLogVo {
     /**
      * 日志级别。
      *
-     * <p>取值 DEBUG / INFO / WARN / ERROR，与后端 TaskLogLevel 枚举一致，
+     * <p>取值 INFO / ERROR，与后端 TaskLogLevel 枚举一致，
      * 前端据此渲染不同颜色的级别标签。</p>
      */
-    @Schema(description = "日志级别：DEBUG/INFO/WARN/ERROR")
+    @Schema(description = "日志级别：INFO/ERROR")
     private String logLevel;
 
     /**

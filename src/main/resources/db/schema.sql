@@ -5,7 +5,7 @@
  */
 
 CREATE TABLE IF NOT EXISTS `user` (
-    id VARCHAR(32) NOT NULL COMMENT '用户主键，MyBatis-Plus生成的32位UUID',
+    id VARCHAR(64) NOT NULL COMMENT '用户主键，MyBatis-Plus生成的64位UUID',
     username VARCHAR(64) NOT NULL COMMENT '登录用户名',
     password_hash VARCHAR(255) NOT NULL COMMENT '密码哈希，不保存明文密码',
     nickname VARCHAR(100) NULL COMMENT '用户昵称',
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS `user` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='临时用户表，接入统一权限中心后逐步停用';
 
 CREATE TABLE IF NOT EXISTS `server` (
-    id VARCHAR(32) NOT NULL COMMENT '服务器主键，MyBatis-Plus生成的32位UUID',
+    id VARCHAR(64) NOT NULL COMMENT '服务器主键，MyBatis-Plus生成的64位UUID',
     server_name VARCHAR(100) NOT NULL COMMENT '服务器名称',
     host VARCHAR(255) NOT NULL COMMENT '服务器IP地址或域名',
     ssh_port INT NOT NULL DEFAULT 22 COMMENT 'SSH端口',
@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS `server` (
     env_tag TINYINT NOT NULL DEFAULT 1 COMMENT '环境标签：1开发，2测试，3生产',
     status TINYINT NOT NULL DEFAULT 1 COMMENT '服务器状态：0停用，1启用',
     description VARCHAR(500) NULL COMMENT '服务器描述',
+    build_workspace_dir VARCHAR(255) NOT NULL DEFAULT '/opt/light-deploy/build-workspace' COMMENT '构建工作区根目录，仅构建机使用：每次构建在其下创建独立子目录，结束后清理',
+    build_artifact_dir VARCHAR(255) NOT NULL DEFAULT '/opt/light-deploy/artifacts' COMMENT '构建产物持久目录，仅构建机使用：产物转存于此供发布阶段下载，不随工作区清理',
+    agent_base_dir VARCHAR(255) NOT NULL DEFAULT '/opt/light-deploy' COMMENT '平台在该服务器上的部署根目录，连通性测试检查其存在且可写，应用部署在其 apps 子目录下',
+    build_env_script VARCHAR(255) NULL COMMENT '构建环境初始化脚本，仅构建机使用：执行构建命令前在当前 shell 执行，用于引入 PATH 等环境变量（如 export PATH=/opt/apache-maven/bin:$PATH）',
     created_by VARCHAR(100) NULL COMMENT '创建人用户ID',
     updated_by VARCHAR(100) NULL COMMENT '更新人用户ID',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -46,10 +50,10 @@ CREATE TABLE IF NOT EXISTS `server` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='部署服务器';
 
 CREATE TABLE IF NOT EXISTS lds_task (
-    id VARCHAR(32) NOT NULL COMMENT '任务主键，MyBatis-Plus生成的32位UUID',
+    id VARCHAR(64) NOT NULL COMMENT '任务主键，MyBatis-Plus生成的64位UUID',
     task_no VARCHAR(64) NOT NULL COMMENT '任务编号',
     task_type VARCHAR(30) NOT NULL COMMENT '任务类型：SERVER_TEST/BUILD/DEPLOY',
-    biz_id VARCHAR(32) NULL COMMENT '关联业务主键',
+    biz_id VARCHAR(64) NULL COMMENT '关联业务主键',
     status TINYINT NOT NULL DEFAULT 0 COMMENT '任务状态：0排队中，1执行中，2成功，3失败，4已取消',
     current_stage VARCHAR(30) NULL COMMENT '当前执行阶段',
     progress INT NOT NULL DEFAULT 0 COMMENT '任务进度，0到100',
@@ -66,11 +70,11 @@ CREATE TABLE IF NOT EXISTS lds_task (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='异步任务';
 
 CREATE TABLE IF NOT EXISTS lds_task_log (
-    id VARCHAR(32) NOT NULL COMMENT '任务日志主键，MyBatis-Plus生成的32位UUID',
-    task_id VARCHAR(32) NOT NULL COMMENT '任务主键',
+    id VARCHAR(64) NOT NULL COMMENT '任务日志主键，MyBatis-Plus生成的64位UUID',
+    task_id VARCHAR(64) NOT NULL COMMENT '任务主键',
     sequence_no BIGINT NOT NULL COMMENT '同一任务内的日志顺序号',
     stage VARCHAR(30) NULL COMMENT '日志所属任务阶段',
-    log_level VARCHAR(10) NOT NULL DEFAULT 'INFO' COMMENT '日志级别：DEBUG/INFO/WARN/ERROR',
+    log_level VARCHAR(10) NOT NULL DEFAULT 'INFO' COMMENT '日志级别：INFO/ERROR',
     content TEXT NOT NULL COMMENT '日志内容',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -81,7 +85,7 @@ CREATE TABLE IF NOT EXISTS lds_task_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务执行日志';
 
 CREATE TABLE IF NOT EXISTS credential (
-    id VARCHAR(32) NOT NULL COMMENT '凭据主键',
+    id VARCHAR(64) NOT NULL COMMENT '凭据主键',
     name VARCHAR(100) NOT NULL COMMENT '凭据名称',
     type VARCHAR(30) NOT NULL COMMENT '凭据类型：SSH_PASSWORD/SSH_KEY/GIT_TOKEN/REGISTRY',
     encrypted_value TEXT NOT NULL COMMENT 'AES-GCM加密后的凭据内容',
@@ -94,11 +98,11 @@ CREATE TABLE IF NOT EXISTS credential (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='加密凭据';
 
 CREATE TABLE IF NOT EXISTS registry (
-    id VARCHAR(32) NOT NULL COMMENT '镜像仓库主键',
+    id VARCHAR(64) NOT NULL COMMENT '镜像仓库主键',
     name VARCHAR(100) NOT NULL COMMENT '仓库名称',
     registry_url VARCHAR(255) NOT NULL COMMENT '仓库地址',
     namespace VARCHAR(150) NULL COMMENT '仓库命名空间',
-    credential_id VARCHAR(32) NULL COMMENT '仓库凭据ID',
+    credential_id VARCHAR(64) NULL COMMENT '仓库凭据ID',
     status TINYINT NOT NULL DEFAULT 1 COMMENT '状态：0停用，1启用',
     description VARCHAR(500) NULL COMMENT '仓库描述',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -109,16 +113,17 @@ CREATE TABLE IF NOT EXISTS registry (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='镜像仓库';
 
 CREATE TABLE IF NOT EXISTS project (
-    id VARCHAR(32) NOT NULL COMMENT '项目主键',
+    id VARCHAR(64) NOT NULL COMMENT '项目主键',
     code VARCHAR(64) NOT NULL COMMENT '项目编码',
     name VARCHAR(100) NOT NULL COMMENT '项目名称',
     runtime_type VARCHAR(20) NOT NULL COMMENT '运行时：DOCKER/JAR/STATIC',
     source_type VARCHAR(20) NOT NULL DEFAULT 'GIT' COMMENT '代码来源：GIT/UPLOAD',
     git_url VARCHAR(500) NULL COMMENT 'Git仓库地址',
     git_branch VARCHAR(100) NULL COMMENT 'Git分支',
-    git_credential_id VARCHAR(32) NULL COMMENT 'Git凭据ID',
+    git_credential_id VARCHAR(64) NULL COMMENT 'Git凭据ID',
     build_mode VARCHAR(30) NOT NULL DEFAULT 'PLATFORM_TEMPLATE' COMMENT '构建模式',
-    registry_id VARCHAR(32) NULL COMMENT '镜像仓库ID，仅 DOCKER 运行时使用，指向 registry 表',
+    registry_id VARCHAR(64) NULL COMMENT '镜像仓库ID，仅 DOCKER 运行时使用，指向 registry 表',
+    build_server_id VARCHAR(64) NULL COMMENT '构建机服务器ID，指向server表，项目连通性测试与构建的执行目标',
     build_config_json JSON NULL COMMENT '构建配置：模块名、构建命令、Dockerfile路径、产物路径、镜像坐标，见 docs/项目模块.md',
     runtime_config_json JSON NULL COMMENT '运行配置：容器/进程/静态站点的启动、端口、环境变量与部署目录',
     health_config_json JSON NULL COMMENT '健康检查配置：检查方式、端口、路径、超时、重试与观察时间',
@@ -136,12 +141,12 @@ CREATE TABLE IF NOT EXISTS project (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='部署项目';
 
 CREATE TABLE IF NOT EXISTS environment (
-    id VARCHAR(32) NOT NULL COMMENT '环境主键',
-    code VARCHAR(32) NOT NULL COMMENT '环境编码：dev/test/prod',
+    id VARCHAR(64) NOT NULL COMMENT '环境主键',
+    code VARCHAR(64) NOT NULL COMMENT '环境编码：dev/test/prod',
     name VARCHAR(100) NOT NULL COMMENT '环境名称',
     deploy_strategy VARCHAR(30) NOT NULL DEFAULT 'SINGLE_TARGET' COMMENT '部署策略',
     batch_size INT NOT NULL DEFAULT 1 COMMENT '滚动发布批次大小',
-    default_server_id VARCHAR(32) NULL COMMENT '默认目标服务器ID',
+    default_server_id VARCHAR(64) NULL COMMENT '默认目标服务器ID',
     aiops_enabled TINYINT NOT NULL DEFAULT 0 COMMENT '是否启用AIops联动',
     description VARCHAR(500) NULL COMMENT '环境描述',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -152,10 +157,10 @@ CREATE TABLE IF NOT EXISTS environment (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='部署环境';
 
 CREATE TABLE IF NOT EXISTS project_environment_target (
-    id VARCHAR(32) NOT NULL COMMENT '项目环境目标主键',
-    project_id VARCHAR(32) NOT NULL COMMENT '项目ID',
-    environment_id VARCHAR(32) NOT NULL COMMENT '环境ID',
-    server_id VARCHAR(32) NOT NULL COMMENT '目标服务器ID',
+    id VARCHAR(64) NOT NULL COMMENT '项目环境目标主键',
+    project_id VARCHAR(64) NOT NULL COMMENT '项目ID',
+    environment_id VARCHAR(64) NOT NULL COMMENT '环境ID',
+    server_id VARCHAR(64) NOT NULL COMMENT '目标服务器ID',
     is_primary TINYINT NOT NULL DEFAULT 0 COMMENT '是否为主目标',
     deploy_order INT NOT NULL DEFAULT 1 COMMENT '多目标发布顺序',
     runtime_config_json JSON NULL COMMENT '目标差异化运行配置',
@@ -169,12 +174,13 @@ CREATE TABLE IF NOT EXISTS project_environment_target (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='项目环境部署目标';
 
 CREATE TABLE IF NOT EXISTS build (
-    id VARCHAR(32) NOT NULL COMMENT '构建主键',
-    project_id VARCHAR(32) NOT NULL COMMENT '项目ID',
-    deployment_id VARCHAR(32) NULL COMMENT '部署任务ID',
+    id VARCHAR(64) NOT NULL COMMENT '构建主键',
+    project_id VARCHAR(64) NOT NULL COMMENT '项目ID',
+    deployment_id VARCHAR(64) NULL COMMENT '部署任务ID',
     build_mode VARCHAR(30) NOT NULL COMMENT '构建模式',
-    build_server_id VARCHAR(32) NULL COMMENT '构建服务器ID',
+    build_server_id VARCHAR(64) NULL COMMENT '构建服务器ID',
     git_commit VARCHAR(100) NULL COMMENT 'Git提交ID',
+    version_seq INT NULL COMMENT '版本序号：发起构建时可手动指定，为空则由构建成功时自动递增取号',
     dependency_hash VARCHAR(128) NULL COMMENT '依赖文件摘要',
     status TINYINT NOT NULL DEFAULT 0 COMMENT '构建状态：0排队中，1构建中，2成功，3失败',
     started_at DATETIME NULL COMMENT '开始时间',
@@ -189,8 +195,8 @@ CREATE TABLE IF NOT EXISTS build (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='构建任务';
 
 CREATE TABLE IF NOT EXISTS build_artifact (
-    id VARCHAR(32) NOT NULL COMMENT '构建产物主键',
-    build_id VARCHAR(32) NOT NULL COMMENT '构建任务ID',
+    id VARCHAR(64) NOT NULL COMMENT '构建产物主键',
+    build_id VARCHAR(64) NOT NULL COMMENT '构建任务ID',
     artifact_type VARCHAR(20) NOT NULL COMMENT '产物类型：BASE_IMAGE/APP_IMAGE/JAR/STATIC',
     artifact_name VARCHAR(255) NOT NULL COMMENT '产物名称',
     artifact_tag VARCHAR(255) NULL COMMENT '镜像或产物标签',
@@ -206,9 +212,11 @@ CREATE TABLE IF NOT EXISTS build_artifact (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='构建产物';
 
 CREATE TABLE IF NOT EXISTS release_record (
-    id VARCHAR(32) NOT NULL COMMENT '发布版本主键',
-    project_id VARCHAR(32) NOT NULL COMMENT '项目ID',
-    version VARCHAR(100) NOT NULL COMMENT '发布版本号',
+    id VARCHAR(64) NOT NULL COMMENT '发布版本主键',
+    project_id VARCHAR(64) NOT NULL COMMENT '项目ID',
+    build_server_id VARCHAR(64) NULL COMMENT '产物所在构建机ID，指向server表，JAR/STATIC部署时用于SFTP下载产物',
+    version VARCHAR(100) NOT NULL COMMENT '发布版本号，格式 {项目编码}-v{版本序号}-{提交短码}',
+    version_seq INT NULL COMMENT '版本序号：项目内递增，版本号据此排序与追溯',
     commit_id VARCHAR(100) NULL COMMENT 'Git提交ID',
     artifact_path VARCHAR(500) NULL COMMENT 'JAR或静态产物路径',
     image_tag VARCHAR(255) NULL COMMENT 'Docker镜像标签',
@@ -222,14 +230,15 @@ CREATE TABLE IF NOT EXISTS release_record (
     is_deleted TINYINT NOT NULL DEFAULT 0 COMMENT '软删除标记：0未删除，1已删除',
     PRIMARY KEY (id),
     UNIQUE KEY uk_release_project_version (project_id, version, is_deleted),
-    KEY idx_release_project (project_id, create_time)
+    KEY idx_release_project (project_id, create_time),
+    KEY idx_release_project_seq (project_id, version_seq)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='发布版本';
 
 CREATE TABLE IF NOT EXISTS deployment (
-    id VARCHAR(32) NOT NULL COMMENT '部署主任务主键',
-    project_id VARCHAR(32) NOT NULL COMMENT '项目ID',
-    environment_id VARCHAR(32) NOT NULL COMMENT '环境ID',
-    release_id VARCHAR(32) NULL COMMENT '发布版本ID',
+    id VARCHAR(64) NOT NULL COMMENT '部署主任务主键',
+    project_id VARCHAR(64) NOT NULL COMMENT '项目ID',
+    environment_id VARCHAR(64) NOT NULL COMMENT '环境ID',
+    release_id VARCHAR(64) NULL COMMENT '发布版本ID',
     strategy VARCHAR(30) NOT NULL DEFAULT 'SINGLE_TARGET' COMMENT '部署策略',
     status TINYINT NOT NULL DEFAULT 0 COMMENT '部署状态：0排队中，1发布中，2成功，3失败，4已取消，5回滚中，6已回滚',
     operator_id VARCHAR(100) NULL COMMENT '操作者ID',
@@ -247,9 +256,9 @@ CREATE TABLE IF NOT EXISTS deployment (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='部署主任务';
 
 CREATE TABLE IF NOT EXISTS deployment_target (
-    id VARCHAR(32) NOT NULL COMMENT '部署目标主键',
-    deployment_id VARCHAR(32) NOT NULL COMMENT '部署主任务ID',
-    server_id VARCHAR(32) NOT NULL COMMENT '目标服务器ID',
+    id VARCHAR(64) NOT NULL COMMENT '部署目标主键',
+    deployment_id VARCHAR(64) NOT NULL COMMENT '部署主任务ID',
+    server_id VARCHAR(64) NOT NULL COMMENT '目标服务器ID',
     status TINYINT NOT NULL DEFAULT 0 COMMENT '目标任务状态：0排队中，1发布中，2成功，3失败，4已取消，5已跳过',
     old_version VARCHAR(100) NULL COMMENT '旧版本',
     new_version VARCHAR(100) NULL COMMENT '新版本',
@@ -267,8 +276,8 @@ CREATE TABLE IF NOT EXISTS deployment_target (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='部署目标任务';
 
 CREATE TABLE IF NOT EXISTS aiops_event (
-    id VARCHAR(32) NOT NULL COMMENT 'AIops事件主键',
-    deployment_id VARCHAR(32) NOT NULL COMMENT '部署任务ID',
+    id VARCHAR(64) NOT NULL COMMENT 'AIops事件主键',
+    deployment_id VARCHAR(64) NOT NULL COMMENT '部署任务ID',
     event_id VARCHAR(128) NOT NULL COMMENT '事件ID',
     event_type VARCHAR(50) NOT NULL COMMENT '事件类型',
     idempotency_key VARCHAR(150) NOT NULL COMMENT '幂等键',
@@ -287,7 +296,7 @@ CREATE TABLE IF NOT EXISTS aiops_event (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AIops联动事件';
 
 CREATE TABLE IF NOT EXISTS audit_log (
-    id VARCHAR(32) NOT NULL COMMENT '审计日志主键',
+    id VARCHAR(64) NOT NULL COMMENT '审计日志主键',
     operator_id VARCHAR(100) NULL COMMENT '操作者ID',
     operator_name VARCHAR(100) NULL COMMENT '操作者名称',
     action VARCHAR(50) NOT NULL COMMENT '操作动作',

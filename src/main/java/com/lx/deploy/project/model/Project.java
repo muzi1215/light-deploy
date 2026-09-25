@@ -130,6 +130,20 @@ public class Project extends BaseEntity {
     private String registryId;
 
     /**
+     * 构建机服务器 ID，指向 server 表。
+     *
+     * <p>选填，回答「这个项目在哪台机器上构建」：既是「连通性测试」的执行目标，
+     * 也是新建构建时构建机的默认来源（请求显式指定 &gt; 项目档案 &gt; 系统默认配置）。
+     * 不填时回落到系统默认构建机。Service 校验该服务器存在且启用。</p>
+     *
+     * <p>updateStrategy = ALWAYS：页面清空构建机后必须真的解除绑定，
+     * 否则项目会一直固定在一台已经不打算使用的机器上。</p>
+     */
+    @TableField(value = "build_server_id", updateStrategy = FieldStrategy.ALWAYS)
+    @Schema(description = "构建机服务器ID，选填，指向server表")
+    private String buildServerId;
+
+    /**
      * 构建配置 JSON。
      *
      * <p>选填，Service 校验合法 JSON 格式但不解析语义，

@@ -43,7 +43,11 @@ com/lx/deploy/ssh/
 | 方法 | 说明 |
 | --- | --- |
 | `SshSessionFactory.open(Server server)` | 建立并认证一条会话，失败抛 `REMOTE_EXECUTION_ERROR`；调用方必须 try-with-resources |
-| `SshSession.exec(String command)` | 执行一条命令，返回 `SshCommandResult`（含退出码、stdout、stderr、是否截断） |
+| `SshSession.exec(String command)` | 以秒级超时执行一条命令，返回 `SshCommandResult`（含退出码、stdout、stderr、是否截断） |
+| `SshSession.exec(String command, int timeoutSeconds, Consumer<String> stdoutLineConsumer)` | 指定超时执行；`stdoutLineConsumer` 非空时按行实时回调（独立线程，不阻塞读线程） |
+| `SshSession.execLong(String command[, Consumer<String>])` | 以全局长命令超时执行，供克隆、构建、镜像、发布等分钟级命令使用 |
+| `SshSessionTimeoutException` | 超时异常，携带超时前已收到的输出快照（调用方据此落日志定位卡点） |
+| `SshSession.sftpDownload / sftpUpload` | 产物在「构建机 → 平台 → 目标机」之间中转，不经 SFTP 直接互信 |
 | `SshSession.close()` | 关闭会话与客户端，异常只记录不上抛 |
 | `SshCommandResult.success()` | 退出码是否为 0 |
 | `SshCommandResult.summary()` | 单行摘要（退出码 + 输出首行），用于日志 |
@@ -89,13 +93,20 @@ session.auth().verify(authTimeoutMs);
 ```yaml
 light-deploy:
   ssh:
-    connect-timeout-ms: 10000       # TCP 建连等待
-    auth-timeout-ms: 10000          # 认证等待
-    command-timeout-seconds: 120    # 单条命令等待
-    max-output-chars: 20000         # 单条命令输出保留上限，超出截断
+    connect-timeout-ms: 10000              # TCP 建连等待
+    auth-timeout-ms: 10000                 # 认证等待
+    command-timeout-seconds: 120           # 秒级命令等待：探活、检目录、systemctl 状态
+    long-command-timeout-seconds: 1800     # 耗时类命令等待：克隆、构建、镜像构建/推送、发布
+    max-output-chars: 20000                # 单条命令输出保留上限，超出截断
 ```
 
+**为什么是两套超时**：首次构建要从仓库下载上百 MB 依赖，分钟级属于正常；用一套 120 秒会把正常构建误判成卡死。命令按耗时分流——`exec()` 走秒级档，`execLong()` 走长命令档；构建命令还支持项目级覆盖（`build_config_json.command_timeout_seconds`，不填用全局值）。
+
 `exec` 在等待通道关闭时把 `TIMEOUT` 也放进可等待事件集：命令挂死时会命中超时分支抛出明确异常，而不是无限阻塞工作线程。
+
+**超时不丢输出**：命中超时后先关闭通道，再把已收到的 stdout/stderr 装进 `SshCommandTimeoutException` 一起抛出。原来缓冲区直接丢弃，页面上只剩一句「执行超时」，无法区分「慢」还是「卡死」；现在调用方可以把卡住前的输出落进任务日志。
+
+**实时回传**：`exec(command, timeoutSeconds, stdoutLineConsumer)` 会把 stdout 按行回调。SSHD 读线程只负责入队，另起独立线程消费写日志——任务日志要落库，直接在读线程写库会拖慢输出读取，TCP 窗口被填满后反压到远端进程，构建反而更慢。队列满时丢行并计数告警，宁可少几行日志也不阻塞命令执行。
 
 ## 7. 与其他模块的关系
 

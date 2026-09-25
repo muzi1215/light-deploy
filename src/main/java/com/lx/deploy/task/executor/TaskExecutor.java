@@ -306,6 +306,10 @@ public class TaskExecutor implements SmartLifecycle {
     /**
      * 领取并执行一条任务。
      *
+     * <p>处理器抛出的异常在这里收敛：先把失败原因落库（任务日志 + error_message），
+     * 同时写一条控制台日志——业务性失败记 WARN 不打堆栈，未预期异常记 ERROR 带堆栈。
+     * 只落库不写日志会让任务失败在服务端日志里完全不可见。</p>
+     *
      * @param taskId  任务主键
      * @param handler 任务处理器；为 null 表示任务类型尚无实现
      */
@@ -333,6 +337,15 @@ public class TaskExecutor implements SmartLifecycle {
             appendLog(task, STAGE_SYSTEM, TaskLogLevel.INFO, "任务执行成功");
             markSuccess(taskId);
         } catch (Exception e) {
+            // 任务失败必须同时留痕到控制台：原先只调用 failTask 写库（lds_task_log + error_message），
+            // 控制台与日志文件里一行都没有——排查时既拿不到堆栈，也不知道是哪一步、哪台机器出的问题。
+            if (e instanceof DeployException) {
+                // 业务性失败（目标机命令报错、校验不通过等）：原因已足够定位，不打堆栈避免刷屏。
+                log.error("任务执行失败，taskId={}，类型 {}，原因：{}", taskId, handler.taskType(), safeMessage(e));
+            } else {
+                // 未预期异常：保留完整堆栈，这是唯一能定位代码缺陷的地方。
+                log.error("任务执行出现未预期异常，taskId={}，类型 {}", taskId, handler.taskType(), e);
+            }
             failTask(taskId, safeMessage(e));
         }
     }
@@ -385,7 +398,7 @@ public class TaskExecutor implements SmartLifecycle {
         try {
             List<Task> interrupted = taskService.listByStatus(TaskStatus.RUNNING);
             for (Task task : interrupted) {
-                appendLog(task, STAGE_SYSTEM, TaskLogLevel.WARN, "平台重启，任务执行已中断");
+                appendLog(task, STAGE_SYSTEM, TaskLogLevel.INFO, "平台重启，任务执行已中断");
                 taskService.markFailed(task.getId(), "平台重启导致任务执行中断，请重新提交");
                 log.warn("已收敛中断的任务，taskId={}, taskNo={}", task.getId(), task.getTaskNo());
             }

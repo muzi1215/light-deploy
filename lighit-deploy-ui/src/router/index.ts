@@ -65,6 +65,28 @@ export const constantRoutes: AppRouteRecordRaw[] = [
         meta: { title: '项目列表' }
       },
       {
+        // 新增 / 编辑 / 详情走独立页面（hidden 不进菜单）：表单字段多，弹框空间不够
+        path: 'add',
+        name: 'ProjectAdd',
+        component: () => import('@/views/project/edit.vue'),
+        meta: { title: '新增项目', noCache: true },
+        hidden: true
+      },
+      {
+        path: 'edit/:id',
+        name: 'ProjectEdit',
+        component: () => import('@/views/project/edit.vue'),
+        meta: { title: '编辑项目', noCache: true },
+        hidden: true
+      },
+      {
+        path: 'detail/:id',
+        name: 'ProjectDetail',
+        component: () => import('@/views/project/detail.vue'),
+        meta: { title: '项目详情', noCache: true },
+        hidden: true
+      },
+      {
         path: 'environment',
         name: 'EnvironmentList',
         component: () => import('@/views/environment/index.vue'),
@@ -91,6 +113,38 @@ export const constantRoutes: AppRouteRecordRaw[] = [
         name: 'TaskList',
         component: () => import('@/views/task/index.vue'),
         meta: { title: '任务列表' }
+      }
+    ]
+  },
+  {
+    // 构建管理（一级目录）：构建记录查询、实时日志与产物查看
+    path: '/build',
+    component: Layout,
+    redirect: '/build/list',
+    alwaysShow: true,
+    meta: { title: '构建管理', icon: 'Loading' },
+    children: [
+      {
+        path: 'list',
+        name: 'BuildList',
+        component: () => import('@/views/build/index.vue'),
+        meta: { title: '构建列表' }
+      }
+    ]
+  },
+  {
+    // 发布管理（一级目录）：部署记录查询、目标明细、实时日志与回滚
+    path: '/deployment',
+    component: Layout,
+    redirect: '/deployment/list',
+    alwaysShow: true,
+    meta: { title: '发布管理', icon: 'Promotion' },
+    children: [
+      {
+        path: 'list',
+        name: 'DeploymentList',
+        component: () => import('@/views/deploy/index.vue'),
+        meta: { title: '部署记录' }
       }
     ]
   },

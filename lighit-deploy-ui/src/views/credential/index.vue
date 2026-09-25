@@ -122,7 +122,7 @@
                   </el-tooltip>
                 </template>
                 <el-input v-model="formData.metadataJson" type="textarea" :rows="3" :placeholder="METADATA_EXAMPLE" />
-                <span class="form-tip">非敏感信息，如镜像仓库登录用户名；禁止填写密码、令牌或私钥（选填，须为合法 JSON）</span>
+                <span class="form-tip">非敏感信息，仅供页面展示（如给凭据备注一个账号名），不参与登录或克隆；禁止填写密码、令牌或私钥（选填，须为合法 JSON）</span>
               </el-form-item>
             </el-col>
           </el-row>
@@ -217,12 +217,27 @@ const currentTypeTip = computed(
   () => CREDENTIAL_TYPE_OPTIONS.find((item) => item.value === formData.type)?.tip || '请选择凭据类型'
 )
 
-/** 凭据内容输入框的占位文案：编辑态明确提示「留空表示不修改」 */
+/**
+ * 凭据内容输入框的占位文案。
+ *
+ * 编辑态优先提示「留空表示不修改」；新增态按类型给出各自的填写形态——四类凭据往里填的东西
+ * 完全不同（令牌 / PEM 私钥 / 用户名:密码），一句通用文案不足以说清，填错类型只能等到构建或
+ * 推送时才暴露。口径见 docs/凭据模块.md §6.6。
+ */
 const credentialPlaceholder = computed(() => {
   if (isEdit.value) {
     return '留空表示不修改现有凭据；填写则整体覆盖'
   }
-  return '粘贴 Git 访问令牌 / 私钥内容 / 仓库密码'
+  switch (formData.type) {
+    case 'GIT_TOKEN':
+      return '令牌，或「用户名:令牌」，如 wangan2022:a1b2c3d4e5f6'
+    case 'SSH_KEY':
+      return '粘贴完整 PEM 私钥，含 -----BEGIN / -----END 两行'
+    case 'REGISTRY':
+      return '「用户名:密码」，如 light-deploy:Abc123456'
+    default:
+      return '该类型当前没有消费方，填了也不会被使用'
+  }
 })
 
 /**

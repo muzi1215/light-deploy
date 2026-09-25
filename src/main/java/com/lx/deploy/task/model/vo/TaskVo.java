@@ -42,9 +42,9 @@ public class TaskVo {
     /**
      * 任务类型。
      *
-     * <p>取值 SERVER_TEST / BUILD / DEPLOY，与后端 TaskType 枚举一致。</p>
+     * <p>取值 SERVER_TEST / PROJECT_TEST / BUILD / DEPLOY，与后端 TaskType 枚举一致。</p>
      */
-    @Schema(description = "任务类型：SERVER_TEST/BUILD/DEPLOY")
+    @Schema(description = "任务类型：SERVER_TEST/PROJECT_TEST/BUILD/DEPLOY")
     private String taskType;
 
     /**

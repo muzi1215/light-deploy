@@ -399,6 +399,18 @@ div:focus {
   color: var(--text-regular);
 }
 
+// 选中态恢复：上面的 !important 白底会把 Element Plus 选中态的主色背景一并覆盖，
+// 导致选中的「表单编辑 / JSON 编辑」变成白底白字看不见，这里显式给回选中态配色
+.el-radio-button__original-radio:checked + .el-radio-button__inner {
+  background: var(--el-color-primary, #2d6cdf) !important;
+  border-color: var(--el-color-primary, #2d6cdf) !important;
+  color: #fff !important;
+}
+
+.el-radio-button__inner:hover {
+  color: var(--menu-active-text);
+}
+
 .el-radio-button:first-child .el-radio-button__inner {
   border-left-color: var(--border-color);
 }
@@ -711,6 +723,15 @@ div:focus {
   color: #808080;
   margin-left: 8px;
   float: right;
+}
+
+// ==================== 文本选区 ====================
+// 输入框 / 表格 / JSON 文本域中选中文字时的高亮：不显式定义时，
+// 部分 Chromium 版本在自定义文字色（!important）下选区会与文字同色，看起来像「选中变白」。
+// 统一定义为主题色底 + 白字，明暗主题下都可见（::selection 优先级高于元素 color，含 !important）。
+::selection {
+  background: var(--el-color-primary, #2d6cdf);
+  color: #fff;
 }
 
 // ==================== 暗色主题全局滚动条 ====================

@@ -9,6 +9,7 @@ import com.lx.deploy.common.enums.project.RuntimeType;
 import com.lx.deploy.common.enums.project.SourceType;
 import com.lx.deploy.common.constants.EnableStatus;
 import com.lx.deploy.common.enums.credential.CredentialType;
+import com.lx.deploy.common.enums.task.TaskType;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
@@ -23,20 +24,28 @@ import com.lx.deploy.project.model.dto.ProjectDto;
 import com.lx.deploy.project.model.vo.ProjectVo;
 import com.lx.deploy.registry.mapper.RegistryMapper;
 import com.lx.deploy.registry.model.Registry;
+import com.lx.deploy.server.mapper.ServerMapper;
+import com.lx.deploy.server.model.Server;
+import com.lx.deploy.task.model.dto.TaskDto;
+import com.lx.deploy.task.model.vo.TaskVo;
+import com.lx.deploy.task.service.TaskService;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 部署项目服务。
  *
  * <p>当前类直接继承 MyBatis-Plus ServiceImpl，不创建 Service 接口。Controller 只传递 DTO 和 VO，
  * 实体仅在 Service 与 Mapper 数据访问边界内使用。除了基础 CRUD，本服务还集中处理项目编码唯一性、
- * 枚举取值合法性、运行时与构建模式的组合约束、Git 来源必填地址、凭据与镜像仓库引用校验、
- * JSON 配置格式等业务校验。</p>
+ * 枚举取值合法性、运行时与构建模式的组合约束、Git 来源必填地址、凭据/镜像仓库/构建机引用校验、
+ * JSON 配置格式等业务校验，并提供项目连通性测试的任务提交入口。</p>
  *
  * <p>跨模块校验统一注入对方 Mapper（credential / registry），不注入对方 Service，
  * 避免 Service 之间形成循环依赖。</p>
@@ -62,19 +71,71 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
     /** 镜像仓库 Mapper，用于校验 project.registry_id 指向的仓库存在且处于启用状态。 */
     private final RegistryMapper registryMapper;
 
+    /** 服务器 Mapper，用于校验 project.build_server_id 指向的构建机存在且启用，并回填构建机名称。 */
+    private final ServerMapper serverMapper;
+
+    /**
+     * 任务服务。
+     *
+     * <p>连通性测试本质是一次异步任务，项目模块只负责提交任务，不直接执行远程操作，
+     * 因此依赖任务模块的服务而不是 SSH 执行层（AGENTS.md §12：Controller 不写执行逻辑）。</p>
+     */
+    private final TaskService taskService;
+
     /**
      * 注入本模块与跨模块校验所需的 Mapper。
      *
      * @param projectEnvironmentTargetMapper 项目环境部署目标 Mapper
      * @param credentialMapper 凭据 Mapper
      * @param registryMapper 镜像仓库 Mapper
+     * @param serverMapper 服务器 Mapper
+     * @param taskService 任务服务
      */
     public ProjectService(ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper,
                           CredentialMapper credentialMapper,
-                          RegistryMapper registryMapper) {
+                          RegistryMapper registryMapper,
+                          ServerMapper serverMapper,
+                          TaskService taskService) {
         this.projectEnvironmentTargetMapper = projectEnvironmentTargetMapper;
         this.credentialMapper = credentialMapper;
         this.registryMapper = registryMapper;
+        this.serverMapper = serverMapper;
+        this.taskService = taskService;
+    }
+
+    /**
+     * 提交一次项目连通性测试任务。
+     *
+     * <p>测试在项目的构建机上执行，校验代码仓库可否拉取、镜像仓库可否登录，避免这些配置问题
+     * 拖到真正构建时才以「构建失败」的形式暴露。接口只创建任务并立即返回，
+     * 真正的远程校验由 {@code ProjectConnectTestTaskHandler} 异步完成。</p>
+     *
+     * <p>提交前必须拦住两类提交了也白跑的情况：项目未绑定构建机（没有执行目标）、
+     * 同一项目已有未完成的测试（连点会重复占用构建机）。</p>
+     *
+     * @param id 目标项目主键
+     * @return 新建的异步任务（状态为 0 排队中）
+     * @throws DeployException 项目不存在、已停用、未绑定构建机或已有未完成任务时抛出
+     */
+    public TaskVo submitConnectivityTest(String id) {
+        Project entity = getRequiredEntityById(id);
+        // 停用项目不参与构建与发布，测试属于构建前预检，同样拒绝执行。
+        if (entity.getStatus() == null || entity.getStatus() != EnableStatus.ENABLED) {
+            throw new DeployException(ResponseCode.DATA_CONFLICT, "项目已停用，不允许执行连通性测试");
+        }
+        if (!StringUtils.hasText(entity.getBuildServerId())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "项目未绑定构建机，无法执行连通性测试；请先在编辑页选择构建机");
+        }
+        // 同一项目已有排队中或执行中的测试时拒绝重复提交，避免连点重复占用构建机。
+        if (taskService.hasUnfinishedTask(TaskType.PROJECT_TEST.getCode(), id)) {
+            throw new DeployException(ResponseCode.DATA_CONFLICT, "该项目已有未完成的连通性测试任务，请等待其结束");
+        }
+        // 任务类型与关联业务主键由服务端决定，不接受调用方自定义，避免任务指向错误目标。
+        TaskDto dto = new TaskDto();
+        dto.setTaskType(TaskType.PROJECT_TEST.getCode());
+        dto.setBizId(id);
+        return taskService.create(dto);
     }
 
     /**
@@ -87,7 +148,7 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
     public PageResult<ProjectVo> pageByCondition(PageQuery pageQuery, ProjectDto condition) {
         // 持久层使用实体分页，接口返回前逐条转换为 VO，避免实体泄漏到 Controller。
         Page<Project> page = page(pageQuery.toPage(), buildQueryWrapper(condition));
-        List<ProjectVo> records = page.getRecords().stream().map(this::toVo).toList();
+        List<ProjectVo> records = toVoList(page.getRecords());
         return new PageResult<>(page.getCurrent(), page.getSize(), page.getTotal(), page.getPages(), records);
     }
 
@@ -99,7 +160,7 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
      */
     public List<ProjectVo> listByCondition(ProjectDto condition) {
         // 查询结果在 Service 层统一脱敏并转换为 VO。
-        return list(buildQueryWrapper(condition)).stream().map(this::toVo).toList();
+        return toVoList(list(buildQueryWrapper(condition)));
     }
 
     /**
@@ -110,7 +171,7 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
      * @throws DeployException 数据不存在时抛出
      */
     public ProjectVo getRequiredById(String id) {
-        return toVo(getRequiredEntityById(id));
+        return toVoList(List.of(getRequiredEntityById(id))).get(0);
     }
 
     /**
@@ -134,7 +195,7 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         if (!save(entity)) {
             throw new DeployException(ResponseCode.BUSINESS_ERROR, "新增部署项目失败");
         }
-        return toVo(entity);
+        return toVoList(List.of(entity)).get(0);
     }
 
     /**
@@ -251,6 +312,8 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         validateGitCredentialReference(dto.getGitCredentialId());
         // 镜像仓库引用校验：仓库必须存在且处于启用状态。
         validateRegistryReference(dto.getRegistryId());
+        // 构建机引用校验：服务器必须存在且处于启用状态。
+        validateBuildServerReference(dto.getBuildServerId());
         // 保留发布版本数量传入时必须大于等于 1。
         if (dto.getRetainReleaseCount() != null && dto.getRetainReleaseCount() < 1) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR, "保留发布版本数量必须大于等于 1");
@@ -344,6 +407,29 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
     }
 
     /**
+     * 校验构建机引用。
+     *
+     * <p>构建机必须存在且处于启用状态：停用意味着运维已经不打算再用这台机器构建，
+     * 此时允许绑定会把问题推迟到构建或连通性测试时才暴露。</p>
+     *
+     * @param buildServerId 待校验的服务器主键，允许为 null（回落到系统默认构建机）
+     * @throws DeployException 服务器不存在或已停用时抛出
+     */
+    private void validateBuildServerReference(String buildServerId) {
+        if (!StringUtils.hasText(buildServerId)) {
+            return;
+        }
+        Server server = serverMapper.selectById(buildServerId);
+        if (server == null) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "绑定的构建机不存在，请重新选择");
+        }
+        if (server.getStatus() == null || server.getStatus() != EnableStatus.ENABLED) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "绑定的构建机已停用，请重新选择或先启用该服务器");
+        }
+    }
+
+    /**
      * 校验字符串是合法 JSON。
      *
      * @param fieldName 配置字段中文名，用于异常消息
@@ -417,17 +503,45 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
     }
 
     /**
-     * 将数据库实体转换为接口响应 VO。
+     * 将数据库实体批量转换为接口响应 VO，并回填展示用字段。
      *
      * <p>VO 类型本身不声明敏感字段，因此属性复制不会把密码、密文、Token 或私钥返回给前端。</p>
      *
-     * @param entity 数据库实体
-     * @return 可安全返回给 Controller 的响应对象
+     * <p>构建机名称必须在这里**批量**回填而不是逐条查询：列表页一页 20 行时逐条查 server
+     * 就是 20 次额外查询（N+1）。收集全部 buildServerId 后一次 selectBatchIds 即可。</p>
+     *
+     * @param entities 数据库实体列表，允许为空
+     * @return 可安全返回给 Controller 的响应对象列表
      */
-    private ProjectVo toVo(Project entity) {
-        ProjectVo vo = new ProjectVo();
-        BeanUtils.copyProperties(entity, vo);
-        return vo;
+    private List<ProjectVo> toVoList(List<Project> entities) {
+        List<ProjectVo> vos = entities.stream().map(entity -> {
+            ProjectVo vo = new ProjectVo();
+            BeanUtils.copyProperties(entity, vo);
+            return vo;
+        }).toList();
+        fillBuildServerName(vos);
+        return vos;
+    }
+
+    /**
+     * 按 buildServerId 批量回填构建机名称。
+     *
+     * <p>名称只是展示字段，查不到（服务器已删除、数据被手工改脏）时留空即可，
+     * 不抛异常、不阻塞列表返回。</p>
+     *
+     * @param vos 已转换的 VO 列表；方法内原地回填
+     */
+    private void fillBuildServerName(List<ProjectVo> vos) {
+        Set<String> serverIds = vos.stream()
+                .map(ProjectVo::getBuildServerId)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toSet());
+        if (serverIds.isEmpty()) {
+            return;
+        }
+        Map<String, String> nameById = serverMapper.selectBatchIds(serverIds).stream()
+                .collect(Collectors.toMap(Server::getId, Server::getServerName, (left, right) -> left));
+        vos.forEach(vo -> vo.setBuildServerName(nameById.get(vo.getBuildServerId())));
     }
 
     /**
@@ -461,6 +575,9 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         // 构建模式：非空字符串使用等值条件查询。
         wrapper.eq(StringUtils.hasText(condition.getBuildMode()),
                 Project::getBuildMode, condition.getBuildMode());
+        // 构建机：非空字符串使用等值条件查询，用于筛出绑定到某台机器（或未绑定）的项目。
+        wrapper.eq(StringUtils.hasText(condition.getBuildServerId()),
+                Project::getBuildServerId, condition.getBuildServerId());
         // 状态：传入数字编码时使用等值条件查询。
         wrapper.eq(condition.getStatus() != null,
                 Project::getStatus, condition.getStatus());

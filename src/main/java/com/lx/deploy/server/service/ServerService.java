@@ -141,6 +141,8 @@ public class ServerService extends ServiceImpl<ServerMapper, Server> {
         // 前端提交的是凭据明文，写入数据库前统一转换为 AES-GCM 密文。
         entity.setCiphertext(credentialCrypto.encrypt(dto.getCredential()));
         entity.setId(null);
+        // 目录路径去空白；未填写时置空，让数据库默认值生效（代码不再持有默认路径常量）。
+        normalizePaths(entity);
         if (!save(entity)) {
             throw new DeployException(ResponseCode.BUSINESS_ERROR, "新增部署服务器失败");
         }
@@ -167,6 +169,8 @@ public class ServerService extends ServiceImpl<ServerMapper, Server> {
         }
         // 始终使用路径主键，防止请求体篡改其他记录。
         entity.setId(id);
+        // 目录路径去空白；未填写时置空，让数据库默认值生效（代码不再持有默认路径常量）。
+        normalizePaths(entity);
         if (!updateById(entity)) {
             throw new DeployException(ResponseCode.BUSINESS_ERROR, "修改部署服务器失败");
         }
@@ -246,6 +250,34 @@ public class ServerService extends ServiceImpl<ServerMapper, Server> {
             throw new DeployException(ResponseCode.DATA_NOT_FOUND, "部署服务器不存在");
         }
         return entity;
+    }
+
+    /**
+     * 规范化三个目录路径字段与构建环境脚本。
+     *
+     * <p>去掉首尾空白；空值或空白统一置为 null，插入时由数据库列的 DEFAULT 填充，
+     * 保证「默认路径只有一处定义」且落在数据库而不是代码里。
+     * 这里不做路径合法性校验——目录是否存在要到机器上验证（连通性测试、构建执行时才发起连接），
+     * 保存阶段只保证值本身不含空白，避免误存成带空格的路径导致远程命令拼接出错。
+     * 构建环境脚本同为空白归一为 null（不执行额外脚本），非空时只去首尾空白，内容原样保存。</p>
+     *
+     * @param entity 待规范化的服务器实体，就地修改
+     */
+    private void normalizePaths(Server entity) {
+        entity.setBuildWorkspaceDir(blankToNull(entity.getBuildWorkspaceDir()));
+        entity.setBuildArtifactDir(blankToNull(entity.getBuildArtifactDir()));
+        entity.setAgentBaseDir(blankToNull(entity.getAgentBaseDir()));
+        entity.setBuildEnvScript(blankToNull(entity.getBuildEnvScript()));
+    }
+
+    /**
+     * 把空白字符串转换为 null，非空白字符串去掉首尾空白后返回。
+     *
+     * @param value 原始值，允许为 null
+     * @return 规范化后的值，空白输入返回 null
+     */
+    private String blankToNull(String value) {
+        return StringUtils.hasText(value) ? value.strip() : null;
     }
 
     /**

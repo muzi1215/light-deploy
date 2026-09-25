@@ -57,10 +57,10 @@ public class TaskLog extends BaseEntity {
     /**
      * 日志级别，取值见 {@code TaskLogLevel} 枚举。
      *
-     * <p>DEBUG/INFO/WARN/ERROR，未传入时默认 INFO；写入后不允许修改。</p>
+     * <p>只分 INFO 与 ERROR，未传入时默认 INFO；写入后不允许修改。</p>
      */
     @TableField("log_level")
-    @Schema(description = "日志级别：DEBUG/INFO/WARN/ERROR")
+    @Schema(description = "日志级别：INFO/ERROR")
     private String logLevel;
 
     /**

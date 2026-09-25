@@ -26,36 +26,67 @@ service.interceptors.request.use(
 
 /** 响应拦截器 */
 service.interceptors.response.use(
-  (response: any) => {
-    // 判断是否是文件下载请求
-    if (response.config.responseType === 'blob') {
-      return response
-    }
-
+  (response) => {
     const res = response.data
-
-    // 后端返回 code !== 200 视为业务错误
     if (res.code !== 200) {
-      // Vue3 中 Element Plus 消息提示使用 ElMessage (函数式调用)
       ElMessage({
         message: res.message || 'Error',
         type: 'error',
-        duration: 5 * 1000
+        duration: 5000
       })
       return Promise.reject(new Error(res.message || 'Error'))
     } else {
       return res
     }
   },
-  (error: any) => {
-    console.log('err' + error)
+  (error) => {
+    // ✅ 优先取后端返回的 message
+    const msg =
+      error?.response?.data?.message ||
+      error?.message ||
+      'Error'
+
     ElMessage({
-      message: error.message,
+      message: msg,
       type: 'error',
-      duration: 5 * 1000
+      duration: 5000
     })
+
     return Promise.reject(error)
   }
 )
+
+// service.interceptors.response.use(
+//   (response: any) => {
+//     // 判断是否是文件下载请求
+//     if (response.config.responseType === 'blob') {
+//       return response
+//     }
+
+//     const res = response.data
+
+//     // 后端返回 code !== 200 视为业务错误
+//     if (res.code !== 200) {
+//       // Vue3 中 Element Plus 消息提示使用 ElMessage (函数式调用)
+//       ElMessage({
+//         message: res.message || 'Error',
+//         type: 'error',
+//         duration: 5 * 1000
+//       })
+//       return Promise.reject(new Error(res.message || 'Error'))
+//     } else {
+//       return res
+//     }
+//   },
+//   (error: any) => {
+//     console.log('err' + error)
+//     ElMessage({
+//       message: error.message,
+//       type: 'error',
+//       duration: 5 * 1000
+//     })
+//     return Promise.reject(error)
+//   }
+// )
 
 export default service

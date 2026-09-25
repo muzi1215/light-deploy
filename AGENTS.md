@@ -53,6 +53,20 @@ Docker 构建模式预留：
 
 AIops 项目使用分层构建：基础依赖镜像推送到阿里云镜像仓库，业务镜像基于基础镜像构建，Docker Compose 使用业务镜像启动。
 
+### 3.1 JAR 脚本部署形态（固定工作目录 + 原地替换）
+
+JAR 运行时采用「固定工作目录 + 原地替换」，**不按版本建子目录**：
+
+- 工作目录由 `runtime_config_json.work_dir` 指定（如 `/lx/jarapps/auth-tool-7888`），未配置时回落到「目标机部署根目录 `/apps` / 项目编码」；
+- **systemd 单元只在首次部署生成，之后不再重写**——运维手工调整过的启动参数（`-Xmx`、`--spring.config.location` 等）必须被尊重；
+- 发版动作固定为四步：备份旧 jar 到 `exec/bak` → 投放新 jar → `systemctl restart` → `is-active` 确认。回滚走同一路径，只是投放 `old_version` 的 jar；
+- jar 与配置分离：配置文件放在工作目录的 `config/` 下，由 `build_config_json.config_paths` 随产物转存，**平台不覆盖目标机已存在的配置**；
+- 备份命名为 `{jar名}_bak_{时间戳}_{版本号}.jar`（如 `auth-tool_bak_20260925222851_auth-7888-v6-c9bb25d3.jar`），**被替换包的版本号内嵌在文件名里**，`ls` 一眼就能看出每个备份是哪个版本。取不到版本时省略版本段，退化为 `{jar名}_bak_{时间戳}.jar`；同一秒同版本重名时追加 `_2`、`_3`——该序号**只是防撞名，与版本无关**。三种形态 `jar-update.py` / `jar-fallback.py` 都必须能识别；
+- **版本段逐字保留平台版本号，不把其中的连字符换成下划线**：`release_record.version`、Docker 镜像 tag、`VERSION` 文件里写的都是 `auth-7888-v7-1521739f`，文件名必须与之字面一致，才能直接复制去查库、搜日志、比对镜像。若为「统一下划线」把 `-` 换成 `_`，读回时就得按段回译，而项目编码本身允许含 `_`，回译不再双射——拿一个隐式约定换一点视觉整齐，不划算。文件名里 `-` 与 `_` 混用**是有意为之**：`_` 分隔备份名的结构段，`-` 属于版本号本身；
+- 部署脚本内置在 `resources/scripts/jar-deploy/`，由平台上传执行。这类脚本必须**非交互（不接受 input）且返回明确退出码**：SSH 执行没有 TTY，交互式脚本会挂起到超时，而退出码恒为 0 会让平台把失败判成成功。
+
+本形态只约束「JAR + 脚本构建」链路。**DOCKER 不受影响**：仍按 `dockerfile_path` 构建镜像、`docker pull + run` 发布，不使用工作目录与上述脚本；`config_paths` 也不在 DOCKER 分支消费。
+
 ## 4. 数据库约定
 
 ### 4.1 表命名
@@ -160,6 +174,20 @@ spring:
 - **脚本头部写清用法**：执行命令、所需权限、旧值映射表、回退默认值策略、执行后抽查 SQL，都要写在文件头注释里；
 - 脚本只改列定义与状态取值映射，不得删除业务记录；改造后的列会移动到表末尾（MySQL 保留列序需重建表），与 `schema.sql` 的列顺序可能不同，属正常现象。
 
+### 4.6 事务边界
+
+**一次业务动作要写多张表时，Service 方法必须加 `@Transactional(rollbackFor = Exception.class)`**，取「全成功或全回滚」，不允许留下半截数据。典型场景：
+
+- 构建创建：`build` 记录 + BUILD 任务；
+- 部署创建 / 回滚：`deployment` 主记录 + `deployment_target` 快照 + DEPLOY 任务。
+
+反面教材（真实事故）：`createAndTrigger` 早期没有事务，`deployment_target` 插入失败时主记录已经落库，留下一条**永远不会有关联任务**的孤儿部署；更糟的是它的排队中状态会命中「该项目环境下已有进行中的部署」防重判断，把后续所有发布挡在门外，只能人工取消才能恢复。
+
+- `rollbackFor = Exception.class` 必须显式写出（默认只对 `RuntimeException` 回滚），与 `ProjectEnvironmentTargetService` 保持一致；
+- 只在 Service 的公开方法上声明事务，Controller 不开事务；
+- 事务方法内**禁止**发起远程调用与耗时 IO：SSH、构建、健康检查都在任务执行器里做，不进事务；
+- 只读多表查询不依赖事务注解；跨模块只注入 Mapper 与对方 Service，不为了「共用一个事务」去注入对方的 Service 内部实现。
+
 ## 5. 基础实体
 
 所有 MyBatis-Plus 业务实体继承 `BaseEntity`。
@@ -230,6 +258,29 @@ status                 服务器启用状态
 
 状态只表示服务器是否允许被平台连接和参与部署，不能用来表达开发、测试或生产环境。
 
+### 6.4 机器目录配置
+
+平台在机器上使用的目录按机器配置，保存在 `server` 表三列，由服务器页面维护：
+
+```text
+build_workspace_dir  构建工作区根目录，仅构建机使用：每次构建在其下建独立子目录，结束后清理
+build_artifact_dir   构建产物持久目录，仅构建机使用：产物转存于此供发布下载，不随工作区清理
+agent_base_dir       平台在该机器上的部署根目录：连通性测试检查其存在且可写，应用部署在其 apps 子目录下
+```
+
+硬性要求：
+
+- **禁止在 Java 代码或 `application.yaml` 中写任何机器上的绝对路径**，包括所谓"默认值"：默认值由数据库列的 `DEFAULT` 定义，代码只负责读取；
+- 执行器（构建、连通性测试、发布）一律从服务器档案读取目录，不使用 `@Value` 注入路径；
+- 读取时去首尾空白；为空时抛出指向「去服务器页面配置」的校验错误，**不静默回落到某个猜出来的路径**；
+- Service 保存时把空白视为未配置并置为 `null`，交给数据库默认值填充，保证默认值只有一处定义；
+- `apps` 是平台约定的子目录名（常量 `APPS_SUBDIR`），由部署根目录拼接得到，不单独提供配置项；
+- 新增这类列必须同步 DDL（`schema.sql`）+ 幂等升级脚本 + 只读校验脚本（见 §4.4）。
+
+> 背景：这三个目录最初是配置项，靠 `@Value("${...:/opt/...}")` 兜底。问题是它们都是"某台机器上的目录"——
+> 不同构建机挂的数据盘不同、不同目标机的部署根目录也可能不同，按机器配置才符合运维现实；
+> 而且改一个目录要动配置文件并重启平台，属于不该有的运维成本。
+
 ## 7. 凭据安全
 
 凭据加解密统一使用 `com.lx.deploy.common.crypto.CredentialCrypto`。该实现使用 Java 标准 `AES/GCM/NoPadding`：服务器新增/修改请求提交明文凭据，Service 写入数据库前加密；SSH、Docker Registry 或 Git 执行前才短暂解密。AES key 通过 `LIGHT_DEPLOY_AES_KEY` 注入，绝不提交到 Git。
@@ -242,6 +293,29 @@ status                 服务器启用状态
 - SSH 执行器只在建立连接前临时解密；
 - 使用完成后不得在内存缓存或日志中长期保留明文；
 - Git Token、镜像仓库凭据等其他系统凭据可以使用独立 `credential` 表，服务器 SSH 凭据不使用该表。
+
+### 7.1 四类凭据的填写口径
+
+`credential.credential`（明文）往里填什么由 `type` 决定，四类**完全不同**，填错的表现也不一样（填写示例、三平台设置入口见 [凭据模块](docs/凭据模块.md) §6.6 / §6.7）：
+
+| 类型 | 明文内容 | 消费方 |
+| --- | --- | --- |
+| `GIT_TOKEN` | Git 访问令牌；`用户名:令牌` 或**只填令牌**（平台补 `oauth2` 占位） | `BuildTaskHandler.buildCloneCommand` |
+| `SSH_KEY` | 完整 PEM 私钥（含首尾标识行、保留换行） | 同上（写临时文件 + `GIT_SSH_COMMAND`） |
+| `REGISTRY` | `用户名:密码`，按**第一个**冒号切分 | `BuildTaskHandler.dockerPush`（`docker login -u/-p`） |
+| `SSH_PASSWORD` | —— | **没有消费方**，服务器 SSH 密码在 `server` 表 |
+
+- **HTTPS 仓库的令牌必须落在 URL 的密码位**（`https://用户名:令牌@主机/路径`）。用户名位不参与认证，但**不允许为空**——GitLab 官方口径「任意非空字符串，GitLab 不校验该值」、GitHub 官方口径「用户名不用于认证，但不填会报凭据无效」、Gitee 用 `oauth2`。三个平台因此统一：只填令牌时补 `oauth2:令牌`。**令牌只放在用户名位（`https://令牌@主机`，GitHub 的习惯写法）在 Gitee 上必然失败**；
+- **凭据类型与仓库协议必须双向校验**：`GIT_TOKEN` 只允许 `https://` 仓库，`SSH_KEY` 只允许 SSH 形式仓库（`git@主机:组/仓库.git`）。校验放在拼装克隆命令时做，报错直说协议不匹配，不允许让它们跑起来后才在克隆时报「仓库不存在」这类误导性错误；
+- **克隆命令前必须加 `GIT_TERMINAL_PROMPT=0`**：构建机上的克隆跑在非交互 SSH 会话里，git 一旦转去索要凭据，报错会是 `could not read Password ... No such device or address`——**把真正的原因（URL 里缺密码段）掩盖成认证失败**，排查时会被带偏；
+- **凭据拼装实现全平台只有一份**：Git 地址拼装、镜像仓库登录命令、命令脱敏分别收敛在
+  `com.lx.deploy.common.util.GitAuthSupport` / `RegistryAuthSupport` / `SecretMasker`，
+  构建链路（`BuildTaskHandler`）与项目连通性测试（`ProjectConnectTestTaskHandler`）**共用**它们。
+  两处各写一套必然在「谁补 `oauth2`」「密码怎么传」上分叉，表现为最难查的「测试通过、构建失败」；
+- 镜像仓库密码一律走 `--password-stdin`，**不用** `docker login -p <密码>`：后者会把明文密码留在构建机
+  进程列表（`ps -ef`）里。密码先写到构建机临时文件（权限 600），用完在 `finally` 里删除；
+- **临时凭据文件（私钥 / 仓库密码）用完必删**，且清理**不得抛异常**——在 `finally` 里抛出会覆盖真正的失败原因。
+
 
 ## 8. Service 约定
 
@@ -393,15 +467,15 @@ update(String id, XxxDto dto) -> XxxVo
 delete(String id)
 ```
 
-Controller 自动生成：
+Controller 自动生成（路径映射必须遵守 §12.2 的「动作在前、{id} 在最后」规范）：
 
 ```text
 GET    /{module}/page
 GET    /{module}/list
-GET    /{module}/{id}
-POST   /{module}
-PUT    /{module}/{id}
-DELETE /{module}/{id}
+GET    /{module}/detail/{id}
+POST   /{module}/create
+PUT    /{module}/update/{id}
+DELETE /{module}/delete/{id}
 ```
 
 ### 11.3 条件查询规则
@@ -444,6 +518,43 @@ model/vo/EntityVo.java  Controller 响应对象，用于对外返回
 
 DTO 不包含主键、创建时间、更新时间、创建人、更新人和软删除字段，避免调用方修改服务端维护字段。
 VO 包含必要的主键和审计信息，但默认排除密码、密文、Token、私钥等敏感字段。Service 负责 DTO 与实体、实体与 VO 之间的转换和脱敏。
+
+### 12.2 接口路径映射规范
+
+所有接口路径必须显式书写动作，且路径变量 `{id}` 永远放在路径最后一段。禁止出现以下三种反模式：只写 `/{id}` 不写动作、映射注解不写路径、路径参数写在动作前面。
+
+标准 CRUD 路径（与 §11.2 一致）：
+
+- 查询详情：`GET /{module}/detail/{id}`（禁止 `GET /{module}/{id}`）；
+- 新增：`POST /{module}/create`（禁止裸 `@PostMapping` 不写路径）；
+- 修改：`PUT /{module}/update/{id}`（禁止 `PUT /{module}/{id}`）；
+- 删除：`DELETE /{module}/delete/{id}`（禁止 `DELETE /{module}/{id}`）；
+- 集合级操作（无 id）保持 `/page`、`/list`、`/pull` 等。
+
+自定义动作与子资源（动作 / 子资源名一律写在 `{id}` 前面）：
+
+- 自定义动作（取消、测试等）：`POST/PUT /{module}/{action}/{id}`，例如 `PUT /task/cancel/{id}`、`POST /server/test/{id}`（禁止 `/{module}/{id}/cancel` 这种「id 在动作前」的写法）；
+- 子资源集合（如某构建的产物）：`GET /{module}/{sub}/{id}`，例如 `GET /build/artifacts/{id}`（禁止 `/build/{id}/artifacts`）。
+
+反例（一律禁止）：
+
+```java
+@GetMapping("/{id}")          // 错误：只写参数不写动作
+@PostMapping                    // 错误：映射注解不写路径
+@PutMapping("/{id}")           // 错误：id 在动作前且无动作
+@PutMapping("/{id}/cancel")    // 错误：id 在动作前
+```
+
+正例：
+
+```java
+@GetMapping("/detail/{id}")
+@PostMapping("/create")
+@PutMapping("/update/{id}")
+@PutMapping("/cancel/{id}")
+```
+
+控制器方法上的 `@PathVariable String id` 无需改动，只要路径模板里 `{id}` 是最后一段即可。该规范同时约束手写 Controller 与 `controller.java.ftl` 代码生成模板；新增接口与该模板产出必须一致，否则视为不合格。
 
 ## 13. 注释规范
 
@@ -529,6 +640,13 @@ VO 包含必要的主键和审计信息，但默认排除密码、密文、Token
 
 除模块文档外，维护一份项目总览文档 `docs/项目总览.md`，记录整体架构、模块进度（完成/进行中/未开始）和后续路线，每个模块交付后更新其进度状态。
 
+另维护一份**疑问与解答文档 `docs/疑问与解答.md`**，记录开发过程中提出的疑问、当时的结论与代码依据，供日后追溯「当初为什么这么定」：
+
+- 定位是**解释与佐证，不新增约束**；与本文冲突时一律以 `AGENTS.md` 为准；
+- 产生新疑问时**必须在当轮追加条目**：按提问先后编号（`Q-编号`）、**追加在文末**，每条含「提问 / 结论 / 落点 / 遗留」四段，并在文首索引表补一行；
+- 疑问的结论一旦形成正式约束，**必须同时落进 `AGENTS.md` 对应章节**，不能只留在解答文档里；
+- 文末维护与其他文档的分工表，避免同一件事在两处各写一套口径。
+
 ## 14. 日志约定
 
 日志配置文件：
@@ -558,6 +676,43 @@ logs/error.log
 `RequestTraceFilter` 为每个请求生成或透传 `X-Request-Id`，并同时写入请求属性、响应头和 SLF4J MDC。`ApiResponse.requestId` 返回同一个值，日志格式通过 `%X{requestId}` 输出。
 
 因此，前端只需要把错误响应中的 `requestId` 提供给运维人员，即可在 `logs/info.log` 或 `logs/error.log` 中检索同一次请求。调用方也可以主动传入 `X-Request-Id`，用于网关、AIops 和部署平台之间的链路关联。requestId 只用于排查和关联，不代表用户身份、权限或业务主键。
+
+> 该约定成立的前提是**失败请求确实写了日志**——访问日志见 §14.2，异常日志口径见 §14.3。
+
+### 14.2 访问日志
+
+`RequestTraceFilter` 在每个请求结束时（`finally`）输出一行 INFO：
+
+```text
+2026-09-25 18:30:12.345 [http-nio-8080-exec-3] INFO  [a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6] c.l.d.c.web.RequestTraceFilter - POST /deploy/deployment/create -> 400，耗时 37 ms
+```
+
+- 内容固定为「HTTP 方法 + 请求路径 + 状态码 + 耗时 ms」，**requestId 由 MDC 自动带入日志格式，不手工拼接**；
+- **只记请求路径，不记查询串**：查询串可能携带凭据或敏感业务参数；
+- 状态码取 `response.getStatus()`，异常处理器通过 `@ResponseStatus` 写入的 400/500 会如实反映，因此「某个请求失败了」在日志里一眼可见；
+- 该行写在 `finally` 中且**先于 `MDC.remove` 输出**，下游抛异常时同样有记录；
+- **高频轮询接口降噪**：前端日志查看器每 1.5 秒拉一次 `/taskLog/pull`，一个几分钟的任务就是上百行访问日志，真正有价值的业务请求反被淹没。`light-deploy.access-log.silent-paths`（默认 `- /taskLog/pull`）维护静默路径**前缀**清单，命中时响应 `< 400` 降为 DEBUG、`>= 400` 仍记 WARN——**轮询成功没有阅读价值，但接口出错、任务不存在必须留痕，禁止把某个路径配成完全静默**；
+- 静默清单写**业务路径**（不含上下文路径 `/deploy`），匹配前会剥掉 context-path，日志里仍输出完整 URI；前缀不能写得太短（配 `/task` 会把整个任务模块的接口一起静默掉）。新增轮询接口时只改配置、不改代码；
+- 需要关闭整个访问日志时只调本类 logger 的级别，不要改动实现：
+  ```yaml
+  logging:
+    level:
+      com.lx.deploy.common.web.RequestTraceFilter: warn
+  ```
+
+### 14.3 异常日志口径
+
+**原则：任何被「吃掉」的异常都必须至少留下一条日志。** 只把异常转成统一响应、或只把失败写进数据库而不写日志，会让故障在服务端完全不可见，`requestId` 的检索价值也随之落空（§14.1）。**禁止**恢复成「只 `return ApiResponse.failure(...)` 不写日志」或「只 `failTask(...)` 不写日志」的写法。
+
+| 场景 | 落点 | 级别 | 堆栈 |
+| --- | --- | --- | --- |
+| 业务异常 `DeployException`（校验不通过、状态冲突、不可回滚等） | `GlobalExceptionHandler.handleBusiness` | WARN | **不打**——预期内的拒绝，堆栈只会淹没真正的故障 |
+| 参数校验失败 | `GlobalExceptionHandler.handleValidation` | WARN | 不打 |
+| 未预期异常 | `GlobalExceptionHandler.handleUnexpected` | ERROR | **打**——唯一能定位代码缺陷的地方 |
+| 异步任务失败（业务性） | `TaskExecutor.executeTask` | WARN | 不打 |
+| 异步任务失败（未预期） | `TaskExecutor.executeTask` | ERROR | 打 |
+
+接口层的日志行必须带 `uri` 与业务码/原因；任务层必须带 `taskId` 与任务类型。判定标准是「只给一个 requestId 或 taskId，能否从日志定位到失败原因」。
 
 ## 15. AIops 集成边界
 
@@ -890,7 +1045,36 @@ GET /taskLog/pull?taskId={taskId}&lastSeq={lastSeq}&limit=200
 - 任务已是终态时不得启动轮询（秒级失败的任务在首次拉取时可能就已经结束）；
 - 状态与日志必须取自**同一次** pull 响应，不要为了拿最新状态再单独查一次任务详情，否则页面会出现「状态已成功、日志还停在执行中」这类不一致；
 - 增量锚点必须用 `sequence_no`（任务内递增），**禁止**用日志主键 `id`：主键是 32 位 UUID，不具备单调递增性，`id > lastId` 没有意义；
-- 后续若改为 SSE 推送，必须保持本接口响应字段语义不变（`status` / `statusText` / `finished` / `progress` / `currentStage` / `errorMessage` / `logs` / `lastSeq`），以便前端平滑切换。
+- 后续若改为 SSE 推送，必须保持本接口响应字段语义不变（`status` / `statusText` / `finished` / `progress` / `currentStage` / `errorMessage` / `logs` / `lastSeq`），以便前端平滑切换；
+- **查看器逻辑只有一份实现**：轮询、增量锚点、自动滚动与下载统一收在 `src/composables/useTaskLogViewer.ts`，页面只渲染控制台与外层容器。当前有 5 处使用（任务列表、构建列表、发布列表、服务器连通性测试、项目触发构建），**禁止**再复制一份轮询代码到新页面；
+- 日志时间格式化同样只有一份（同文件导出的 `formatLogTime`），页面不再各写一个 `formatXxxLogTime`；
+- 列表页需要在任务结束时刷新表格时，用查看器的 `onFinished` 回调，不要自行监听状态。
+
+**容器不拦截关闭——任何状态下都允许关闭**：任务状态为 0（排队中）或 1（执行中）时同样可以关，查看器**不提供**关闭拦截函数，5 处视图都**禁止**出现 `:before-close`、`:show-close="!running"`、`:close-on-press-escape="!running"`。
+
+- **理由**：日志轮询跑在浏览器里，任务跑在服务端执行器里，两者互不依赖。关掉容器只是停掉前端这段轮询，**任务该跑多久还是跑多久、日志一条不少**，重新打开会从服务端重新拉全量。锁住关闭入口换不来任何安全性，只会把用户困在弹窗里干等任务结束；
+- 页脚在任务执行中显示「任务执行中，关闭窗口不影响执行」——把「能关且不影响」讲明白，而不是让用户去猜自己会不会打断发布；
+- **关闭路径必须继续停轮询**：`@closed`（`el-drawer`）或 `@close`（`el-dialog`）一律绑查看器的 `stop`。不拦关闭之后这条更容易被忽略，而漏掉它就是「窗口关了接口还在打」；
+- `running` 保留但**只用于页脚文案**，不再参与任何可关闭性判定。
+
+**日志下载**：统一走后端导出接口 `GET /taskLog/export/{taskId}`（`text/plain` 附件，含任务头部摘要与全量日志），前端不自己拼文本：
+
+- `responseType: 'blob'`，`request.ts` 对 blob 响应不做业务码校验，因此**调用方必须自己判断响应类型**——后端异常时返回的是 JSON 错误体，当成附件存下来会得到一个内容是报错信息的「日志文件」；
+- 文件名以响应头 `Content-Disposition` 为准（服务端按任务编号生成，中文走 RFC 5987 的 `filename*`），前端不另拼一套命名规则，解析失败时才用任务编号兜底。
+
+任务列表页早期用的是 `/taskLog/list` 一次性拉取 + 手动「刷新」按钮，已统一到增量拉取：日志在持续追加，一次性快照既没有刷新时机也无法表达进度，手动刷新按钮在 1.5 秒轮询下是死 UI。
+
+### 20.10 列表页缓存与刷新策略
+
+页面由 `AppMain` 的 `<keep-alive :include="cachedViews">` 缓存（路由 `meta.noCache` 为 true 的页面除外），**切走再切回不重跑 setup**，所以每个列表页都必须显式决定「回到本页要不要重新拉数据」，二选一：
+
+- **数据由服务端或平台自己产生**（任务列表、构建列表、部署记录）→ 在 `onActivated` 里无条件重新拉取。任务尤其典型：构建一次、发布一次各建一条任务，页面不刷新就会出现「平台明明建了任务，任务管理里却没有记录」的假象；
+- **数据只被本站自己的编辑页改动**（项目列表）→ 走 `store/pageRefresh.ts`：编辑页保存成功后 `markDirty('<list-key>')`，列表页在 `onActivated` 里 `consumeDirty` 命中才刷新，普通切标签不产生多余请求。
+
+两条硬性细节：
+
+- 首次挂载后会紧接着触发一次 `onActivated`，此刻 setup / `onMounted` 已经拉过一次数据，必须用「只跳过一次」的标记避免重复请求（`ProjectList` 因为 `consumeDirty` 天然规避）；
+- 提交后用 `tagsViewStore.delView` 关闭编辑页标签、并打刷新标记，不能指望用户手动刷新（见 §20.1）。
 
 ## 21. 鉴权中心与动态菜单接入约定
 
@@ -1008,10 +1192,11 @@ com.lx.deploy.common.constants
 ### 23.3 多模块仓库的构建解析约定
 
 1. **仓库只拉一次**：同一 `git_url` + 分支的不同子模块共享一次 `git clone` 与工作区缓存，产物目录按 `project.code` + 版本号隔离；
-2. **按模块构建**：Maven 多模块用 `-pl {module_name} -am -DskipTests`（或用 `build_command` 整体覆盖），执行器进入 `module_dir` 后执行构建命令；
+2. **按模块构建，`module_dir` 与 `-pl` 只能二选一**：执行器先 `cd` 到 `module_dir`（未填则 `module_name`，都没填则仓库根），再执行 `build_command`。因此填了 `module_dir` 时命令里**禁止**再写 `-pl {module_name}`（Maven 从子模块 pom 起构建，reactor 里找不到该模块，必报 `Could not find the selected project in the reactor`）；要改用 `-pl` 就从仓库根构建并清空 `module_dir`。前端表单已按此规则拦截提交；
 3. **产物定位**：按 `artifact_path`（支持 `*` 通配）取产物，一个 project 只产出一个发布产物；
 4. **依赖顺序**：模块间依赖由 Maven / Gradle 依赖图保证，构建模块负责编排顺序或先 `install` 被依赖模块，project 表不表达模块依赖关系；
-5. **禁止**在 project 表新增「子模块列表」字段或子模块表，也禁止把同一子模块拆成多条 project 来绕过构建逻辑（违反 §18 不混用两套数据模型）。
+5. **禁止**在 project 表新增「子模块列表」字段或子模块表，也禁止把同一子模块拆成多条 project 来绕过构建逻辑（违反 §18 不混用两套数据模型）；
+6. **构建命令的执行环境由平台保证**：命令执行前固定 `. /etc/profile`（引入登录态 PATH，输出丢弃）并执行构建机档案的 `build_env_script`，随后预检命令首词是否可执行（`command -v` / `test -x`，识别并跳过 `KEY=VALUE` 前缀），不可执行直接判失败并报出原因与三种处理办法。**禁止**在代码里硬编码 mvn/java/docker 的绝对路径，「机器上工具装在哪」属于服务器档案的职责（§6.4）。
 
 ### 23.4 镜像仓库只服务于 DOCKER 运行时
 
@@ -1041,6 +1226,29 @@ com.lx.deploy.common.constants
   - 历史数据若存在非法组合（例如早期建的 `STATIC` + `LAYERED_DOCKER`），不会被自动修正，但再次编辑保存时会被拦下；
 - 查询/统计构建相关数据时，脚本部署类的“构建”本质是「产出产物」，不要用镜像仓库维度的指标（推送次数、镜像大小）去统计它。
 
+### 23.5 发布版本号的生成规则
+
+构建成功时由 `BuildService.resolveReleaseVersion` 生成发布版本号，格式固定为 `{项目编码}-v{版本序号}-{提交短码}`，例如 `auth-7888-v3-887b603c`；无提交（仅重发已有产物的场景）时提交部分退化为 `yyyyMMddHHmmss` 时间戳。
+
+**这个字符串被四处共用**，因此必须在克隆完成、拿到 commit 后**一次性定稿并全程传递**（`BuildTaskHandler.execute` 里算一次，往下传给镜像构建、产物转存与版本记录组装）：
+
+| 落点 | 具体形式 |
+| --- | --- |
+| Docker 镜像 tag | `imageRepo:tag`；`LAYERED_DOCKER` 另有基础镜像 `base-{tag}` |
+| 构建机产物持久目录 | `{build_artifact_dir}/{项目编码}/{版本号}` |
+| 产物目录下的 `VERSION` 标识文件 | `{build_artifact_dir}/{项目编码}/{版本号}/VERSION`，含 `version=` 行（见 §24.7） |
+| `release_record.version` | 版本记录本体的版本号 |
+
+**为什么必须有序号**：改造前版本号只有「项目编码 + 提交短码」，同一个 commit 重复构建时三处全部同名——镜像被第二次 push 覆盖、产物持久目录被 `cp -r` 覆盖，并在 `release_record` 上撞唯一键 `uk_release_project_version (project_id, version, is_deleted)`。而 `completeSuccess` **没有事务**，顺序是「置 build 成功 → 插入产物 → 插入版本」，撞键炸在最后一步，结果是**构建记录显示成功、任务显示失败、版本列表里没有它**，该产物永远发不出去。序号让每次构建的产物彼此独立。
+
+因此必须遵守：
+
+1. **取号规则**：默认取项目内最大序号 +1。`ReleaseRecordMapper.selectMaxVersionSeq` 刻意**不过滤 `is_deleted`**，避免软删除后序号被重用（否则版本库里会出现两个 `v3`，排序与追溯失效）；
+2. **允许人工指定**：`build.version_seq` 承接调用方指定的序号，且**必须在创建构建时校验项目内未被占用**，不许拖到构建跑完才在版本落库阶段失败；
+3. **禁止中途重新生成版本号**：镜像 tag 与产物目录已按定稿值落地，重新生成会让版本记录指向不存在的产物（`assembleRelease` 只消费传入值，不得自行调用取号）；
+4. **禁止改写历史版本号**：`deployment_target` 的 `old_version` / `new_version` 与历史 `image_tag` 存的都是旧值，改名会让历史部署与镜像对不上。升级前产生的版本保持 `项目编码-提交短码` 原样，版本列表中新旧格式并存属于预期；
+5. 列定义与升级脚本：`release_record.version_seq`、`build.version_seq`、索引 `idx_release_project_seq` 见 `schema.sql`，升级走 `db/upgrade-release-version-seq.sql`。
+
 ## 24. 任务执行与远程执行层约定
 
 ### 24.1 任务执行器
@@ -1069,4 +1277,172 @@ com.lx.deploy.common.constants
 - 远程命令的**非零退出码不抛异常**：是否失败由上层按业务语义判断（例如 `test -d` 返回非零本身就是一个有效结论）；只有通道打开失败、等待超时、读写异常才抛 `REMOTE_EXECUTION_ERROR`；
 - 命令输出在进入日志与接口响应前必须脱敏（`SshSession.exec` 内部已调用 `maskSecrets`，禁止绕过 SSH 层自行拼命令输出）；
 - 连接、认证、命令超时与输出上限一律走 `light-deploy.ssh.*` 配置，禁止硬编码；
+- **命令按耗时分流，禁止一套超时打天下**：秒级命令（探活、检目录、`systemctl is-active`）用 `exec`（`command-timeout-seconds`，默认 120 秒）；耗时命令（克隆仓库、构建、镜像构建/推送、发布重启）必须用 `execLong`（`long-command-timeout-seconds`，默认 1800 秒）。首次构建要从仓库下载上百 MB 依赖，用秒级超时会把正常构建误判成卡死；
+- **超时不得吞掉已收到的输出**：超时抛 `SshCommandTimeoutException` 并携带输出快照，调用方必须把快照落进任务日志（构建类命令按构建日志行数上限）。原来超时直接丢弃缓冲区，页面上只剩一句「执行超时」，无法区分「慢」与「卡死」；
+- **长输出命令要实时回传**：`exec(cmd, timeout, consumer)` 会把 stdout 按行回调，用于构建这类长任务（页面能看到进度滚动）。回调必须走 SSH 层内置的队列 + 独立消费线程，**禁止**在读线程里直接写库；逐行回传必须封顶（构建类 500 行），超出后改为汇总补录；
+- **超时要终止远端进程**：需要超时终止的执行（构建命令）必须以 `setsid -w sh -c '<脚本>'` 启动并把进程组组长 PID 记到 /tmp，超时后 `kill -9 -PGID` 再清理工作区；不得在远端进程可能仍在写的情况下直接 `rm -rf` 工作区；
 - 私钥当前只支持未加密的 OpenSSH / PKCS#8 文本，遇到带口令私钥必须给出明确提示，不能静默失败。
+
+### 24.4 业务记录与任务的关联
+
+- 业务表**不冗余存 `task_id`**：任务与业务记录只靠 `lds_task` 的「`task_type` + `biz_id`」关联，避免两处状态互相打架。需要「从业务记录打开执行日志」时，由业务模块自己按这两个字段反查**最新一条**任务；
+- 反查必须落在业务 VO 的统一转换方法里（如 `BuildService.toVo` / `DeploymentService.toVo`），**列表与详情共用同一入口**。只给详情接口回填 `taskId` 是不够的：前端列表行的「查看日志」按钮直接读列表数据，漏填时只能弹一句「未关联异步任务」，日志入口形同虚设；
+- 一个业务记录可能对应多条任务（部署回滚会再建一条 DEPLOY 任务），一律按 `create_time` 倒序取最新；
+- 反向（任务 → 业务记录）由任务类型决定，`TaskHandler` 不得绕过 `biz_id` 去猜业务记录；
+- **失败结论必须与业务记录一致，且日志级别要能对上**：处理器表达失败的唯一方式是抛异常。**禁止**「写了 ERROR 日志却正常返回」——任务会显示「成功」，日志末尾却说「任务执行成功」，中间夹着 ERROR，运维无法判断这次到底成没成。有失败目标/失败步骤时，除了收敛业务记录状态，还必须抛异常让任务一并失败（失败原因取第一条明细，完整清单留在业务明细里）。反过来，不属于失败的负面情况（可选探活项未安装、目录缺失、命令非零退出但语义正常）只能写 INFO/WARN，不许用 ERROR。
+  真实事故：`DeployTaskHandler` 汇总出失败目标后只把 deployment 置为 FAILED、自身正常返回，任务管理里因此显示「成功」，与部署记录和日志内容自相矛盾；
+
+### 24.5 回滚的前置条件、预览与日志口径
+
+回滚是「把线上退回到一个已知版本」的动作，代价高、不可逆，因此**入口必须拦住不能回滚的情况，日志必须能独立交代这次回滚做了什么**。
+
+**前置条件：状态成功只是必要条件，不是充分条件**
+
+- 只有「成功」的部署允许回滚（`DeploymentStatus.canRollback`）；
+- 还要**至少一个目标存在可用的历史版本**。判定由 `DeploymentService.evaluateRollback` 统一给出，取三种原因中优先级最高的一条：① 状态不是成功；② 变更过的目标全都没有 `old_version`（首次发布）；③ 有 `old_version` 但版本记录查不到，或该版本缺少分发所需信息（DOCKER 缺 `image_tag`；JAR/STATIC 缺 `build_server_id` 或 `artifact_path`）；
+- **不可回滚时必须明确拒绝，禁止静默成功**。曾经的做法是「一个目标都回滚不了时直接把状态置为已回滚」——使用者看到「已回滚」，机器上却一个字节都没变，页面上也找不到任何说明。现在 `rollback()` 按判定结论抛 `DeployException`；
+- **判定结果必须与按钮共用**：`rollbackable` / `rollbackBlockReason` 随列表一起返回（在 `toVo` 里填充），前端据此置灰按钮并用 tooltip 说明原因。**禁止**前端自己拿 `status === 2` 推断可回滚——那正是「点了才被拒绝」的来源；
+- 允许**部分回滚**：没有历史版本或历史版本产物已缺失的目标标记为「已跳过」并写明原因，保持原版本不动，不判失败、不把从未更新过的机器回退。
+
+**提交前必须让使用者看到逐台影响**
+
+「可回滚 / 不可回滚」只是一句话，回答不了「点下去到底会动哪几台、各自退到哪个版本」。因此：
+
+- 提供只读接口 `GET /deployment/rollback-preview/{id}`（`DeploymentService.rollbackPreview`），返回总结论 + 逐目标明细：服务器名/地址、`当前版本 → 将回滚到的版本`、是否可回滚、跳过原因；
+- **预览与提交必须共用同一份判定**。`evaluateRollback` 是唯一判定入口，逐目标明细由 `inspectTargets` 产出**一份**，`rollback()` 的目标重置与预览清单都消费它。**禁止**另写一套判定条件，否则会出现「预览说能退、提交时说退不了」；
+- 列表侧同时返回 `rollbackTargetCount` / `rollbackSkippedCount`（判定时已算出，**零额外查询**），tooltip 直接给出台数，不必为每一行去调预览接口；
+- 预览是**只读接口**：不得改变任何状态、不得触发任务；不可回滚时同样返回结论而不是抛异常，前端把 `blockReason` 展示在弹窗里，而不是只弹一句「操作失败」。
+
+**版本字段的展示口径：`version` 是快照，「当前版本」另算**
+
+`deployment.version`（取自 `release_id`）回答的是「这次动作针对哪个发布版本」，属于**记录创建时的快照，回滚后也不改写**——改了就与发布日志、产物路径、`release_record` 全部对不上。而「机器上现在跑的是哪个版本」是另一个事实，必须单独承载：
+
+- `DeploymentVo.currentVersion` 由 `DeploymentService.resolveCurrentVersion` 在 `toVo` 里用**已加载的目标列表**算出（零额外查询）：发布成功取各目标的 `new_version`，已回滚取 `old_version`（回滚就是把机器退回老版本）。**只有全部成功目标一致时才返回**，多目标不一致（部分回滚、部分首次发布）时返回 null，页面不显示——一个版本号被当成「所有机器都是它」比不显示更糟；
+- 部署列表的版本列：已回滚时在版本号下方补一行「当前 xxx」并给 tooltip 说明两者差别；其他状态不补（要么 `version` 就是当前版本，要么还没有确定结论）；
+- 目标明细的版本对照**统一按「当前 → 目标」表述**，两种场景都自解释、方向永远与事实一致：发布 = `old_version → new_version`，回滚 = `new_version → old_version`。**禁止**按字段顺序直接拼 `oldVersion → newVersion`——回滚执行的恰恰是把 `new_version` 换回 `old_version`，箭头会反向；而这两个字段名不含角色信息，看的人只能猜「哪个是现在的」；
+- 回滚预览接口里的 `currentVersion` / `targetVersion` 取法与此同源（`currentVersion` 取 `new_version`、`targetVersion` 取 `old_version`，见 `toRollbackTargetVo`），**三处口径必须一致**。
+
+**关于目标机 `exec/bak`**：平台回滚走的是「重新发布 `old_version`」，靠**版本记录 + 构建机上的产物**，**不读** `exec/bak` 里的手工备份包。因此判断「能不能回滚」要看历史版本产物是否还在（`historyArtifactAvailable`），不能看目标机上有没有备份包。`exec/bak` 的定位是运维断网/平台不可用时手工应急（`jar-fallback.py`）；注意**备份名里的时间戳指向「替换它的那次发布」，不是包里的版本**，版本对照靠**备份文件名内嵌的版本段**或 SHA256 比对（详见 §24.7）。
+
+**回滚日志必须能回答六个问题**（`DeployTaskHandler`）：
+
+| 必须出现 | 落点 |
+|---|---|
+| 开始回滚 + **开始时间** | 开场日志，含策略与「本次回滚 N/M 个目标」，M>N 时点明其余目标保持原版本 |
+| **当前版本** | 每个目标的「当前版本 X → 回滚到 Y」，X 取 `new_version`（本次发布上线、正在跑的），Y 取 `old_version` |
+| **回滚到什么版本** | 同上 |
+| **时间** | 目标级起始时间与收尾完成时间，格式 `yyyy-MM-dd HH:mm:ss`，**写进日志正文**，不能只依赖日志行的落库时间 |
+| **回滚成功 / 失败** | 收尾单独一条结论：「回滚成功：已成功回滚 N 个目标到历史版本…完成时间」/「回滚失败：…完成时间…请人工确认目标机当前版本」 |
+| **是否启动成功** | `restartService` 通过后必须写一条「服务 X 启动成功（systemctl is-active = active）」，成功也要留痕；目标级成功文案写明「回滚成功，服务启动正常（当前版本 Y）」 |
+
+**禁止**只靠目标行零散的 INFO 加上执行器结尾那句「任务执行成功」充当回滚结论——那句话不区分发布与回滚，运维无法据此判断版本退到哪了。回滚失败时任务与部署记录必须同时失败（见 §24.4），并提示人工确认目标机当前版本。
+
+### 24.6 「重新构建」与「重新发布」的语义约束
+
+两者都容易被当成「把上次那个动作再跑一遍」，但实现上都不是，**禁止在 UI 文案、接口注释、文档里把它们描述成重放**。
+
+**构建行的「重新构建」是新建，不是重放。**
+
+- 它只把 `projectId` 交给 `BuildService.createAndTrigger`（`views/build/index.vue` 的 `handleRebuild` 只取 `row.projectId`），业务语义是「针对该项目再发一次构建」：新 build 记录 + 新工作区 `{项目编码}_{buildId}` + 新 BUILD 任务；
+- 克隆命令**只带分支、不带提交**：`git clone [--branch <project.git_branch>] <gitUrl> <workspace>`，全程没有 `checkout`，因此**永远构建分支最新 HEAD**。旧记录那次构建的产物不会被重建；
+- **`build.git_commit` 只用于溯源与版本号生成，当前全项目没有任何读取点**，不能作为「按提交重建」的依据。后续若要做「按指定 commit 重建」，必须显式改造克隆命令（`fetch` + `checkout <commit>`）并处理分支 force push 后旧 commit 不可达的情形；
+- 因此「重新构建」不能承诺产物可复现。要复现旧代码只能走部署侧（回滚 / 重发旧 `release_record` 版本）。
+
+**部署记录是「一次执行的不可变快照」，禁止在原记录上重跑。**
+
+- 目标列表在创建时快照到 `deployment_target`，这是回滚语义成立的前提（见 `DeploymentService` 类注释）。在原 `deployment` 上重发需要重置目标行，会覆盖首次执行的 `targetTotal / targetSuccess / targetFailed` 与起止时间，第一次执行的结论永久丢失；
+- 更致命的是 `old_version` 与 `new_version` 会变成同一个值——`createAndTrigger` 正是靠这两个字段做「发布前版本 → 本次版本」的对照，相等后目标行再也说不清「从哪来、到哪去」，`historyArtifactAvailable` 的判定会指向自己；
+- `resolveCurrentVersions` 依赖「一条记录 = 一次真实且不重复的状态迁移」反推每台机器当前版本（`OLD_VERSION_SCAN_LIMIT = 10`），原地重发会造成推断链自指；
+- 回滚能在同一记录上执行，是因为它是**同一批目标的状态切换**（`ROLLING_BACK` → `ROLLED_BACK`），不是第二次独立执行，**两者不可类比**；
+- 需要「重新发布」时，正确形态是**复制出一条新部署记录**（新 `deployment` + 目标快照 + 新 DEPLOY 任务，旧记录一字不动），产物可用性复用 `DeploymentService.historyArtifactAvailable` 判定；目标集取「当时快照」还是「当前启用绑定」需在实施前拍板；
+- 「重发同版本」当前通过「新建部署」手选历史版本即可完成——`ReleaseStatus.DEPRECATED` 全项目零引用，历史版本永远处于「可发布」。**未经同步评估该链路，禁止引入版本自动废弃策略。**
+
+### 24.7 目标机版本标识、产物完整性校验与手工回退
+
+平台可达时，「这台机器在跑哪个版本」看部署记录即可；但平台宕机、或运维直接登录机器排查时，机器上只有一个不带任何标识的 jar，回退与排障都只能靠时间戳猜。本节约束三件配套能力，对 JAR 运行时它们是**发布流程的一部分，不是可选增强**。
+
+**一、版本标识（`VERSION` 文件 + 备份名版本段）**
+
+同一份 `key=value` 文本在两个位置出现，`version=` 行一律写平台**原始版本号**（如 `auth-7888-v3-887b603c`），与 `release_record.version` 同源，**禁止**写美化文案或提交短码；另有一个只有版本号、不带其它字段的落点——备份文件名：
+
+| 位置 | 写入方 | 含义 |
+| --- | --- | --- |
+| `{build_artifact_dir}/{项目编码}/{版本号}/VERSION` | `BuildTaskHandler.writeArtifactVersionMarker` | 这份产物是哪个版本 |
+| `{workdir}/VERSION` | `DeployTaskHandler.writeVersionMarker` | 这台机器上盘的 jar 是哪个版本 |
+| `exec/bak/{jar名}_bak_{时间戳}_{版本号}.jar` | `DeployTaskHandler.backupCurrentJar` | 这个备份包里装的是哪个版本 |
+
+- **禁止靠重写 jar 的 `MANIFEST.MF` 实现**：Spring Boot fat jar 的嵌套 jar 依赖 ZIP 的 STORED 布局，用 `jar --update` 重打包一旦改变压缩方式，会静默产出「启动即失败」的产物；且重打包会改变 SHA256，与下面登记的摘要语义冲突。用外部标识文件，产物一个字节都不动；
+- **时序固定为「jar 上盘 → 写标识 → 重启服务」**：标识必须与磁盘一致。写在重启之后，重启失败会让标识停在旧版本、与磁盘错位，反而误导排查；
+- 写标识失败**只记 INFO 日志、不影响发布结论**——它是辅助信息，不该挡住一次已经成功的发布；
+- **备份名必须内嵌被替换包的版本号**：备份名里的时间戳是执行替换的时刻（指向替换者），只留时间戳会让每个备份都无法对应到平台版本。平台与 `jar-update.py` 都必须把版本段写进名字，取不到才省略该段。**禁止**改成「另存一个 `{备份名}.version` 伴随文件」：信息虽等价，但 `ls` 看不见、要多养一个文件，且会让 `.version` 看起来像是 `.jar` 的后缀；版本段取的是目标机 `VERSION`（磁盘事实），**不取平台库快照**——库快照在手工换包后会失真。写入文件名前必须清洗为 `[A-Za-z0-9._-]`，防止被改脏的 `VERSION` 带出 `/` 把备份写到别的目录；
+- **版本段逐字保留平台版本号，不把其中的连字符换成下划线**（同 §3）：文件名里的 `auth-7888-v7-1521739f` 必须与 `release_record.version`、Docker 镜像 tag、`VERSION` 文件字面一致，才能直接复制去查库、搜日志、比对镜像。改成 `auth_7888_v7_1521739f` 之后，读回时得按段把 `_` 回译成 `-`，而项目编码本身允许含 `_`，回译不再双射。文件名里 `-` 与 `_` 混用**是有意为之**：`_` 分隔备份名的结构段，`-` 属于版本号本身；
+- 标识文件面向人工与目标机脚本，**平台自身不以它为判定依据**：能否回滚仍由 `historyArtifactAvailable` 查 `release_record` 决定。
+
+**二、产物完整性校验（`sha256`）**
+
+`release_record.sha256` 由构建机 `sha256sum` 算得。产物要经「构建机 → 平台 → 目标机」两跳传输，因此 **JAR 发布必须在目标机复核摘要**（`DeployTaskHandler.verifyJarDigest`）：
+
+- 校验点在**替换 jar 之后、重启服务之前**：jar 已上盘、服务尚未重启，此刻发现损坏可以无损还原；
+- 不一致时**先还原发布前的备份，再抛异常**，不允许把损坏的包留在工作目录。只抛异常会让机器停在「服务跑着旧版本、磁盘放着坏包」的错位状态——下次重启必然起不来，而失败原因只写着校验失败，很难联想到磁盘；
+- 还原动作本身失败**只记 ERROR 日志、不覆盖校验失败这个根因**；无可还原备份时必须明确提示「工作目录中的 jar 已损坏，请手工从平台重新发布」；
+- 登记摘要为空（历史版本）或目标机算不出摘要（缺 `sha256sum`）时**跳过并写明原因**，不阻断发布——这两种情况都不是产物损坏；
+- 校验通过**也要写 INFO 日志**并带上摘要值，让「检查确实执行过」可被追溯。日志级别只有 INFO / ERROR（见 `TaskLogLevel`），跳过类信息归 INFO。
+
+**三、手工回退的版本识别口径**
+
+运维在目标机手工回退时，按可靠性依次使用：
+
+1. **SHA256 比对（精确，权威口径）**：`sha256sum {workdir}/{jar名} exec/bak/*.jar`，与平台 `release_record.sha256` 对照（`SELECT version, version_seq, sha256 FROM release_record WHERE project_id = ? AND runtime_type = 'JAR' AND is_deleted = 0 ORDER BY version_seq DESC`），或直接在构建机 `sha256sum {build_artifact_dir}/{项目编码}/*/{jar名}` 得到「版本 ↔ 摘要」对照表（产物目录名即版本号）。备份是 `cp -p` 的字节级复制，摘要必然一致。**版本段与时间戳都是辅助信息——载体是普通文件或文件名，可被手工换包弄脏**；严肃确认（回滚前、追责时）一律以 SHA256 为准；
+2. **备份名版本段（直接）**：`exec/bak/{jar名}_bak_{时间戳}_{版本号}.jar` 的版本段直接给出包内版本，`ls` 即可读出；`jar-fallback.py` 已据此打印「当前版本 → 回退到版本」；
+3. **时间戳反查（兜底）**：备份名时间戳 → 平台该时刻附近的部署记录 → 该记录的 `old_version`。**改造前产生的备份名里没有版本段**（形如 `{jar名}_bak_{时间戳}v{序号}.jar`，末尾 `v{序号}` 是防撞名序号而非版本），只能走这条或第 1 条。
+
+**两个时间戳不要混**：文件名里的时间戳是**备份时刻**（执行替换的时刻），`ls -l` 显示的 `mtime` 是**包被发布到工作目录的时刻**——`cp -p` 保留了源 jar 的元数据。判断「哪个是最新备份」必须看**文件名时间戳**；为此 `jar-fallback.py` 的 `--steps` 排序按**文件名时间戳**而不是 `mtime`（后者虽与版本序一致，但语义上是「上次发布的时刻」，容易被读错）。
+
+**备份名的版本段有一次发布的预热期**：版本段取自 `{workdir}/VERSION`，而改造前的工作目录里并不存在这个文件，因此**重启后的第一次发布拿不到版本段**（名字退化为 `{jar名}_bak_{时间戳}.jar`），该次发布结束才写入 `VERSION`，**再下一次**发布的备份才带版本段。这是**预期行为，不是缺陷**（改动生效的前提是平台后端已重启，否则连 `VERSION` 都不会写）。
+
+手工换包后**平台状态会与机器实际脱节**：`resolveCurrentVersions` 读的是数据库快照，下次发布算出的 `old_version` 会错。因此手工回退后**应在平台补一次「新建部署、重发对应版本」**，把平台状态对齐。
+
+**适用范围**：本节三项能力目前只覆盖 **JAR** 运行时。DOCKER 的版本就是镜像 tag（`docker images` 即可识别），无需额外标识；STATIC 直接覆盖 `static_root`，**既无本地备份也无版本标识**，其回退完全依赖平台重发旧版本——若要支持静态站点的手工回退，需引入「按版本建目录 + `current` 软链接」方案，属独立改造，不在本节范围内。
+
+### 24.8 项目连通性测试（`PROJECT_TEST`）
+
+构建链路里最容易「第一次跑才暴雷」的三件事（Git 仓库不可达 / 凭据失效 / 分支名写错、镜像仓库登录失败、
+构建机缺工具），只有在真正点「构建」时才会依次撞上。因此在构建之前先测一遍，入口 `POST /project/test/{id}`。
+
+- **必须在项目的构建机上执行**（`project.build_server_id`），**不允许**拿平台本机代替：平台机器常常不装
+  git / docker，网络策略也与构建机不同，测出来的结论说明不了构建能否成功；
+- 项目未绑定构建机时**直接拒绝提交**，而不是回落到「测平台自己」；
+- 校验全程**只读**：`git ls-remote` 而非真克隆（走完整网络 + 认证链路，但不下载对象、不占磁盘、秒级返回），
+  `docker login` 用完即 `logout`，临时凭据文件用完即删；
+- 分支不存在时 `git ls-remote --heads <url> <branch>` 会**成功返回且输出为空**，
+  因此必须同时判退出码与空输出，只看退出码会漏掉「分支名写错」这个最常见的失败；
+- **互斥键取构建机**（`build-server:{serverId}`，与 BUILD 同键）：测试期 `docker login` 会写同机
+  `~/.docker/config.json`，与正在推送的构建并发会互相登出，必须串行；
+- 提交侧用 `TaskService.hasUnfinishedTask(PROJECT_TEST, projectId)` 防重复提交；
+- 判定与日志口径沿用 §24.1 / §24.2 与 [任务模块 §6.8](docs/任务模块.md)：必需项失败即任务失败并给出
+  「怎么补」的可操作原因，可选项（`mvn` 未装、`curl` 不可用）只写 INFO。
+
+`lds_task.task_type` 是字符串列，新增任务类型**不需要 DDL**。完整字段语义与探活项见
+[项目模块](docs/项目模块.md) §6.7。
+
+## 25. 内置脚本约定
+
+平台内置在 `src/main/resources/scripts/jar-deploy/` 下的脚本（`jar-init.py` / `jar-update.py` / `jar-fallback.py`）会被投放到目标机并执行，属于**平台资产**：
+
+- **必须兼容 Python 3.5+**：目标机的 `python3` 常见是 3.6（CentOS 7 一类），**禁止**使用 3.7 才有的参数与语法（`subprocess` 的 `capture_output` / `text` 必须写成 `stdout=PIPE, stderr=PIPE, universal_newlines=True`）。真实事故：`run()` 用了 `capture_output=True, text=True`，在老机器上抛 `__init__() got an unexpected keyword argument 'capture_output'`，初始化在最后一步 `systemctl daemon-reload` 前中断，整台目标被判失败，而报错信息里没有任何版本线索；
+- 换行符与编码固定 `\n` + UTF-8，脚本头部保留 `# -*- coding: utf-8 -*-`；
+- 脚本必须**幂等**：重复执行只补齐缺失部分，不覆盖已有的 jar、配置与 systemd 单元（运维手工调过的启动参数必须被尊重）；
+- 退出码语义固定：`0` 成功，`1` 失败且失败原因写 stderr —— 平台按 stderr 首行生成「目标失败」原因，因此 stderr 文案要面向运维可读；
+- **每次发布都重新投放**三份脚本（与是否首次部署无关）：脚本版本必须随平台走，只在首次投放会让目标机长期停留在一份旧脚本上，而应急发版/回滚恰恰依赖它们；
+- 执行前先确认目标机有 `python3` 并回显 `python3 --version`，让解释器版本进入任务日志，避免下次再靠猜；
+- 脚本内禁止第三方依赖，只用标准库；禁止把凭据、Token 写进脚本或参数。
+
+**版本信息的读写口径**（详见 §24.7）：
+
+- `exec/deploy.conf` 必须含 `version=` 行，表示**本机当前运行的版本**。首次初始化写空（此刻确实没有发布过任何版本），之后由平台发布流程、`jar-update.py`、`jar-fallback.py` 三方刷新，**三者语义必须一致**，不得一处写版本号、另一处写提交短码；
+- `jar-init.py` 重复执行时**必须保留已登记的 `version`**：init 可能被运维手工重跑，重置它会让「这台机器在跑什么」凭空丢失，而平台要到下次发布才会写回；
+- `exec/` 下「待投放版本」的标识固定为 **`exec/VERSION`**（与构建机产物目录里的文件同名同格式，运维把产物连它的 `VERSION` 一起拷进 `exec/` 即可，**无需改名**），随 jar 一起被 `jar-update.py` 消费掉，避免下次误用旧值；
+- 脚本**禁止猜版本号**：`jar-update.py` 的版本来源固定为「`--version` 参数 > `exec/VERSION` > 空」，取不到就写空并打印提示。**记错版本比不记版本更危险**；被替换掉的旧版本始终能从**备份文件名的版本段**找回；
+- 重写 `deploy.conf` 用「剔除旧 `version=` 行 → 追加新行 → 原子替换」，**不使用 `sed -i`**（各发行版 `-i` 参数与转义规则不一致，且版本号可能含特殊字符）；
+- 版本对照**必须来自文件或文件名**（`{workdir}/VERSION` 与备份名的版本段），不允许靠备份文件时间戳反推；旧格式备份名里没有版本段时只报「未登记」并提示用 `sha256sum` 与平台比对。回退到这类备份后，`VERSION` 与 `deploy.conf` 一并写空——磁盘上确实是「未登记版本」，**留着旧值反而与磁盘错位**；
+

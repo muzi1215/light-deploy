@@ -34,20 +34,20 @@ export function listRegistries(params?: ListParams): Promise<ApiResponse<Registr
 
 /** 根据主键查询镜像仓库详情 */
 export function getRegistry(id: string): Promise<ApiResponse<RegistryVo>> {
-  return request({ url: `/registry/${id}`, method: 'get' })
+  return request({ url: `/registry/detail/${id}`, method: 'get' })
 }
 
 /** 新增镜像仓库；credentialId 填写时必须是类型为 REGISTRY 的凭据 */
 export function createRegistry(data: RegistryDto): Promise<ApiResponse<RegistryVo>> {
-  return request({ url: '/registry', method: 'post', data })
+  return request({ url: '/registry/create', method: 'post', data })
 }
 
 /** 修改镜像仓库 */
 export function updateRegistry(id: string, data: RegistryDto): Promise<ApiResponse<RegistryVo>> {
-  return request({ url: `/registry/${id}`, method: 'put', data })
+  return request({ url: `/registry/update/${id}`, method: 'put', data })
 }
 
 /** 逻辑删除镜像仓库；仍被项目绑定时后端拒绝（4005） */
 export function deleteRegistry(id: string): Promise<ApiResponse<void>> {
-  return request({ url: `/registry/${id}`, method: 'delete' })
+  return request({ url: `/registry/delete/${id}`, method: 'delete' })
 }

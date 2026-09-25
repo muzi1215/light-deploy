@@ -19,20 +19,20 @@ export function listEnvironments(params?: ListParams): Promise<ApiResponse<Envir
 
 /** 根据主键查询环境详情 */
 export function getEnvironment(id: string): Promise<ApiResponse<EnvironmentVo>> {
-  return request({ url: `/environment/${id}`, method: 'get' })
+  return request({ url: `/environment/detail/${id}`, method: 'get' })
 }
 
 /** 新增环境 */
 export function createEnvironment(data: EnvironmentDto): Promise<ApiResponse<EnvironmentVo>> {
-  return request({ url: '/environment', method: 'post', data })
+  return request({ url: '/environment/create', method: 'post', data })
 }
 
 /** 修改环境 */
 export function updateEnvironment(id: string, data: EnvironmentDto): Promise<ApiResponse<EnvironmentVo>> {
-  return request({ url: `/environment/${id}`, method: 'put', data })
+  return request({ url: `/environment/update/${id}`, method: 'put', data })
 }
 
 /** 逻辑删除环境（仍被部署目标引用时后端返回 DATA_CONFLICT） */
 export function deleteEnvironment(id: string): Promise<ApiResponse<void>> {
-  return request({ url: `/environment/${id}`, method: 'delete' })
+  return request({ url: `/environment/delete/${id}`, method: 'delete' })
 }

@@ -113,6 +113,52 @@ public class Server extends BaseEntity {
     private String description;
 
     /**
+     * 构建工作区根目录，仅构建机使用。
+     *
+     * <p>每次构建在该目录下创建 {@code 项目编码_构建ID} 的独立子目录，
+     * 构建结束（无论成功失败）后整体清理，属于临时目录。
+     * 纯部署目标机不使用该字段，保留建表时的默认值即可。</p>
+     */
+    @TableField("build_workspace_dir")
+    @Schema(description = "构建工作区根目录，仅构建机使用")
+    private String buildWorkspaceDir;
+
+    /**
+     * 构建产物持久目录，仅构建机使用。
+     *
+     * <p>文件型产物（JAR）与目录型产物（前端 dist）在构建成功后转存到
+     * {@code 该目录/项目编码/版本号} 下，供发布阶段通过 SFTP 下载。
+     * 必须落在工作区之外：工作区会被清理，登记工作区路径会导致发布时下载到已删除的文件。
+     * 路径在创建构建产物时已快照进 build_artifact 的元数据，之后修改本字段不影响历史版本。</p>
+     */
+    @TableField("build_artifact_dir")
+    @Schema(description = "构建产物持久目录，仅构建机使用")
+    private String buildArtifactDir;
+
+    /**
+     * 平台在该服务器上的部署根目录。
+     *
+     * <p>连通性测试检查该目录存在且可写；应用实际部署在其 {@code apps} 子目录下，
+     * 该子目录名由平台约定、不单独配置。目录路径来自页面配置而非代码常量，
+     * 不同机器可使用不同的挂载点（如数据盘）。</p>
+     */
+    @TableField("agent_base_dir")
+    @Schema(description = "平台在该服务器上的部署根目录")
+    private String agentBaseDir;
+
+    /**
+     * 构建环境初始化脚本，仅构建机使用。
+     *
+     * <p>平台通过 SSH 执行构建命令时用的是非交互式 shell，不加载 /etc/profile 等登录环境，
+     * PATH 里往往没有 mvn 这类「已安装但靠 profile 导出路径」的工具。执行构建命令前，
+     * 平台会先固定执行一次 {@code . /etc/profile} 兜底，随后执行本字段内容，
+     * 用于补充或覆盖环境，例如 {@code export PATH=/opt/apache-maven-3.8.8/bin:$PATH}。</p>
+     */
+    @TableField("build_env_script")
+    @Schema(description = "构建环境初始化脚本，仅构建机使用")
+    private String buildEnvScript;
+
+    /**
      * 创建人用户 ID。
      *
      * <p>过渡期记录操作者，接入统一权限中心后由外部用户 ID 替代。</p>

@@ -48,7 +48,7 @@
       </el-table-column>
       <el-table-column label="进度" min-width="150" align="center">
         <template #default="{ row }">
-          <el-progress :percentage="row.progress" :status="progressStatus(row)" :stroke-width="8" />
+          <el-progress :percentage="row.progress" :status="rowProgressStatus(row)" :stroke-width="8" />
         </template>
       </el-table-column>
       <el-table-column prop="currentStage" label="当前阶段" min-width="120" show-overflow-tooltip align="center" />
@@ -76,28 +76,53 @@
       @current-change="fetchData"
     />
 
-    <!-- 执行日志对话框：按 sequenceNo 升序展示任务执行过程；宽度与页脚按钮沿用统一弹窗规格（AGENTS.md §20.2） -->
+    <!-- 执行日志对话框：与构建、发布、连通性测试、触发构建四处共用 useTaskLogViewer -->
+    <!-- 关闭不拦截：只停前端轮询，后端任务照跑，重新打开会重新拉全量日志（AGENTS.md §20.9） -->
     <el-dialog
-      v-model="logDialogVisible"
-      :title="`执行日志 - ${currentTask?.taskNo || ''}`"
+      v-model="logVisible"
+      :title="`执行日志 - ${task?.taskNo || ''}`"
       width="800px"
       :close-on-click-modal="false"
+      @closed="stop"
     >
-      <div v-loading="logLoading" class="log-console" style="margin-top: 16px">
-        <el-empty v-if="!logLoading && logList.length === 0" description="该任务还没有执行日志" />
-        <div v-for="log in logList" :key="log.id" class="log-line">
+      <!-- 任务状态区：状态标签、任务编号、当前阶段，与下方日志区留出间隔 -->
+      <div class="test-summary">
+        <el-tag :type="getTaskStatusStyle(task?.status).tag">
+          {{ getTaskStatusStyle(task?.status).label }}
+        </el-tag>
+        <span class="test-meta">任务编号：{{ task?.taskNo || '-' }}</span>
+        <span v-if="task?.currentStage" class="test-meta">当前阶段：{{ task.currentStage }}</span>
+      </div>
+      <el-progress
+        :percentage="task?.progress ?? 0"
+        :status="progressStatus"
+        :stroke-width="8"
+        style="margin-bottom: 16px"
+      />
+      <el-alert
+        v-if="task?.errorMessage"
+        :title="task.errorMessage"
+        type="error"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+      />
+      <div ref="bodyRef" class="log-console">
+        <el-empty v-if="logs.length === 0" description="正在等待执行日志…" :image-size="60" />
+        <div v-for="log in logs" :key="log.id" class="log-line">
           <span class="log-seq">#{{ log.sequenceNo }}</span>
           <el-tag size="small" :type="LOG_LEVEL_TAG[log.logLevel] || 'info'" class="log-level">
             {{ log.logLevel }}
           </el-tag>
           <span v-if="log.stage" class="log-stage">[{{ log.stage }}]</span>
           <span class="log-content">{{ log.content }}</span>
-          <span class="log-time">{{ log.createTime }}</span>
+          <span class="log-time">{{ formatLogTime(log.createTime) }}</span>
         </div>
       </div>
       <template #footer>
-        <el-button size="small" @click="logDialogVisible = false">关 闭</el-button>
-        <el-button type="primary" size="small" :loading="logLoading" @click="fetchLogs">刷 新</el-button>
+        <el-text v-if="running" size="small" type="info" style="margin-right: 12px">任务执行中，关闭窗口不影响执行</el-text>
+        <el-button size="small" :icon="Download" :loading="downloading" @click="download">下载日志</el-button>
+        <el-button size="small" type="primary" @click="closeLog">关 闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -111,16 +136,18 @@
  * 1. 任务由系统各业务模块创建（连通性测试/构建/发布），状态为数字编码：
  *    0 排队中 → 1 执行中 → 2 成功 / 3 失败，0/1 可被人工取消，4 为已取消；
  * 2. 终态任务（2 成功 / 3 失败 / 4 已取消）才显示删除按钮，非终态显示取消按钮；
- * 3. 执行日志按 sequenceNo 升序展示，与实际执行顺序一致；
- * 4. 任务执行器已落地：任务会被自动领取执行（当前支持 SERVER_TEST），状态与进度由执行器更新；
+ * 3. 执行日志对话框与其余四处日志视图共用 useTaskLogViewer：增量拉取实时日志、可直接下载导出，
+ *    任务执行中禁止关闭容器（日志还在输出，关掉就再也看不到这段过程）；
+ * 4. 任务执行器已落地：任务会被自动领取执行，状态与进度由执行器更新，页面按 1.5 秒轮询；
  * 5. 状态与日志级别的文案/颜色统一取自 @/constants/taskStatus.ts，不在页面内重复定义。
  */
-import { ref, reactive } from 'vue'
+import { ref, reactive, onActivated } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, Document, CircleClose, Delete } from '@element-plus/icons-vue'
-import { pageTask, deleteTask, cancelTask, listTaskLogs } from '@/api/task.ts'
-import type { TaskVo, TaskLogVo } from '@/api/deployTypes.ts'
+import { Search, Refresh, Document, Download, CircleClose, Delete } from '@element-plus/icons-vue'
+import { pageTask, deleteTask, cancelTask } from '@/api/task.ts'
+import type { TaskVo } from '@/api/deployTypes.ts'
 import { LOG_LEVEL_TAG, getTaskStatusStyle, isTaskFinal } from '@/constants/taskStatus.ts'
+import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.ts'
 
 defineOptions({ name: 'TaskList' })
 
@@ -181,13 +208,29 @@ async function fetchData() {
 
 fetchData()
 
+// 本页被 keep-alive 缓存（切走再切回不重跑 setup），而任务几乎都是平台自己产生的
+// （构建、发布各建一条任务），回到本页时重新拉一次：
+// 只靠初次的 setup 拉取，会让刚触发的任务与执行中的进度一直不可见。
+// 首次激活发生在挂载之后，此时上面已经拉过数据，跳过以免重复请求。
+let activatedOnce = false
+onActivated(() => {
+  if (!activatedOnce) {
+    activatedOnce = true
+    return
+  }
+  fetchData()
+})
+
 /**
- * 计算进度条展示状态。
+ * 计算表格列的进度条展示状态。
+ *
+ * 与日志对话框里查看器返回的 progressStatus 不是同一个：那个绑的是对话框内当前任务，
+ * 这个绑的是表格行，因此单独起名避免冲突。
  *
  * @param row 当前行任务数据
  * @returns 成功返回 success，失败返回 exception，其余不指定
  */
-function progressStatus(row: TaskVo): string | undefined {
+function rowProgressStatus(row: TaskVo): string | undefined {
   if (row.status === 2) return 'success'
   if (row.status === 3) return 'exception'
   return undefined
@@ -220,32 +263,28 @@ async function handleDelete(row: TaskVo) {
 }
 
 // ==================== 执行日志 ====================
-const logDialogVisible = ref(false)
-const logLoading = ref(false)
-const logList = ref<TaskLogVo[]>([])
-const currentTask = ref<TaskVo | null>(null)
+const logVisible = ref(false)
+
+/** 日志查看器：轮询、增量锚点、自动滚动、下载与运行中禁止关闭统一由它负责 */
+const { bodyRef, logs, task, running, downloading, progressStatus, start, stop, download } =
+  useTaskLogViewer()
 
 /**
- * 打开执行日志对话框并加载日志。
+ * 打开执行日志对话框。
+ *
+ * 任务状态与进度用列表行的值做初值，首次拉取返回后立刻以服务端为准；
+ * 任务执行中本页保持轮询，容器也不会放行关闭。
  *
  * @param row 目标任务行数据，日志按该任务 ID 查询
  */
-async function handleShowLogs(row: TaskVo) {
-  currentTask.value = row
-  logDialogVisible.value = true
-  await fetchLogs()
+function handleShowLogs(row: TaskVo) {
+  logVisible.value = true
+  start({ taskId: row.id, taskNo: row.taskNo, status: row.status, progress: row.progress })
 }
 
-/** 加载当前任务的执行日志，后端按 sequenceNo 升序返回 */
-async function fetchLogs() {
-  if (!currentTask.value) return
-  logLoading.value = true
-  try {
-    const res = await listTaskLogs({ taskId: currentTask.value.id })
-    logList.value = res.data || []
-  } finally {
-    logLoading.value = false
-  }
+/** 关闭执行日志对话框；@closed 会触发 stop 停掉轮询，后端任务不受影响 */
+function closeLog() {
+  logVisible.value = false
 }
 </script>
 

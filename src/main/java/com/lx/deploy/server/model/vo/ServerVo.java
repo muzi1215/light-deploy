@@ -106,6 +106,38 @@ public class ServerVo {
     private Integer status;
 
     /**
+     * 构建工作区根目录，仅构建机使用。
+     *
+     * <p>页面在服务器表单中展示与编辑；每次构建在该目录下创建临时子目录并在结束后清理。</p>
+     */
+    @Schema(description = "构建工作区根目录，仅构建机使用")
+    private String buildWorkspaceDir;
+
+    /**
+     * 构建产物持久目录，仅构建机使用。
+     *
+     * <p>页面在服务器表单中展示与编辑；产物转存于此供发布阶段下载，不随工作区清理。</p>
+     */
+    @Schema(description = "构建产物持久目录，仅构建机使用")
+    private String buildArtifactDir;
+
+    /**
+     * 平台在该服务器上的部署根目录。
+     *
+     * <p>页面在服务器表单中展示与编辑；连通性测试结果中会体现该目录是否就绪。</p>
+     */
+    @Schema(description = "平台在该服务器上的部署根目录")
+    private String agentBaseDir;
+
+    /**
+     * 构建环境初始化脚本，仅构建机使用。
+     *
+     * <p>页面在服务器表单中展示与编辑；执行构建命令前由平台在目标机构建机上执行。</p>
+     */
+    @Schema(description = "构建环境初始化脚本，仅构建机使用")
+    private String buildEnvScript;
+
+    /**
      * 服务器描述。
      *
      * <p>面向页面的用途说明，如"阿里云轻量服务器，1年"。</p>

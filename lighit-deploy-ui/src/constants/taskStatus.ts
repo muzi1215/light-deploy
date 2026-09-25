@@ -58,10 +58,8 @@ export function isTaskFinal(status?: number | null): boolean {
   )
 }
 
-/** 日志级别对应的标签颜色（对应后端 TaskLogLevel 枚举）。 */
+/** 日志级别对应的标签颜色（对应后端 TaskLogLevel 枚举，只有 INFO 与 ERROR 两级）。 */
 export const LOG_LEVEL_TAG: Record<string, TagType> = {
-  DEBUG: 'info',
   INFO: 'primary',
-  WARN: 'warning',
   ERROR: 'danger'
 }

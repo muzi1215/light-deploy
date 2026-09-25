@@ -114,6 +114,25 @@ public class ProjectVo {
     private String registryId;
 
     /**
+     * 构建机服务器 ID。
+     *
+     * <p>指向 server 表的外键引用，不含 SSH 凭据；页面用它回显编辑表单里的构建机下拉。
+     * 为空表示项目未绑定构建机，构建时回落系统默认。</p>
+     */
+    @Schema(description = "构建机服务器ID，指向server表")
+    private String buildServerId;
+
+    /**
+     * 构建机名称。
+     *
+     * <p>由 Service 按 buildServerId 批量查出后回填的展示字段（零额外查询）：
+     * 列表与详情直接显示机器名，不必让前端再拉一次服务器列表做映射。
+     * 服务器已被删除或 ID 失效时为 null。</p>
+     */
+    @Schema(description = "构建机名称，展示用")
+    private String buildServerName;
+
+    /**
      * 构建模式。
      *
      * <p>取值与后端 BuildMode 枚举一致：PLATFORM_TEMPLATE / PROJECT_DOCKERFILE /

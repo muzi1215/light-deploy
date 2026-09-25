@@ -48,10 +48,10 @@ public class TaskLogDto {
     /**
      * 日志级别。
      *
-     * <p>查询时等值过滤；新增时可选，取值必须为 DEBUG、INFO、WARN 或 ERROR，
+     * <p>查询时等值过滤；新增时可选，取值必须为 INFO 或 ERROR，
      * 未传入默认 INFO；修改请求中传入无效。</p>
      */
-    @Schema(description = "日志级别：DEBUG/INFO/WARN/ERROR")
+    @Schema(description = "日志级别：INFO/ERROR")
     private String logLevel;
 
     /**

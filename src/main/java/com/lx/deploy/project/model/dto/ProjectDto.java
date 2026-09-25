@@ -97,6 +97,16 @@ public class ProjectDto {
     private String registryId;
 
     /**
+     * 构建机服务器 ID，取值见 server 表主键。
+     *
+     * <p>选填：指定「项目在哪台机器上构建」，同时决定「连通性测试」去连哪台机器。
+     * 填写时必须存在且状态为启用；留空时构建回落到系统默认构建机
+     * （`light-deploy.build.server-id`）。查询时等值过滤。</p>
+     */
+    @Schema(description = "构建机服务器ID，选填，指向server表")
+    private String buildServerId;
+
+    /**
      * 构建配置 JSON。
      *
      * <p>选填，必须为合法 JSON；不参与查询条件。</p>

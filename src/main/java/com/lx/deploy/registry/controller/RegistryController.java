@@ -67,7 +67,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
-    @GetMapping("/{id}")
+    @GetMapping("/detail/{id}")
     public ApiResponse<RegistryVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
     }
@@ -79,7 +79,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
-    @PostMapping
+    @PostMapping("/create")
     public ApiResponse<RegistryVo> create(@Valid @RequestBody RegistryDto dto,
                                            HttpServletRequest request) {
         return ApiResponse.success(service.create(dto), requestId(request));
@@ -93,7 +93,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
-    @PutMapping("/{id}")
+    @PutMapping("/update/{id}")
     public ApiResponse<RegistryVo> update(@PathVariable String id,
                                            @Valid @RequestBody RegistryDto dto,
                                            HttpServletRequest request) {
@@ -107,7 +107,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);
         return ApiResponse.success(requestId(request));

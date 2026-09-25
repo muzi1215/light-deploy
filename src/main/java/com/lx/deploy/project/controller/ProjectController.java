@@ -7,6 +7,7 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import com.lx.deploy.task.model.vo.TaskVo;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -67,7 +68,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
-    @GetMapping("/{id}")
+    @GetMapping("/detail/{id}")
     public ApiResponse<ProjectVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
     }
@@ -79,7 +80,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
-    @PostMapping
+    @PostMapping("/create")
     public ApiResponse<ProjectVo> create(@Valid @RequestBody ProjectDto dto,
                                            HttpServletRequest request) {
         return ApiResponse.success(service.create(dto), requestId(request));
@@ -93,11 +94,27 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
-    @PutMapping("/{id}")
+    @PutMapping("/update/{id}")
     public ApiResponse<ProjectVo> update(@PathVariable String id,
                                            @Valid @RequestBody ProjectDto dto,
                                            HttpServletRequest request) {
         return ApiResponse.success(service.update(id, dto), requestId(request));
+    }
+
+    /**
+     * 提交一次项目连通性测试任务。
+     *
+     * <p>测试在项目的构建机上执行，校验代码仓库可否拉取、镜像仓库可否登录，
+     * 把这些配置问题提前暴露，而不是拖到真正构建时才以「构建失败」的形式出现。
+     * 接口只创建异步任务并立即返回，页面用返回的任务主键轮询 /taskLog/pull 查看执行日志。</p>
+     *
+     * @param id 目标项目主键
+     * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
+     * @return 新建的异步任务（状态为 0 排队中）
+     */
+    @PostMapping("/test/{id}")
+    public ApiResponse<TaskVo> test(@PathVariable String id, HttpServletRequest request) {
+        return ApiResponse.success(service.submitConnectivityTest(id), requestId(request));
     }
 
     /**
@@ -107,7 +124,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);
         return ApiResponse.success(requestId(request));

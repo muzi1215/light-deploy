@@ -36,20 +36,20 @@ export function listCredentials(params?: ListParams): Promise<ApiResponse<Creden
 
 /** 根据主键查询凭据详情（不含密文） */
 export function getCredential(id: string): Promise<ApiResponse<CredentialVo>> {
-  return request({ url: `/credential/${id}`, method: 'get' })
+  return request({ url: `/credential/detail/${id}`, method: 'get' })
 }
 
 /** 新增凭据，credential 必填，后端 AES-GCM 加密后落库 */
 export function createCredential(data: CredentialDto): Promise<ApiResponse<CredentialVo>> {
-  return request({ url: '/credential', method: 'post', data })
+  return request({ url: '/credential/create', method: 'post', data })
 }
 
 /** 修改凭据，credential 选填（留空保留原凭据） */
 export function updateCredential(id: string, data: CredentialDto): Promise<ApiResponse<CredentialVo>> {
-  return request({ url: `/credential/${id}`, method: 'put', data })
+  return request({ url: `/credential/update/${id}`, method: 'put', data })
 }
 
 /** 逻辑删除凭据；仍被项目或镜像仓库引用时后端拒绝（4005） */
 export function deleteCredential(id: string): Promise<ApiResponse<void>> {
-  return request({ url: `/credential/${id}`, method: 'delete' })
+  return request({ url: `/credential/delete/${id}`, method: 'delete' })
 }

@@ -10,17 +10,17 @@ export const CREDENTIAL_TYPE_OPTIONS: { value: string; label: string; tip: strin
   {
     value: 'GIT_TOKEN',
     label: 'Git 访问令牌',
-    tip: 'HTTPS 形式的仓库地址使用，如 https://gitee.com/group/repo.git'
+    tip: 'HTTPS 私有仓库用。填「用户名:令牌」，或只填令牌（平台自动补 oauth2 占位）；仓库地址形如 https://gitee.com/组/仓库.git'
   },
   {
     value: 'SSH_KEY',
     label: 'Git 私钥',
-    tip: 'SSH 形式的仓库地址使用，如 git@gitee.com:group/repo.git'
+    tip: 'SSH 私有仓库用。粘贴完整 PEM 私钥（含 BEGIN/END 行）；仓库地址形如 git@gitee.com:组/仓库.git，且需在代码平台添加对应公钥'
   },
   {
     value: 'REGISTRY',
     label: '镜像仓库凭据',
-    tip: '登录私有镜像仓库使用，通常是用户名 + 密码；用户名建议写在元数据里'
+    tip: '登录私有镜像仓库用。填「用户名:密码」；仓库地址在「镜像仓库」里配置，不要填在这里'
   },
   {
     value: 'SSH_PASSWORD',

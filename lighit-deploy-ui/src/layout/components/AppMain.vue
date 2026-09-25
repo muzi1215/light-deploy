@@ -49,24 +49,29 @@ function wrap(Component: any, name: string) {
 
 <style lang="scss" scoped>
 .app-main {
-  /* 50 = navbar */
-  min-height: calc(100vh - 50px);
+  /* 页面内容区自身滚动：顶栏与标签栏固定，滚动只发生在本区域内部（内部滚动条） */
+  height: calc(100vh - 50px);
   width: 100%;
   position: relative;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .fixed-header+.app-main {
+  /* 开启 fixedHeader 时导航 fixed 脱离文档流，内容区从视口顶部开始：
+     高度回到 100vh，用 padding 让出头部，滚动区域 = 100vh - 头部高度 */
+  height: 100vh;
   padding-top: 50px;
 }
 
 .hasTagsView {
   .app-main {
     /* 84 = navbar + tags-view = 50 + 34 */
-    min-height: calc(100vh - 84px);
+    height: calc(100vh - 84px);
   }
 
   .fixed-header+.app-main {
+    height: 100vh;
     padding-top: 84px;
   }
 }

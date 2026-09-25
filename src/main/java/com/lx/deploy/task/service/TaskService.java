@@ -21,7 +21,9 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * 异步任务服务。
@@ -91,7 +93,11 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     public TaskVo create(TaskDto dto) {
         // 任务类型必填且必须是受支持的枚举值。
         if (TaskType.fromCode(dto.getTaskType()) == null) {
-            throw new DeployException(ResponseCode.VALIDATION_ERROR, "任务类型必须为 SERVER_TEST、BUILD 或 DEPLOY");
+            // 可选值从枚举推导，避免新增任务类型后这里的提示文案与实际校验口径不一致。
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "任务类型必须为 " + Arrays.stream(TaskType.values())
+                            .map(TaskType::getCode)
+                            .collect(Collectors.joining("、")));
         }
         // 进度传入时必须在 0 到 100 之间。
         if (dto.getProgress() != null && (dto.getProgress() < 0 || dto.getProgress() > 100)) {
