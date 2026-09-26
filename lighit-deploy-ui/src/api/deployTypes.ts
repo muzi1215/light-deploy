@@ -405,6 +405,12 @@ export interface ReleaseRecordVo {
   statusText?: string
   /** 产物所在构建机 ID，JAR / STATIC 分发时用于 SFTP 下载 */
   buildServerId?: string
+  /**
+   * 产物所在构建机名称，服务端批量回填。
+   * 产物在哪台机器上是发布能否成功的前提：构建机换过或产物被回收后版本号还在但发不出去，
+   * 因此下拉里一并展示，让运维在点发布前就能判断。
+   */
+  buildServerName?: string
   createdBy?: string
   createTime: string
   updateTime: string

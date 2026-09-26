@@ -242,8 +242,35 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
     type: 'input',
     group: 'JAR 运行时',
     span: 12,
-    placeholder: '留空回落到 {部署根目录}/apps/{项目编码}',
-    tip: '目录固定不变，发版原地替换 jar，systemd 单元只在首次部署生成',
+    placeholder: '绝对路径，如 /lx/jarapps/auth-tool-7888',
+    tip: '填了即完全覆盖服务器档案里的部署根目录；目录固定不变，发版原地替换 jar',
+    // 覆盖关系与「相对路径陷阱」是这个字段最容易踩的两处，label 上的「?」悬浮给出完整解释
+    examples: [
+      {
+        label: '填了 = 覆盖服务器上的部署根目录',
+        text:
+          'JAR 最终就发到这个目录，不再拼接服务器档案里的部署根目录。\n' +
+          '填 /lx/jarapps/auth-tool-7888 → 工作目录就是 /lx/jarapps/auth-tool-7888。'
+      },
+      {
+        label: '不填 = 回落到部署根目录下的 apps',
+        text:
+          '回落到 {部署根目录}/apps/{项目编码}。\n' +
+          '部署根目录 /lx/light-deploy/agent + 项目编码 auth-tool-7888 → /lx/light-deploy/agent/apps/auth-tool-7888。'
+      },
+      {
+        label: '必须写绝对路径',
+        text:
+          '平台按字面使用这个值，不拼接、不转换、不校验存在性。\n' +
+          '写成 ./lx/jarapps/auth-tool-7888 这类相对路径，会相对 SSH 登录用户的家目录解析（root 就是 /root/lx/jarapps/...），不是你以为的 /lx/jarapps/...。'
+      }
+    ],
+    checks: [
+      {
+        test: (values) => Boolean(values.work_dir) && !String(values.work_dir).startsWith('/'),
+        message: '固定工作目录必须写绝对路径（以 / 开头）：相对路径会相对 SSH 登录用户的家目录解析，跟填的时候想的位置不一样'
+      }
+    ],
     showIf: { runtimeType: ['JAR'] }
   },
   {
@@ -253,7 +280,7 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
     group: 'JAR 运行时',
     span: 12,
     placeholder: '留空使用服务器档案的部署根目录 + /apps',
-    tip: '覆盖 work_dir 未填写时的默认落点，一般不需要填',
+    tip: '当前版本后端未消费该键（读作服务器档案的部署根目录），留空即可；要指定目录请填「固定工作目录」',
     showIf: { runtimeType: ['JAR'] }
   },
   {
@@ -272,7 +299,29 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
     group: 'JAR 运行时',
     span: 8,
     placeholder: '如 /usr/bin/java，留空自动探测',
-    tip: '多 JDK 环境建议显式写绝对路径',
+    // 这一项最容易踩：它是项目级配置，会把同一条路径套到所有目标机上
+    tip: '项目级配置，对所有目标机生效；各机器 JDK 路径不同请留空由平台按机器自动探测，或在具体部署目标上单独覆盖',
+    examples: [
+      {
+        label: '为什么两台机器会一成功一失败',
+        text:
+          '填了绝对路径，就等于要求每台目标机上都得有这个文件。\n' +
+          'A 机 JDK 在 /usr/lib/jdk1.8.0_121/bin/java、B 机在别处时，B 机的 systemd 单元里 ExecStart 指向不存在的路径，\n' +
+          '服务以 status=203/EXEC 起不来，而单元只在首次部署生成、之后不会因配置变更重写。'
+      },
+      {
+        label: '推荐：留空，让平台逐台探测',
+        text:
+          '留空时平台在每台目标机上执行 command -v java，各自用自己 PATH 里的 java。\n' +
+          '只有某台机器的 java 不在 PATH 里时，才在「部署目标」那条记录的运行配置里单独填 java_bin。'
+      },
+      {
+        label: '已生成的服务不会自动改',
+        text:
+          '改这个配置不会重写目标机上已存在的 systemd 单元。\n' +
+          '已经发过的机器要改 java 路径，得上机改 /etc/systemd/system/{服务名}.service 后 daemon-reload 重启。'
+      }
+    ],
     showIf: { runtimeType: ['JAR'] }
   },
   {
@@ -363,7 +412,7 @@ export const HEALTH_CONFIG_FIELDS: ConfigField[] = [
     span: 8,
     options: HEALTH_TYPE_OPTIONS,
     placeholder: '默认 HTTP',
-    tip: 'HTTP 2xx 视为健康；TCP 端口可连通即健康；整段留空则跳过健康检查'
+    tip: 'HTTP 2xx 视为健康，能反映应用是否真的可用；TCP 端口可连通即健康，只证明进程在监听、探不出假死；整段留空则跳过健康检查'
   },
   {
     key: 'port',
@@ -382,7 +431,8 @@ export const HEALTH_CONFIG_FIELDS: ConfigField[] = [
     group: '探测方式',
     span: 8,
     placeholder: '默认 /，仅 HTTP 探测使用',
-    showIf: { type: ['HTTP'] }
+    showIf: { type: ['HTTP'] },
+    tip: '必须是免鉴权、直接返回 200 的接口；平台不跟随重定向，302/401/403 一律判为不健康，不要填 / 这类会跳登录页的路径'
   },
   {
     key: 'timeout_seconds',
@@ -442,10 +492,18 @@ export const RUNTIME_CONFIG_EXAMPLE = `{
   "config_file": "application.yml"
 }`
 
-/** 健康检查配置示例（整段留空则跳过健康检查；探测在平台侧发起，平台需能访问目标机业务端口） */
+/**
+ * 健康检查配置示例（整段留空则跳过健康检查；探测在平台侧发起，平台需能访问目标机业务端口）
+ *
+ * 这里演示 HTTP 探测：path 必须是免鉴权、直接返回 200 的接口，平台不跟随重定向，
+ * 填 / 这类会跳登录页的路径会被判成不健康。
+ * retry_count 给到 20 是给 Spring Boot 冷启动留观察窗（默认 3 次只有约 9 秒，往往不够）。
+ * 只想探端口连通性时改用："type": "TCP" 并去掉 path。
+ */
 export const HEALTH_CONFIG_EXAMPLE = `{
-  "type": "TCP",
+  "type": "HTTP",
   "port": 7888,
+  "path": "/health",
   "timeout_seconds": 3,
   "retry_count": 20,
   "interval_seconds": 5

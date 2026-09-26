@@ -45,9 +45,18 @@
           <span v-else class="muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column prop="strategy" label="策略" min-width="110" align="center">
+      <el-table-column prop="strategy" label="策略" min-width="120" align="center">
         <template #default="{ row }">
-          <el-tag>{{ DEPLOY_STRATEGY_MAP[row.strategy] || row.strategy }}</el-tag>
+          <!-- 悬浮说明本次实际采用的策略语义；留空落库后后端会填上解析结果，这里兼容未落库的情况 -->
+          <el-tooltip placement="top">
+            <template #content>
+              <div class="tooltip-lines">
+                <div class="tip-title">{{ DEPLOY_STRATEGY_MAP[row.strategy] || row.strategy }}</div>
+                <div v-for="(line, i) in DEPLOY_STRATEGY_TIPS[row.strategy] || []" :key="i">{{ line }}</div>
+              </div>
+            </template>
+            <el-tag class="hover-underline">{{ DEPLOY_STRATEGY_MAP[row.strategy] || row.strategy }}</el-tag>
+          </el-tooltip>
         </template>
       </el-table-column>
       <el-table-column prop="status" label="状态" min-width="110" align="center">
@@ -116,7 +125,15 @@
     />
 
     <!-- 新建部署对话框：项目 → 环境 → 版本 三级联动，策略留空即用环境默认 -->
-    <el-dialog v-model="createVisible" title="新建部署" width="720px" :close-on-click-modal="false" @closed="resetCreate">
+    <!-- class="deploy-create-dialog"：给「部署策略」下拉的下展开面板预留落位空间（styles/index.scss） -->
+    <el-dialog
+      v-model="createVisible"
+      title="新建部署"
+      width="720px"
+      class="deploy-create-dialog"
+      :close-on-click-modal="false"
+      @closed="resetCreate"
+    >
       <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="110px">
         <el-form-item label="项目" prop="projectId">
           <el-select
@@ -135,14 +152,68 @@
           </el-select>
         </el-form-item>
         <el-form-item label="发布版本" prop="releaseId">
-          <el-select v-model="createForm.releaseId" placeholder="请选择可发布版本" style="width: 100%">
-            <el-option v-for="item in releaseOptions" :key="item.id" :label="item.version" :value="item.id" />
+          <!--
+            popper-class="strategy-option-popper"：本下拉选项是「版本号 + 构建机」两行内容，
+            Element Plus 默认把每个选项固定成 34px 高（.el-select-dropdown__item），装不下两行，
+            副标题会被下边界裁掉并与下一项标题挤在一起。样式定义在 styles/index.scss（面板 teleport 到 body）。
+          -->
+          <el-select
+            v-model="createForm.releaseId"
+            placeholder="请选择可发布版本"
+            popper-class="strategy-option-popper"
+            style="width: 100%"
+          >
+            <el-option v-for="item in releaseOptions" :key="item.id" :label="item.version" :value="item.id">
+              <div class="strategy-option">
+                <span>{{ item.version }}</span>
+                <span class="strategy-option-desc">{{ releaseServerLabel(item) }}</span>
+              </div>
+            </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="部署策略">
-          <el-select v-model="createForm.strategy" placeholder="留空则使用环境默认策略" clearable style="width: 100%">
-            <el-option v-for="item in DEPLOY_STRATEGY_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
+        <!--
+          部署策略：这里的选项是「临时覆盖」，环境档案里的默认值才是长期配置。
+          label 后面的「?」图标说明两者关系，下拉选项带副标题说明三种策略的差别。
+        -->
+        <el-form-item prop="strategy">
+          <template #label>
+            <span>
+              部署策略
+              <el-tooltip placement="top">
+                <template #content>
+                  <div class="tooltip-lines">
+                    <div v-for="(line, i) in DEPLOY_STRATEGY_OVERRIDE_TIPS" :key="i">{{ line }}</div>
+                  </div>
+                </template>
+                <el-icon class="form-label-tip"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <!--
+            本字段的面板只向下展开（STRATEGY_POPPER_OPTIONS 关掉了 popper 的 flip 修正）：
+            向上展开会盖住刚选完的项目 / 环境 / 发布版本，而弹窗底部已经预留了面板整块的落位空间，
+            向下展开不会戳出弹窗。popper-class 的作用与「发布版本」下拉相同：放开选项的固定行高。
+          -->
+          <el-select
+            v-model="createForm.strategy"
+            placeholder="留空则使用环境默认策略"
+            clearable
+            placement="bottom-start"
+            :popper-options="STRATEGY_POPPER_OPTIONS"
+            popper-class="strategy-option-popper"
+            style="width: 100%"
+          >
+            <el-option v-for="item in DEPLOY_STRATEGY_OPTIONS" :key="item.value" :label="item.label" :value="item.value">
+              <div class="strategy-option">
+                <span>{{ item.label }}</span>
+                <span class="strategy-option-desc">{{ item.desc }}</span>
+              </div>
+            </el-option>
           </el-select>
+          <!-- 选中环境后回显它的默认策略，让「覆盖」这件事有对照物 -->
+          <span v-if="envDefaultStrategyText" class="form-tip">
+            环境默认：{{ envDefaultStrategyText }}；此处留空即按默认值执行
+          </span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -339,7 +410,7 @@
  * 5. 发布日志抽屉与其余四处日志视图共用 useTaskLogViewer：增量拉取、下载导出、
  *    任务执行中禁止关闭容器；任务结束时回调整理列表（AGENTS.md §20.9）。
  */
-import { ref, reactive, onMounted, onActivated } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -351,6 +422,7 @@ import {
   Promotion,
   RefreshLeft,
   CircleClose,
+  QuestionFilled,
   Download
 } from '@element-plus/icons-vue'
 import {
@@ -381,6 +453,8 @@ import {
   DEPLOY_STATUS_MAP,
   DEPLOY_STRATEGY_MAP,
   DEPLOY_STRATEGY_OPTIONS,
+  DEPLOY_STRATEGY_TIPS,
+  DEPLOY_STRATEGY_OVERRIDE_TIPS,
   getDeployStatusStyle,
   getDeployTargetStatusStyle,
   getHealthStatusStyle,
@@ -461,6 +535,58 @@ const createRules: FormRules = {
   releaseId: [{ required: true, message: '请选择发布版本', trigger: 'change' }]
 }
 
+/**
+ * 「部署策略」下拉的 popper.js 参数：关掉 flip，让面板永远向下展开。
+ *
+ * 默认行为是「视口内放不下就翻到输入框上方」，弹窗最底部这个字段翻上去正好盖住刚填好的三个字段；
+ * popper 的翻转判定只对视口负责，不知道弹窗边界，所以这里显式关掉、固定向下。
+ * 由此产生的两个约束分别在别处兜住：弹窗底部预留面板落位空间（styles/index.scss 的 .deploy-create-dialog），
+ * 视口底部放不下时按可用空间限高、面板内部滚动（下面的 strategyPanelMaxHeight 修正器）。
+ */
+const STRATEGY_POPPER_OPTIONS = {
+  modifiers: [
+    { name: 'flip', enabled: false },
+    {
+      name: 'strategyPanelMaxHeight',
+      enabled: true,
+      phase: 'main',
+      requiresIfExists: ['offset'],
+      /**
+       * 按「输入框底边 → 视口底部」的实际空间限制面板高度。
+       *
+       * 关掉 flip 之后 popper 不再自己兜底，矮窗口里向下展开的面板会被屏幕底部截断；
+       * 限高后超出的选项在面板内部滚动，至少保证每一屏都能看全一部分选项。
+       *
+       * 变量写在 popper 根元素上而不是 state.styles.popper：main 阶段该对象还没由
+       * computeStyles 建立，直接写会抛 TypeError（变量由 .strategy-option-popper 下的样式读取）。
+       *
+       * @param state popper.js 的当前状态：reference 是下拉输入框，popper 是面板根元素
+       */
+      fn: ({ state }: { state: { elements: { reference: Element; popper: HTMLElement } } }) => {
+        const referenceBottom = state.elements.reference.getBoundingClientRect().bottom
+        const room = window.innerHeight - referenceBottom - 24
+        state.elements.popper.style.setProperty('--strategy-panel-max-height', `${Math.max(120, room)}px`)
+      }
+    }
+  ]
+}
+
+/**
+ * 当前选中环境的默认策略文案，作为「临时覆盖」的对照物展示在下拉下方。
+ *
+ * 滚动发布额外带上批次大小，因为批次只在滚动下生效，顺便提醒它取的是环境上的值、这里改不了。
+ */
+const envDefaultStrategyText = computed(() => {
+  const env = environmentOptions.value.find(item => item.id === createForm.environmentId)
+  if (!env?.deployStrategy) {
+    return ''
+  }
+  const label = DEPLOY_STRATEGY_MAP[env.deployStrategy] || env.deployStrategy
+  return env.deployStrategy === 'ROLLING' && env.batchSize
+    ? `${label}（批次 ${env.batchSize}）`
+    : label
+})
+
 function openCreate() {
   createVisible.value = true
 }
@@ -475,6 +601,17 @@ async function handleProjectChange(projectId: string) {
   if (releaseOptions.value.length === 0) {
     ElMessage.warning('该项目暂无可发布版本，请先完成一次成功的构建')
   }
+}
+
+/**
+ * 版本下拉里跟在版号后面的构建机说明。
+ *
+ * 产物在哪台机器决定了这个版本能不能发出去：没记构建机的历史版本一定发不了，
+ * 说在前面，省得点了发布才在日志里看到「未记录构建机」。
+ */
+function releaseServerLabel(item: ReleaseRecordVo): string {
+  if (!item.buildServerId) return '未记录构建机（多为历史版本）'
+  return `构建机 ${item.buildServerName || item.buildServerId}`
 }
 
 function resetCreate() {

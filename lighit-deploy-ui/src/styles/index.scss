@@ -197,9 +197,23 @@ div:focus {
 }
 
 // 下拉面板（teleported 到 body，用全局选择器）
+// 根元素限高 + 可滚：不依赖 element 内部类名的兜底层。
+// 皮肤样式 .el-select-dropdown 的背景色在页面上一直生效，证明该类必然存在于 DOM；
+// 即使内部滚动层（__wrap）结构在 element 升级中变化，这一层也能保证面板不超出视口。
 .el-select-dropdown {
   background: var(--card-bg) !important;
   border-color: var(--border-color) !important;
+  max-height: min(320px, 45vh) !important;
+  overflow-y: auto !important;
+}
+
+// 下拉面板高度兜底：最高 min(274px, 45vh)，超出在面板内部滚动。
+// 新建部署弹窗的「发布版本」下拉曾把所有版本一次性展开、面板底部被屏幕截断，
+// 「部署策略」在弹窗低处展开时也会探出视口。限高后长列表不再撑高面板，
+// 与窗口高度解耦；popper 自带的翻转（空间不足时向上展开）也有了确定的面板高度可用。
+// 加 !important 是因为这条必须压过一切撑高面板的规则——它是展示完整性的最后兜底。
+.el-select-dropdown__wrap {
+  max-height: min(274px, 45vh) !important;
 }
 
 .el-select-dropdown__item {
@@ -663,6 +677,73 @@ div:focus {
   // 保留示例中的换行与缩进，超长单行自动折行
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+// ==================== 悬浮提示里的多行说明 ====================
+// 部署策略、批次大小、发布顺序这些字段的解释都是多行文本，tooltip 被 teleport 到 body，
+// 页面 scoped 样式无效，统一在这里定义（AGENTS.md §20.2）
+.tooltip-lines {
+  max-width: 380px;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: normal;
+}
+
+.tooltip-lines .tip-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+// ==================== 部署策略下拉选项 ====================
+// 下拉面板被 teleport 到 body，页面 scoped 样式无效，故定义在全局
+// 主标题 + 副标题，让人在选的那一刻就能区分三种策略
+.strategy-option {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.5;
+}
+
+.strategy-option-desc {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+/**
+ * 两行选项（标题 + 描述）必须放开 Element Plus 的固定行高。
+ * `.el-select-dropdown__item` 默认 `height: 34px; line-height: 34px; overflow: hidden`，
+ * 是按单行文本设计的：标题 14px + 描述 12px 两行共约 39px，装不进 34px 的盒子，
+ * 多出来的部分被下边界裁掉，描述行还会紧贴下一项的标题，读起来像两项粘在一起。
+ * 这里用 popper-class 限定作用范围（deploy/index.vue 的「发布版本」「部署策略」两个下拉），
+ * 不去改全站单行选项的 34px 行高——两者视觉重心不同，混用会让普通下拉变松。
+ */
+.strategy-option-popper .el-select-dropdown__item {
+  height: auto;
+  min-height: 34px;
+  line-height: 1.5;
+  padding: 6px 32px 6px 20px;
+}
+
+/**
+ * 面板高度上限：由 deploy/index.vue 的 strategyPanelMaxHeight 按「输入框底边 → 视口底部」算出。
+ * 该下拉固定向下展开（popper 的 flip 已关掉），矮窗口里 popper 不会再自己兜底，
+ * 不限高就会被屏幕底部截断；限高后超出的选项在面板内部滚动。
+ * 没拿到变量时退回全局兜底 min(274px, 45vh)。
+ */
+.strategy-option-popper .el-select-dropdown__wrap {
+  max-height: var(--strategy-panel-max-height, min(274px, 45vh)) !important;
+}
+
+/**
+ * 新建部署弹窗给「部署策略」下拉预留的落位空间。
+ *
+ * 该下拉只向下展开，选项又是两行内容，面板自然高度 ≈ 167px（3 × 51px + 列表内边距 12px + 边框），
+ * 加上 popper 的 12px 偏移，需要「输入框底边 → 弹窗底边」有 180px 以上。
+ * 不预留时这段只有 82px，面板会戳出弹窗约 100px——底部悬挂在遮罩上，看着像弹窗破了。
+ * 预留 112px 后可用空间约 194px，面板整块落在弹窗内、与弹窗底边留 15px 余量。
+ * 注意：在策略字段下方再插字段会压缩这段空间，届时需要同步加大这个值。
+ */
+.deploy-create-dialog .el-dialog__body {
+  padding-bottom: 112px;
 }
 
 // ==================== 走马灯 ====================

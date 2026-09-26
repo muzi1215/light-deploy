@@ -144,7 +144,7 @@ export const constantRoutes: AppRouteRecordRaw[] = [
         path: 'list',
         name: 'DeploymentList',
         component: () => import('@/views/deploy/index.vue'),
-        meta: { title: '部署记录' }
+        meta: { title: '发布记录' }
       }
     ]
   },

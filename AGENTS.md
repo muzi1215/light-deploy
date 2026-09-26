@@ -57,7 +57,8 @@ AIops 项目使用分层构建：基础依赖镜像推送到阿里云镜像仓�
 
 JAR 运行时采用「固定工作目录 + 原地替换」，**不按版本建子目录**：
 
-- 工作目录由 `runtime_config_json.work_dir` 指定（如 `/lx/jarapps/auth-tool-7888`），未配置时回落到「目标机部署根目录 `/apps` / 项目编码」；
+- 工作目录由 `runtime_config_json.work_dir` 指定（如 `/lx/jarapps/auth-tool-7888`），**填了即完全覆盖服务器档案的部署根目录**——平台按字面使用、不拼接不转换，未配置时才回落到「目标机部署根目录 `/apps` / 项目编码」；
+- `work_dir` **必须写绝对路径**：平台不校验存在性也不做规范化（只去首尾空白与结尾斜杠），写成 `./lx/...` 这类相对路径会相对 SSH 登录用户的家目录解析（root 即 `/root/lx/...`），与填写时的预期位置完全不同；
 - **systemd 单元只在首次部署生成，之后不再重写**——运维手工调整过的启动参数（`-Xmx`、`--spring.config.location` 等）必须被尊重；
 - 发版动作固定为四步：备份旧 jar 到 `exec/bak` → 投放新 jar → `systemctl restart` → `is-active` 确认。回滚走同一路径，只是投放 `old_version` 的 jar；
 - jar 与配置分离：配置文件放在工作目录的 `config/` 下，由 `build_config_json.config_paths` 随产物转存，**平台不覆盖目标机已存在的配置**；
@@ -887,6 +888,10 @@ docs/代码生成器使用说明.md
   ```
 
 - `.form-label-tip`（label 上的问号图标）与 `.tooltip-json`（提示内容块）定义在全局 `styles/index.scss`：tooltip 内容被 teleport 到 body，页面 scoped 样式对它无效，不允许写在页面 `<style scoped>` 里；
+- **下拉面板高度有全局兜底，禁止局部放开**：`styles/index.scss` 对 `.el-select-dropdown__wrap` 统一 `max-height: min(274px, 45vh) !important`，超出的选项在面板内部滚动。下拉面板被 teleport 到 body 且随内容自由撑高——弹窗低处的下拉展开长列表时，面板会探出视口被屏幕截断（新建部署的「发布版本」「部署策略」下拉先后中招）。带 `!important` 是因为它必须压过一切撑高面板的规则，是展示完整性的最后兜底；
+- **弹窗内表单底部字段（下方还有字段提示或紧贴页脚）的下拉必须显式处理「弹窗边界」**：popper 的翻转只对视口边界负责——视口内放得下面板就不翻转，它不知道弹窗的边界，于是向下展开会盖住 `form-tip` 与页脚按钮、底部戳出弹窗边缘（新建部署的「部署策略」下拉中招）。两种做法二选一，都必须显式写出：**① 向上展开**——`placement="top-start"`，代价是面板盖住上方刚填好的字段；**② 固定向下**——用 `:popper-options` 关掉 flip（`{ modifiers: [{ name: 'flip', enabled: false }] }`），并在弹窗底部预留整块面板的落位空间（`styles/index.scss` 的 `.deploy-create-dialog` 为 3 个两行选项预留 `112px`），代价是下拉关闭时这段是空档。选 ② 时**必须**同时按「输入框底边 → 视口底部」给面板限高（同文件的 `.strategy-option-popper .el-select-dropdown__wrap`）：关掉 flip 后 popper 不再自己兜底，矮窗口里面板会被屏幕底部截断。新建部署的「部署策略」下拉用的就是 ②（`deploy/index.vue` 的 `STRATEGY_POPPER_OPTIONS`）；
+- **下拉选项内容超过一行（标题 + 描述）时必须放开 Element Plus 的固定行高**：`.el-select-dropdown__item` 默认 `height: 34px; line-height: 34px; overflow: hidden`，那是按单行文本设计的；两行内容（14px 标题 + 12px 描述约 39px）装不进 34px 的盒子，描述行会被下边界裁掉、并紧贴下一项标题（新建部署的「发布版本」「部署策略」两个下拉先后中招）。做法：给下拉加 `popper-class`（如 `strategy-option-popper`），在 `styles/index.scss` 里按该类名把选项改成 `height: auto; min-height: 34px; line-height: 1.5; padding: 6px 32px 6px 20px`。**禁止**直接改全局 `.el-select-dropdown__item`，那会把全站单行选项一并撑高；
+- **语义容易误解的业务字段（部署策略、批次大小、发布顺序等）同样要在控件或 label 上加悬浮说明**，文案**集中放在 `src/constants/` 下的共享常量**（如 `deploymentStatus.ts` 的 `DEPLOY_STRATEGY_TIPS` / `BATCH_SIZE_TIPS` / `DEPLOY_ORDER_TIPS`），表格列、表单控件、新建对话框三处引用同一份。禁止每个页面各写一套说法——分叉后的表现是「同一个策略在两个页面解释不一样」，很难被发现。多行提示内容用 `.tooltip-lines`（全局样式，同样因为 teleport 不能写 scoped）；
 - 悬浮提示只承担「这个字段填什么、传什么示例」，字段约束（必填、范围、范围来源）仍由 `form-tip` 文案与校验规则表达，两边不重复同一段话；
 - 只读展示字段用 `disabled` 输入框，枚举值先经文本映射（如 `statusText`）再展示，不用可交互控件承担只读展示；
 - 页脚统一使用 `#footer` 插槽，"取 消 / 确 定" 两个按钮统一 `size="small"`，确定按钮 `type="primary"`；
@@ -1248,6 +1253,18 @@ com.lx.deploy.common.constants
 3. **禁止中途重新生成版本号**：镜像 tag 与产物目录已按定稿值落地，重新生成会让版本记录指向不存在的产物（`assembleRelease` 只消费传入值，不得自行调用取号）；
 4. **禁止改写历史版本号**：`deployment_target` 的 `old_version` / `new_version` 与历史 `image_tag` 存的都是旧值，改名会让历史部署与镜像对不上。升级前产生的版本保持 `项目编码-提交短码` 原样，版本列表中新旧格式并存属于预期；
 5. 列定义与升级脚本：`release_record.version_seq`、`build.version_seq`、索引 `idx_release_project_seq` 见 `schema.sql`，升级走 `db/upgrade-release-version-seq.sql`。
+
+### 23.6 发布版本保留策略（`retain_release_count`）
+
+`project.retain_release_count` 由**构建链路**在构建成功后消费（`ReleaseRetentionService` + `BuildTaskHandler.applyRetentionPolicy`），不是发布链路。必须遵守：
+
+1. **顺序固定为「先删磁盘产物，再置记录废弃」**。反过来会让记录已不可见、磁盘却还占着，运维只能上机手工找目录；
+2. **按版本自己的 `build_server_id` 删**，不按项目当前绑定的构建机。产物是磁盘文件，只在当初那台机器上存在；按项目当前构建机去找会让所有历史版本找不到包。历史版本可能产自另一台构建机，必要时额外开 SSH；
+3. **保护窗口**：最近 20 次部署引用过的版本一律不回收。回滚按 `old_version` 重新发布，把某台机器正跑着的版本清掉会让回滚与新发同时断掉——宁可少删，不可错删；
+4. **路径白名单**：待删目录只能由「构建机产物持久目录 / 项目编码 / 版本号」三段拼成，版本号须匹配 `[A-Za-z0-9._-]`。`rm -rf` 的目标即使来自库记录也要校验，杜绝路径穿越；
+5. **回收失败不影响构建结论**：算不出清单、连不上构建机、`rm` 失败只记日志（未预期异常 ERROR 带堆栈）。把「磁盘清理不顺」报成「构建失败」是错的；
+6. **保留数为 null 或 ≤ 0 时不做任何回收**，没有明确配额就删东西风险太高；
+7. **置「已废弃」而非物理删除**，废弃版本不再出现在新建部署的版本下拉里（下拉只列「可发布」），避免出现「看得到却发不了」。早期约定「历史版本永不置已废弃」在保留策略接入后不再无条件成立——超出保留数且不在保护窗口内的版本会被废弃，「手工换包后补一次新建部署重发对应版本」要趁那个版本还在窗口内做。
 
 ## 24. 任务执行与远程执行层约定
 

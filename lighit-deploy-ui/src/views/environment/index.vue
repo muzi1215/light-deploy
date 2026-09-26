@@ -29,12 +29,34 @@
         </template>
       </el-table-column>
       <el-table-column prop="name" label="环境名称" min-width="140" show-overflow-tooltip align="center" />
-      <el-table-column prop="deployStrategy" label="部署策略" min-width="120" align="center">
+      <el-table-column prop="deployStrategy" label="部署策略" min-width="130" align="center">
         <template #default="{ row }">
-          {{ STRATEGY_MAP[row.deployStrategy] || row.deployStrategy }}
+          <!-- 悬浮展示该策略的完整语义：行为、风险与适用场景，文案取自共享常量 -->
+          <el-tooltip placement="top">
+            <template #content>
+              <div class="tooltip-lines">
+                <div class="tip-title">{{ STRATEGY_MAP[row.deployStrategy] || row.deployStrategy }}</div>
+                <div v-for="(line, i) in DEPLOY_STRATEGY_TIPS[row.deployStrategy] || []" :key="i">{{ line }}</div>
+              </div>
+            </template>
+            <span class="hover-underline">
+              {{ STRATEGY_MAP[row.deployStrategy] || row.deployStrategy }}
+            </span>
+          </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="batchSize" label="批次大小" min-width="90" align="center" />
+      <el-table-column prop="batchSize" label="批次大小" min-width="100" align="center">
+        <template #default="{ row }">
+          <el-tooltip placement="top">
+            <template #content>
+              <div class="tooltip-lines">
+                <div v-for="(line, i) in BATCH_SIZE_TIPS" :key="i">{{ line }}</div>
+              </div>
+            </template>
+            <span class="hover-underline">{{ row.batchSize }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column prop="defaultServerId" label="默认服务器" min-width="140" align="center" show-overflow-tooltip>
         <template #default="{ row }">
           {{ serverNameMap[row.defaultServerId] || row.defaultServerId || '-' }}
@@ -98,8 +120,15 @@
           <el-row :gutter="20">
             <el-col :span="12">
               <el-form-item label="批次大小" prop="batchSize">
-                <el-input-number v-model="formData.batchSize" :min="1" :max="50" style="width: 100%" />
-                <span class="form-tip">滚动发布时每批同时更新的主机数量</span>
+                <el-tooltip placement="top">
+                  <template #content>
+                    <div class="tooltip-lines">
+                      <div v-for="(line, i) in BATCH_SIZE_TIPS" :key="i">{{ line }}</div>
+                    </div>
+                  </template>
+                  <el-input-number v-model="formData.batchSize" :min="1" :max="50" style="width: 100%" />
+                </el-tooltip>
+                <span class="form-tip">仅滚动发布读取；每批包含的目标数，必须小于目标总数才有分批效果</span>
               </el-form-item>
             </el-col>
             <el-col :span="12">
@@ -115,11 +144,26 @@
           <el-row :gutter="20">
             <el-col :span="24">
               <el-form-item label="部署策略" prop="deployStrategy">
+                <!-- 每个选项单独悬浮：选的那一刻就能看清它在干什么，而不是选完才发现不对 -->
                 <el-radio-group v-model="formData.deployStrategy">
-                  <el-radio value="SINGLE_TARGET">单目标</el-radio>
-                  <el-radio value="ALL_AT_ONCE">全量发布</el-radio>
-                  <el-radio value="ROLLING">滚动发布</el-radio>
+                  <el-tooltip
+                    v-for="opt in strategyOptions"
+                    :key="opt.value"
+                    placement="top"
+                  >
+                    <template #content>
+                      <div class="tooltip-lines">
+                        <div class="tip-title">{{ opt.label }}</div>
+                        <div v-for="(line, i) in DEPLOY_STRATEGY_TIPS[opt.value] || []" :key="i">{{ line }}</div>
+                      </div>
+                    </template>
+                    <el-radio :value="opt.value">{{ opt.label }}</el-radio>
+                  </el-tooltip>
                 </el-radio-group>
+                <!-- 明确这里配的是「默认值」，避免与新建部署里的临时覆盖混淆 -->
+                <span class="form-tip">
+                  该环境的默认策略；新建部署时可在表单里临时覆盖，覆盖只影响那一次，不改这里
+                </span>
               </el-form-item>
             </el-col>
           </el-row>
@@ -168,15 +212,20 @@ import { Search, Refresh, Plus, Edit, Delete } from '@element-plus/icons-vue'
 import { pageEnvironment, createEnvironment, updateEnvironment, deleteEnvironment } from '@/api/environment.ts'
 import { listServers } from '@/api/server.ts'
 import type { EnvironmentVo, EnvironmentDto, ServerVo } from '@/api/deployTypes.ts'
+import {
+  DEPLOY_STRATEGY_MAP,
+  DEPLOY_STRATEGY_OPTIONS,
+  DEPLOY_STRATEGY_TIPS,
+  BATCH_SIZE_TIPS
+} from '@/constants/deploymentStatus.ts'
 
 defineOptions({ name: 'EnvironmentList' })
 
-/** 部署策略展示映射（与后端 DeployStrategy 枚举一致） */
-const STRATEGY_MAP: Record<string, string> = {
-  SINGLE_TARGET: '单目标',
-  ALL_AT_ONCE: '全量发布',
-  ROLLING: '滚动发布'
-}
+/** 部署策略展示映射（与后端 DeployStrategy 枚举一致），与部署列表页共用同一份常量 */
+const STRATEGY_MAP = DEPLOY_STRATEGY_MAP
+
+/** 部署策略选项，表单里逐个渲染并为每个选项挂悬浮说明 */
+const strategyOptions = DEPLOY_STRATEGY_OPTIONS
 
 // ==================== 搜索 ====================
 const searchForm = reactive({ code: '', name: '' })
@@ -328,4 +377,10 @@ async function handleDelete(row: EnvironmentVo) {
 <style lang="scss" scoped>
 // 使用全局工具类 .app-container / .search-div / .tools-div / .form-tip
 // 定义在 styles/index.scss 中
+
+// 带悬浮说明的单元格：虚下划线提示这里可以悬浮，与表单 label 的「?」图标同一语义
+.hover-underline {
+  border-bottom: 1px dashed var(--el-border-color-darker);
+  cursor: help;
+}
 </style>

@@ -32,6 +32,7 @@ import com.lx.deploy.project.model.Project;
 import com.lx.deploy.project.model.ProjectEnvironmentTarget;
 import com.lx.deploy.release.mapper.ReleaseRecordMapper;
 import com.lx.deploy.release.model.ReleaseRecord;
+import com.lx.deploy.release.service.ArtifactProbe;
 import com.lx.deploy.server.mapper.ServerMapper;
 import com.lx.deploy.server.model.Server;
 import com.lx.deploy.task.mapper.TaskMapper;
@@ -103,6 +104,9 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
     /** 任务服务：创建驱动发布/回滚的异步任务，强制从排队状态开始。 */
     private final TaskService taskService;
 
+    /** 产物存在性预检：确认版本的落盘产物还在，避免发布任务跑到一半才发现取不到包。 */
+    private final ArtifactProbe artifactProbe;
+
     /**
      * 注入部署模块与跨模块数据访问依赖。
      *
@@ -114,6 +118,7 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
      * @param serverMapper                   服务器 Mapper
      * @param taskMapper                     任务 Mapper
      * @param taskService                    任务服务
+     * @param artifactProbe                  产物存在性预检
      */
     public DeploymentService(DeploymentTargetMapper deploymentTargetMapper,
                              ProjectMapper projectMapper,
@@ -122,7 +127,8 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
                              ReleaseRecordMapper releaseRecordMapper,
                              ServerMapper serverMapper,
                              TaskMapper taskMapper,
-                             TaskService taskService) {
+                             TaskService taskService,
+                             ArtifactProbe artifactProbe) {
         this.deploymentTargetMapper = deploymentTargetMapper;
         this.projectMapper = projectMapper;
         this.environmentMapper = environmentMapper;
@@ -131,6 +137,7 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         this.serverMapper = serverMapper;
         this.taskMapper = taskMapper;
         this.taskService = taskService;
+        this.artifactProbe = artifactProbe;
     }
 
     // ==================== 查询接口 ====================
@@ -235,6 +242,9 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
             throw new DeployException(ResponseCode.DATA_CONFLICT,
                     "发布版本当前状态为 " + ReleaseStatus.describe(release.getStatus()) + "，只允许发布「可发布」版本");
         }
+        // 产物存在性预检：版本记录还在，不代表构建机上的产物还在（换过构建机、被保留策略回收都会让它消失）。
+        // 不预检的话要到任务「下载产物」阶段才失败，那时部署记录与目标快照都已落库，页面上看像一次失败的发布。
+        artifactProbe.requireExists(release);
         // 策略：请求覆盖优先，否则取环境默认，环境也未配置时退化为单目标。
         String strategy = resolveStrategy(dto.getStrategy(), environment);
 

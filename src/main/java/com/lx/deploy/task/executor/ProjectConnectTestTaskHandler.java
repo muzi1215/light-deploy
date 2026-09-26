@@ -1,5 +1,6 @@
 package com.lx.deploy.task.executor;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.lx.deploy.common.constants.EnableStatus;
 import com.lx.deploy.common.crypto.CredentialCrypto;
 import com.lx.deploy.common.enums.credential.CredentialType;
@@ -15,6 +16,8 @@ import com.lx.deploy.credential.mapper.CredentialMapper;
 import com.lx.deploy.credential.model.Credential;
 import com.lx.deploy.project.mapper.ProjectMapper;
 import com.lx.deploy.project.model.Project;
+import com.lx.deploy.project.model.ProjectEnvironmentTarget;
+import com.lx.deploy.project.mapper.ProjectEnvironmentTargetMapper;
 import com.lx.deploy.registry.mapper.RegistryMapper;
 import com.lx.deploy.registry.model.Registry;
 import com.lx.deploy.server.mapper.ServerMapper;
@@ -22,6 +25,8 @@ import com.lx.deploy.server.model.Server;
 import com.lx.deploy.ssh.SshCommandResult;
 import com.lx.deploy.ssh.SshSession;
 import com.lx.deploy.ssh.SshSessionFactory;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lx.deploy.task.model.Task;
 import com.lx.deploy.task.model.dto.TaskLogDto;
 import com.lx.deploy.task.service.TaskLogService;
@@ -32,6 +37,9 @@ import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -84,6 +92,8 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
     private static final String STAGE_GIT = "代码仓库校验";
     /** 阶段名：镜像仓库校验。 */
     private static final String STAGE_REGISTRY = "镜像仓库校验";
+    /** 阶段名：目标机运行前置检查（JAR 运行时校验 java 可用）。 */
+    private static final String STAGE_TARGET = "目标机前置检查";
     /** 阶段名：收尾。 */
     private static final String STAGE_FINISH = "完成";
 
@@ -103,8 +113,17 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
     /** 分支名等 ref 允许的字符集，防止被数据库里改脏的值带出 shell 元字符。 */
     private static final Pattern SAFE_REF = Pattern.compile("[^A-Za-z0-9._/-]");
 
+    /** java 路径允许的字符集：路径会被拼进远程命令，含 shell 元字符的值一律不拼、直接判失败。 */
+    private static final Pattern SAFE_JAVA_BIN = Pattern.compile("[A-Za-z0-9._/-]+");
+
     /** 项目 Mapper，用于读取项目档案（构建机、仓库地址、运行时、凭据绑定）。 */
     private final ProjectMapper projectMapper;
+
+    /** 部署目标 Mapper，用于取项目的目标机（JAR 运行时的 java 前置校验要逐台执行）。 */
+    private final ProjectEnvironmentTargetMapper targetMapper;
+
+    /** JSON 解析器：读取运行配置里的 java_bin（项目级与目标级都可能配）。 */
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** 服务器 Mapper，用于读取构建机。 */
     private final ServerMapper serverMapper;
@@ -131,6 +150,7 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
      * 创建项目连通性测试处理器。
      *
      * @param projectMapper      项目 Mapper
+     * @param targetMapper       部署目标 Mapper
      * @param serverMapper       服务器 Mapper
      * @param registryMapper     镜像仓库 Mapper
      * @param credentialMapper   凭据 Mapper
@@ -140,6 +160,7 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
      * @param taskLogService     任务日志服务
      */
     public ProjectConnectTestTaskHandler(ProjectMapper projectMapper,
+                                         ProjectEnvironmentTargetMapper targetMapper,
                                          ServerMapper serverMapper,
                                          RegistryMapper registryMapper,
                                          CredentialMapper credentialMapper,
@@ -148,6 +169,7 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
                                          TaskService taskService,
                                          TaskLogService taskLogService) {
         this.projectMapper = projectMapper;
+        this.targetMapper = targetMapper;
         this.serverMapper = serverMapper;
         this.registryMapper = registryMapper;
         this.credentialMapper = credentialMapper;
@@ -252,11 +274,14 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
             checkGitRepository(task, session, project);
             // 3) 镜像仓库：仅有镜像产物的运行时需要。
             checkRegistry(task, session, project, runtimeType);
-            // 4) 结论：把三段的结论各写一行，运维只看结尾这几行就能判断这次测试成没成。
+            // 4) 目标机运行前置：JAR 运行时 java 必须在每台目标机上真实可用。
+            checkJavaOnTargets(task, project, runtimeType);
+            // 5) 结论：把各段的结论写清楚，运维只看结尾这几行就能判断这次测试成没成。
             taskService.updateProgress(task.getId(), STAGE_FINISH, 100);
             appendLog(task, STAGE_FINISH, TaskLogLevel.INFO,
                     "项目连通性测试通过：代码仓库可拉取"
                             + (isImageRuntime(project, runtimeType) ? "、镜像仓库可登录" : "")
+                            + (runtimeType == RuntimeType.JAR ? "、目标机 java 可用" : "")
                             + "，可以放心发起构建");
         } catch (DeployException e) {
             // 业务异常原样上抛，保留「分支不存在」「镜像仓库登录失败」这类可操作的具体原因。
@@ -550,6 +575,158 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
         appendLog(task, STAGE_REGISTRY, TaskLogLevel.INFO,
                 "仓库 HTTP 端点探测返回 " + code + "（000 表示连接失败）；"
                         + "若登录已成功可忽略，否则请检查网络连通性与仓库地址（当前配置：" + host + "）");
+    }
+
+    /**
+     * 校验每台目标机上的 java 是否可用（仅 JAR 运行时）。
+     *
+     * <p>这一项<b>不在构建机上做</b>：java 是应用运行时的依赖，跑在目标机上。构建机装了什么 java
+     * 与目标机毫无关系，所以在构建机上探 java 探不出问题，必须逐台连目标机。</p>
+     *
+     * <p>典型故障：项目运行配置把 {@code java_bin} 填成 A 机的 JDK 路径，分发到 B 机时 systemd
+     * 单元里的 ExecStart 指向一个不存在的可执行文件，服务以 {@code status=203/EXEC} 起不来。
+     * 而单元只在首次部署生成、之后不重写，这类错误一旦发生就要上机手工改，代价远高于发版前探一次。</p>
+     *
+     * <p>判定口径：配了 {@code java_bin} 就 {@code test -x} 该路径；没配就 {@code command -v java}
+     * 看 PATH 里有没有。任一目标机不可用即判任务失败，并把机器名与路径写进失败原因，
+     * 同时给出「在部署目标上按机器覆盖」的解决方向。</p>
+     *
+     * @param task        当前任务
+     * @param project     项目（提供项目级运行配置）
+     * @param runtimeType 运行时类型
+     * @throws DeployException 目标机 java 不可用、或配置的 java_bin 不合法/不存在时抛出
+     */
+    private void checkJavaOnTargets(Task task, Project project, RuntimeType runtimeType) {
+        if (runtimeType != RuntimeType.JAR) {
+            appendLog(task, STAGE_TARGET, TaskLogLevel.INFO,
+                    "运行时为 " + runtimeType.getCode() + "，不依赖目标机 JDK，跳过 java 检查");
+            return;
+        }
+        if (!reportProgress(task, STAGE_TARGET, 85)) {
+            return;
+        }
+        List<ProjectEnvironmentTarget> bindings = targetMapper.selectList(
+                new LambdaQueryWrapper<ProjectEnvironmentTarget>()
+                        .eq(ProjectEnvironmentTarget::getProjectId, project.getId())
+                        .eq(ProjectEnvironmentTarget::getStatus, EnableStatus.ENABLED));
+        if (bindings.isEmpty()) {
+            appendLog(task, STAGE_TARGET, TaskLogLevel.INFO,
+                    "项目尚未绑定任何启用的部署目标，跳过 java 检查（发布前请先绑定目标服务器）");
+            return;
+        }
+        // 同一台机器可能被多个环境绑定：会话按机器缓存，避免重复建连。
+        Map<String, SshSession> sessions = new HashMap<>();
+        try {
+            for (ProjectEnvironmentTarget binding : bindings) {
+                Server server = serverMapper.selectById(binding.getServerId());
+                if (server == null) {
+                    appendLog(task, STAGE_TARGET, TaskLogLevel.INFO,
+                            "部署目标关联的服务器不存在，跳过该目标");
+                    continue;
+                }
+                if (server.getStatus() == null || server.getStatus() != EnableStatus.ENABLED) {
+                    appendLog(task, STAGE_TARGET, TaskLogLevel.INFO,
+                            "目标服务器 " + server.getServerName() + " 已停用，跳过该目标");
+                    continue;
+                }
+                String javaBin = resolveJavaBin(project, binding);
+                SshSession target = sessions.computeIfAbsent(server.getId(),
+                        id -> sshSessionFactory.open(server));
+                requireJava(task, target, server, javaBin);
+            }
+        } finally {
+            for (SshSession session : sessions.values()) {
+                try {
+                    session.close();
+                } catch (Exception e) {
+                    log.warn("关闭目标机 SSH 会话失败", e);
+                }
+            }
+        }
+    }
+
+    /**
+     * 在单台目标机上确认 java 可用。
+     *
+     * @param task    当前任务
+     * @param session 目标机会话
+     * @param server  目标服务器，用于失败文案
+     * @param javaBin 配置的 java 路径；为空表示交给平台自动探测
+     * @throws DeployException java 不存在或不可执行时抛出
+     */
+    private void requireJava(Task task, SshSession session, Server server, String javaBin) {
+        String label = server.getServerName() + "（" + server.getHost() + "）";
+        if (StringUtils.hasText(javaBin)) {
+            if (!SAFE_JAVA_BIN.matcher(javaBin).matches()) {
+                throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                        "目标机 " + label + " 配置的 java 路径含非法字符：" + javaBin
+                                + "；请只填写绝对路径（如 /usr/lib/jdk-17/bin/java），各机器 JDK 路径不同时在部署目标上按机器覆盖");
+            }
+            SshCommandResult result = session.exec("test -x " + javaBin + " && echo yes || echo no");
+            if (!result.success() || !"yes".equals(result.stdout().strip())) {
+                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                        "配置的 java 路径在目标机 " + label + " 上不存在或不可执行：" + javaBin
+                                + "；systemd 启动时会以 status=203/EXEC 失败。各机器 JDK 路径不同时，"
+                                + "请清空项目级 java_bin 由平台按机器自动探测，或在对应部署目标上单独覆盖");
+            }
+            SshCommandResult version = session.exec(javaBin + " -version 2>&1 | head -1");
+            appendLog(task, STAGE_TARGET, TaskLogLevel.INFO,
+                    label + " java 可用（配置路径 " + javaBin + "）："
+                            + (version.success() && StringUtils.hasText(version.stdout())
+                            ? firstLine(version.stdout()) : "版本读取失败（不影响可执行判定）"));
+            return;
+        }
+        SshCommandResult result = session.exec("command -v java >/dev/null 2>&1 && echo yes || echo no");
+        if (!result.success() || !"yes".equals(result.stdout().strip())) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "目标机 " + label + " 的 PATH 中找不到 java，且项目运行配置未指定 java_bin；"
+                            + "JAR 运行时的服务将无法启动，请在该机器安装 JDK 或在运行配置里填写 java 绝对路径");
+        }
+        SshCommandResult version = session.exec("java -version 2>&1 | head -1");
+        appendLog(task, STAGE_TARGET, TaskLogLevel.INFO,
+                label + " java 可用（PATH 自动探测）："
+                        + (version.success() && StringUtils.hasText(version.stdout())
+                        ? firstLine(version.stdout()) : "版本读取失败（不影响可执行判定）"));
+    }
+
+    /**
+     * 解析某条部署目标生效的 java 路径：目标级运行配置覆盖项目级。
+     *
+     * <p>只取 {@code java_bin} 一个键，不解析整个运行配置：这里要的只是「java 在哪」，
+     * 引入完整的配置模型会把测试与发布执行器耦合在一起。</p>
+     *
+     * @param project 项目，提供项目级运行配置
+     * @param binding 部署目标，提供目标级差异化运行配置
+     * @return 生效的 java 路径；都没配时返回 null（交给平台自动探测）
+     */
+    private String resolveJavaBin(Project project, ProjectEnvironmentTarget binding) {
+        String targetLevel = readJsonField(binding.getRuntimeConfigJson(), "java_bin");
+        if (StringUtils.hasText(targetLevel)) {
+            return targetLevel.strip();
+        }
+        String projectLevel = readJsonField(project.getRuntimeConfigJson(), "java_bin");
+        return StringUtils.hasText(projectLevel) ? projectLevel.strip() : null;
+    }
+
+    /**
+     * 从 JSON 配置里读一个字符串字段；配置为空、不是对象或该键不存在时返回 null。
+     *
+     * @param json  JSON 文本，允许为空
+     * @param field 字段名
+     * @return 字段值；取不到时返回 null
+     */
+    private String readJsonField(String json, String field) {
+        if (!StringUtils.hasText(json)) {
+            return null;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode value = root.get(field);
+            return value == null || value.isNull() ? null : value.asText();
+        } catch (Exception e) {
+            log.warn("解析运行配置 JSON 失败，field={}", field, e);
+            return null;
+        }
     }
 
     /**

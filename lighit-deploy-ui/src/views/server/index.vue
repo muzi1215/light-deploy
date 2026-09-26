@@ -180,11 +180,12 @@
                   <span>部署根目录
                     <el-tooltip placement="top" :show-after="120">
                       <template #content>
-                        <div style="max-width: 400px; line-height: 1.7">
-                          <div><b>作用</b>：平台在这台机器上的根目录。项目最终跑在哪，主要由它决定。</div>
-                          <div style="margin-top: 4px">· JAR：应用部署并运行在 <code>{该目录}/apps/{项目编码}/{版本号}/</code>，由 systemd 从该目录启动。</div>
-                          <div>· STATIC：产物解压到 <code>{该目录}/apps/{项目编码}/{版本号}/</code>，Nginx 根目录指向它（可在项目里用 static_root 覆盖）。</div>
+                        <div style="max-width: 420px; line-height: 1.7">
+                          <div><b>作用</b>：平台在这台机器上的根目录。项目最终跑在哪，<b>默认</b>由它决定。</div>
+                          <div style="margin-top: 4px">· JAR：默认工作目录 <code>{该目录}/apps/{项目编码}</code>，目录固定不变、发版原地替换 jar，systemd 从该目录启动。</div>
+                          <div>· STATIC：<b>不使用该目录</b>，默认解压到 <code>/usr/share/nginx/html/{项目编码}</code>（可在项目里用 static_root 覆盖）。</div>
                           <div>· DOCKER：容器由 Docker 管理，不使用该目录，但目录仍需存在且可写。</div>
+                          <div style="margin-top: 4px; color: #E6A23C">· JAR 项目在项目运行配置里填了「固定工作目录 work_dir」后，会<b>完全改到那个目录</b>，这里的部署根目录对它不再生效。</div>
                           <div style="margin-top: 4px; color: #E6A23C">连通性测试只检查它是否存在且可写，<b>不会自动创建</b>；不存在时测试结果会给 WARN，需在机器上手工创建并授权。</div>
                         </div>
                       </template>

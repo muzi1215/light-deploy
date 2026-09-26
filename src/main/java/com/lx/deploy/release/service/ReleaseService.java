@@ -12,11 +12,15 @@ import com.lx.deploy.release.mapper.ReleaseRecordMapper;
 import com.lx.deploy.release.model.ReleaseRecord;
 import com.lx.deploy.release.model.dto.ReleaseRecordDto;
 import com.lx.deploy.release.model.vo.ReleaseRecordVo;
+import com.lx.deploy.server.mapper.ServerMapper;
+import com.lx.deploy.server.model.Server;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 发布版本服务（只读）。
@@ -34,6 +38,18 @@ import java.util.List;
 @Service
 public class ReleaseService extends ServiceImpl<ReleaseRecordMapper, ReleaseRecord> {
 
+    /** 服务器 Mapper，用于回填产物所在构建机名称。 */
+    private final ServerMapper serverMapper;
+
+    /**
+     * 注入构建机名称回填所需的 Mapper。
+     *
+     * @param serverMapper 服务器 Mapper
+     */
+    public ReleaseService(ServerMapper serverMapper) {
+        this.serverMapper = serverMapper;
+    }
+
     /**
      * 根据条件分页查询发布版本。
      *
@@ -43,7 +59,7 @@ public class ReleaseService extends ServiceImpl<ReleaseRecordMapper, ReleaseReco
      */
     public PageResult<ReleaseRecordVo> pageByCondition(PageQuery pageQuery, ReleaseRecordDto condition) {
         Page<ReleaseRecord> page = page(pageQuery.toPage(), buildQueryWrapper(condition));
-        List<ReleaseRecordVo> records = page.getRecords().stream().map(this::toVo).toList();
+        List<ReleaseRecordVo> records = toVos(page.getRecords());
         return new PageResult<>(page.getCurrent(), page.getSize(), page.getTotal(), page.getPages(), records);
     }
 
@@ -54,7 +70,48 @@ public class ReleaseService extends ServiceImpl<ReleaseRecordMapper, ReleaseReco
      * @return 发布版本 VO 列表，按创建时间倒序
      */
     public List<ReleaseRecordVo> listByCondition(ReleaseRecordDto condition) {
-        return list(buildQueryWrapper(condition)).stream().map(this::toVo).toList();
+        return toVos(list(buildQueryWrapper(condition)));
+    }
+
+    /**
+     * 批量转换为 VO，并回填产物所在构建机名称。
+     *
+     * <p>名称在<b>这一层一次性批量查</b>，不在逐条转换里查服务器：版本列表动辄几十条，
+     * 逐条查会把一次列表接口放大成 N 次查询。历史版本可能产自不同的构建机，
+     * 因此这里按 ID 去重后一次性取回。</p>
+     *
+     * @param entities 实体列表
+     * @return VO 列表
+     */
+    private List<ReleaseRecordVo> toVos(List<ReleaseRecord> entities) {
+        List<ReleaseRecordVo> vos = entities.stream().map(this::toVo).toList();
+        Map<String, String> serverNames = resolveServerNames(vos);
+        for (ReleaseRecordVo vo : vos) {
+            vo.setBuildServerName(serverNames.get(vo.getBuildServerId()));
+        }
+        return vos;
+    }
+
+    /**
+     * 取版本用到的构建机名称映射。
+     *
+     * @param vos 已转换的 VO 列表
+     * @return 构建机 ID 到名称的映射；机器不存在时对应值为 null
+     */
+    private Map<String, String> resolveServerNames(List<ReleaseRecordVo> vos) {
+        Map<String, String> names = new HashMap<>();
+        for (ReleaseRecordVo vo : vos) {
+            if (StringUtils.hasText(vo.getBuildServerId())) {
+                names.put(vo.getBuildServerId(), null);
+            }
+        }
+        if (names.isEmpty()) {
+            return names;
+        }
+        for (Server server : serverMapper.selectBatchIds(names.keySet())) {
+            names.put(server.getId(), server.getServerName());
+        }
+        return names;
     }
 
     /**

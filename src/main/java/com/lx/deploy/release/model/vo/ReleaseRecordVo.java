@@ -73,6 +73,15 @@ public class ReleaseRecordVo {
     @Schema(description = "产物所在构建机ID")
     private String buildServerId;
 
+    /**
+     * 产物所在构建机名称，由服务端批量回填。
+     *
+     * <p>产物路径在<b>哪台机器上</b>是发布能否成功的前提：构建机换过或产物被回收后，
+     * 版本号还看得到却发不出去。页面上把构建机一并显示，运维在点发布前就能判断。</p>
+     */
+    @Schema(description = "产物所在构建机名称")
+    private String buildServerName;
+
     /** 创建人。 */
     @Schema(description = "创建人")
     private String createdBy;

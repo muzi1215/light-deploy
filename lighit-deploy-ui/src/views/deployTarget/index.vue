@@ -55,7 +55,18 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="deployOrder" label="发布顺序" min-width="90" align="center" />
+      <el-table-column prop="deployOrder" label="发布顺序" min-width="100" align="center">
+        <template #default="{ row }">
+          <el-tooltip placement="top">
+            <template #content>
+              <div class="tooltip-lines">
+                <div v-for="(line, i) in DEPLOY_ORDER_TIPS" :key="i">{{ line }}</div>
+              </div>
+            </template>
+            <span class="hover-underline">{{ row.deployOrder }}</span>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column prop="status" label="状态" min-width="130" align="center">
         <template #default="{ row }">
           <el-tag :type="row.status === 1 ? 'success' : 'info'">
@@ -124,8 +135,15 @@
             </el-col>
             <el-col :span="12">
               <el-form-item label="发布顺序" prop="deployOrder">
-                <el-input-number v-model="formData.deployOrder" :min="1" style="width: 100%" />
-                <span class="form-tip">多目标滚动发布时按此顺序执行</span>
+                <el-tooltip placement="top">
+                  <template #content>
+                    <div class="tooltip-lines">
+                      <div v-for="(line, i) in DEPLOY_ORDER_TIPS" :key="i">{{ line }}</div>
+                    </div>
+                  </template>
+                  <el-input-number v-model="formData.deployOrder" :min="1" style="width: 100%" />
+                </el-tooltip>
+                <span class="form-tip">数字小的先发；所有策略都按此顺序展开目标，不只是滚动发布</span>
               </el-form-item>
             </el-col>
           </el-row>
@@ -135,7 +153,9 @@
             <el-col :span="12">
               <el-form-item label="主目标" prop="isPrimary">
                 <el-switch v-model="formData.isPrimary" :active-value="1" :inactive-value="0" />
-                <span class="form-tip">同一项目同一环境最多一个主目标，设为主目标时自动取消旧主目标</span>
+                <span class="form-tip">
+                  同一项目同一环境最多一个主目标，设为主目标时自动取消旧主目标；单目标策略下只发主目标
+                </span>
               </el-form-item>
             </el-col>
             <el-col :span="12">
@@ -176,6 +196,7 @@ import { listProjects } from '@/api/project.ts'
 import { listEnvironments } from '@/api/environment.ts'
 import { listServers } from '@/api/server.ts'
 import type { DeployTargetVo, DeployTargetDto, ProjectVo, EnvironmentVo, ServerVo } from '@/api/deployTypes.ts'
+import { DEPLOY_ORDER_TIPS } from '@/constants/deploymentStatus.ts'
 
 defineOptions({ name: 'DeployTargetList' })
 
@@ -338,4 +359,10 @@ async function handleDelete(row: DeployTargetVo) {
 <style lang="scss" scoped>
 // 使用全局工具类 .app-container / .search-div / .tools-div / .form-tip
 // 定义在 styles/index.scss 中
+
+// 带悬浮说明的单元格：虚下划线提示这里可以悬浮
+.hover-underline {
+  border-bottom: 1px dashed var(--el-border-color-darker);
+  cursor: help;
+}
 </style>
