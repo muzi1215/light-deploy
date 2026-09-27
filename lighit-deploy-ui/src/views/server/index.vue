@@ -22,6 +22,7 @@
             <el-option label="停用" :value="0" />
           </el-select>
         </el-form-item>
+        <CreateTimeRange v-model="timeRange" />
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
@@ -384,10 +385,16 @@ import { LOG_LEVEL_TAG, getTaskStatusStyle, isTaskFinal } from '@/constants/task
 // 日志查看器与日志时间格式化：5 处日志视图共用同一份实现
 import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.ts'
 
+import CreateTimeRange from '@/components/CreateTimeRange.vue'
+import { splitTimeRange } from '@/utils/index.ts'
+
 defineOptions({ name: 'ServerList' })
 
 // ==================== 搜索 ====================
 const searchForm = reactive({ serverName: '', host: '', envTag: undefined as number | undefined, status: undefined as number | undefined })
+
+/** 创建时间区间：与后端 createTimeBegin / createTimeEnd 对应，未选择时两个参数都不传 */
+const timeRange = ref<string[]>([])
 
 function handleSearch() {
   pagination.pageNum = 1
@@ -399,6 +406,7 @@ function handleReset() {
   searchForm.host = ''
   searchForm.envTag = undefined
   searchForm.status = undefined
+  timeRange.value = []
   handleSearch()
 }
 
@@ -417,7 +425,8 @@ async function fetchData() {
       serverName: searchForm.serverName || undefined,
       host: searchForm.host || undefined,
       envTag: searchForm.envTag,
-      status: searchForm.status
+      status: searchForm.status,
+      ...splitTimeRange(timeRange.value),
     })
     tableData.value = res.data.records
     pagination.total = Number(res.data.total)

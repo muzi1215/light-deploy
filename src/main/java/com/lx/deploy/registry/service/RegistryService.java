@@ -3,6 +3,7 @@ package com.lx.deploy.registry.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.lx.deploy.common.util.TimeRangeSupport;
 import com.lx.deploy.common.constants.EnableStatus;
 import com.lx.deploy.common.enums.credential.CredentialType;
 import com.lx.deploy.common.exception.DeployException;
@@ -18,7 +19,6 @@ import com.lx.deploy.registry.model.Registry;
 import com.lx.deploy.registry.model.dto.RegistryDto;
 import com.lx.deploy.registry.model.vo.RegistryVo;
 import org.springframework.beans.BeanUtils;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -47,12 +47,25 @@ public class RegistryService extends ServiceImpl<RegistryMapper, Registry> {
     private static final int MAX_URL_LENGTH = 255;
 
     /** 凭据 Mapper：校验 registry.credential_id 引用的是类型为 REGISTRY 的凭据。 */
-    @Autowired
-    private CredentialMapper credentialMapper;
+    private final CredentialMapper credentialMapper;
 
     /** 项目 Mapper：删除仓库前统计 project.registry_id 的引用数量。 */
-    @Autowired
-    private ProjectMapper projectMapper;
+    private final ProjectMapper projectMapper;
+
+    /**
+     * 注入跨模块 Mapper。
+     *
+     * <p>本表 CRUD 用的 Mapper 由 MyBatis-Plus 父类字段注入（{@code ServiceImpl} →
+     * {@code CrudRepository.baseMapper}），这里只声明跨模块依赖；
+     * 用构造器而不是字段注入，保证实例一出生就依赖齐全、且依赖不可被替换。</p>
+     *
+     * @param credentialMapper 凭据 Mapper
+     * @param projectMapper 项目 Mapper
+     */
+    public RegistryService(CredentialMapper credentialMapper, ProjectMapper projectMapper) {
+        this.credentialMapper = credentialMapper;
+        this.projectMapper = projectMapper;
+    }
 
     /**
      * 根据 DTO 中的非空条件分页查询镜像仓库。
@@ -301,6 +314,8 @@ public class RegistryService extends ServiceImpl<RegistryMapper, Registry> {
                 Registry::getStatus, condition.getStatus());
         // 有意不把 namespace / description 作为查询条件：两者都是自由文本，
         // 参与等值查询没有业务价值，需要筛选时再按实际场景补条件。
+        // 创建时间区间：闭区间，开始晚于截止由 TimeRangeSupport 直接判参数错误。
+        TimeRangeSupport.apply(wrapper, Registry::getCreateTime, condition);
         wrapper.orderByDesc(Registry::getCreateTime);
         return wrapper;
     }

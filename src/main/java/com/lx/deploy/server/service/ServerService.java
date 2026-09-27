@@ -3,6 +3,7 @@ package com.lx.deploy.server.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.lx.deploy.common.util.TimeRangeSupport;
 import com.lx.deploy.common.constants.EnableStatus;
 import com.lx.deploy.common.enums.task.TaskType;
 import com.lx.deploy.common.exception.DeployException;
@@ -20,7 +21,6 @@ import com.lx.deploy.task.service.TaskService;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.List;
 
@@ -37,8 +37,7 @@ import java.util.List;
 public class ServerService extends ServiceImpl<ServerMapper, Server> {
 
     /** 平台统一 AES 凭据加解密组件。 */
-    @Autowired
-    private CredentialCrypto credentialCrypto;
+    private final CredentialCrypto credentialCrypto;
 
     /**
      * 任务服务。
@@ -46,8 +45,22 @@ public class ServerService extends ServiceImpl<ServerMapper, Server> {
      * <p>连通性测试本质是一次异步任务，服务器模块只负责提交任务，不直接执行远程操作，
      * 因此这里依赖任务模块的服务而不是 SSH 执行层（AGENTS.md §12：Controller 不写执行逻辑）。</p>
      */
-    @Autowired
-    private TaskService taskService;
+    private final TaskService taskService;
+
+    /**
+     * 注入跨模块依赖。
+     *
+     * <p>本表 CRUD 用的 Mapper 由 MyBatis-Plus 父类字段注入（{@code ServiceImpl} →
+     * {@code CrudRepository.baseMapper}），这里只声明跨模块依赖；
+     * 用构造器而不是字段注入，保证实例一出生就依赖齐全、且依赖不可被替换。</p>
+     *
+     * @param credentialCrypto 凭据加解密组件
+     * @param taskService 任务服务
+     */
+    public ServerService(CredentialCrypto credentialCrypto, TaskService taskService) {
+        this.credentialCrypto = credentialCrypto;
+        this.taskService = taskService;
+    }
 
     /**
      * 提交一次服务器连通性测试任务。
@@ -233,6 +246,8 @@ public class ServerService extends ServiceImpl<ServerMapper, Server> {
         wrapper.eq(StringUtils.hasText(condition.getDescription()),
                 Server::getDescription, condition.getDescription());
         // 默认按创建时间倒序返回，优先展示最近新增的数据。
+        // 创建时间区间：闭区间，开始晚于截止由 TimeRangeSupport 直接判参数错误。
+        TimeRangeSupport.apply(wrapper, Server::getCreateTime, condition);
         wrapper.orderByDesc(Server::getCreateTime);
         return wrapper;
     }

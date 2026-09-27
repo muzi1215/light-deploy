@@ -30,6 +30,10 @@ export interface PageResult<T = any> {
 export interface PageParams {
   pageNum: number
   pageSize: number
+  /** 创建时间起始（含），yyyy-MM-dd HH:mm:ss；全平台列表统一口径，见 AGENTS.md §10.4 */
+  createTimeBegin?: string
+  /** 创建时间截止（含），yyyy-MM-dd HH:mm:ss */
+  createTimeEnd?: string
   [key: string]: any
 }
 
@@ -149,7 +153,12 @@ export interface ProjectDto {
 
 // ==================== 环境模块类型 ====================
 
-/** 环境 VO */
+/**
+ * 环境 VO。
+ *
+ * 不含任何服务器字段：环境是全局共享的，某项目在该环境下发哪些机器由部署目标决定，
+ * 环境层面给不出有意义的「默认服务器」（详见 AGENTS.md §24.11）。
+ */
 export interface EnvironmentVo {
   id: string
   createTime: string
@@ -158,9 +167,23 @@ export interface EnvironmentVo {
   name: string
   deployStrategy: string // SINGLE_TARGET / ALL_AT_ONCE / ROLLING
   batchSize: number
-  defaultServerId?: string
   aiopsEnabled: number // 0 / 1
   description?: string
+}
+
+/**
+ * 项目已绑定环境的下拉选项。
+ *
+ * 只含「选环境」需要的字段：环境身份 + 该项目在该环境下的启用目标台数，
+ * 页面渲染为「生产环境（2 台）」。台数为 0 的环境不会出现在列表里。
+ */
+export interface EnvironmentOptionVo {
+  id: string
+  code: string
+  name: string
+  targetCount: number // 该项目在该环境下的启用目标台数，至少为 1
+  deployStrategy: string // 环境默认策略，用于展示"临时覆盖"的对照
+  batchSize: number
 }
 
 /** 环境查询/新增/修改 DTO */
@@ -169,7 +192,6 @@ export interface EnvironmentDto {
   name: string
   deployStrategy?: string
   batchSize?: number
-  defaultServerId?: string
   aiopsEnabled?: number
   description?: string
 }
@@ -523,6 +545,8 @@ export interface DeploymentTargetVo {
   serverId: string
   serverName?: string
   serverHost?: string
+  /** 发布顺序快照，创建部署时从部署目标配置固化；历史部署为空 */
+  deployOrder?: number
   status: number // 0 排队 / 1 发布中 / 2 成功 / 3 失败 / 4 已取消 / 5 已跳过
   statusText?: string
   /** 发布前版本，回滚依据；首次发布为空 */
@@ -534,4 +558,71 @@ export interface DeploymentTargetVo {
   errorMessage?: string
   startedAt?: string
   finishedAt?: string
+}
+
+/** 操作日志 VO（对应后端 AuditLogVo） */
+export interface AuditLogVo {
+  id: string
+  /** 请求追踪ID，与响应头 X-Request-Id、日志文件里的 requestId 一致 */
+  traceId?: string
+  /** 应用系统名称，由后端按配置 light-deploy.application-name 统一写入 */
+  application?: string
+  /** 操作者ID；过渡期没有登录态时为 system */
+  operId?: string
+  operName?: string
+  /** 操作模块，来自后端 @OperLog 注解的 title */
+  title?: string
+  /** 操作类型编码，见 constants/auditLog.ts 的 BUSINESS_TYPE_MAP */
+  businessType?: string
+  businessTypeText?: string
+  /** 资源类型，只有采集了变更明细的操作才有值 */
+  resourceType?: string
+  /** 被操作记录的主键 */
+  resourceId?: string
+  /** 被切的方法，格式「类全名#方法名」 */
+  method?: string
+  requestMethod?: string
+  /** 请求地址，不含查询串 */
+  operUrl?: string
+  operIp?: string
+  os?: string
+  browser?: string
+  /** 请求参数 JSON，敏感键已被后端替换为 *** */
+  operParam?: string
+  /** 返回结果 JSON，超长已截断 */
+  jsonResult?: string
+  /** 0 失败 / 1 成功 */
+  result: number
+  resultText?: string
+  errorMessage?: string
+  /** 操作耗时（毫秒） */
+  costTime?: number
+  /** 字段级变更明细；空数组表示本次没有可比的字段变化 */
+  changedFields: AuditFieldChange[]
+  createTime: string
+}
+
+/** 字段级变更明细（对应后端 AuditFieldChangeVo） */
+export interface AuditFieldChange {
+  /** 实体属性名，中文名由 constants/auditLog.ts 的 fieldLabel 映射 */
+  field: string
+  /** 变更前的展示值，取不到时为占位符 - */
+  oldValue: string
+  /** 变更后的展示值，删除操作时为 (已删除) */
+  newValue: string
+}
+
+/** 操作日志查询条件（对应后端 AuditLogDto） */
+export interface AuditLogQuery {
+  pageNum: number
+  pageSize: number
+  /** 操作者名称，模糊匹配 */
+  operName?: string
+  /** 操作模块，模糊匹配 */
+  title?: string
+  businessType?: string
+  requestMethod?: string
+  result?: number
+  createTimeBegin?: string
+  createTimeEnd?: string
 }

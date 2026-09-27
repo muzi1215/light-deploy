@@ -1,5 +1,7 @@
 package com.lx.deploy.server.controller;
 
+import com.lx.deploy.common.annotation.OperLog;
+import com.lx.deploy.common.enums.audit.BusinessType;
 import com.lx.deploy.server.model.dto.ServerDto;
 import com.lx.deploy.server.model.vo.ServerVo;
 import com.lx.deploy.server.service.ServerService;
@@ -94,6 +96,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 保存完成且不包含 SSH 密文的响应对象
      */
+    @OperLog(title = "服务器管理", businessType = BusinessType.INSERT, recordParam = false)
     @PostMapping("/create")
     public ApiResponse<ServerVo> create(@Valid @RequestBody ServerDto dto,
                                          HttpServletRequest request) {
@@ -109,6 +112,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 修改完成且不包含 SSH 密文的响应对象
      */
+    @OperLog(title = "服务器管理", businessType = BusinessType.UPDATE, recordParam = false, resourceType = "server")
     @PutMapping("/update/{id}")
     public ApiResponse<ServerVo> update(@PathVariable String id,
                                          @Valid @RequestBody ServerDto dto,
@@ -127,6 +131,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 新建的异步任务（状态为 0 排队中）
      */
+    @OperLog(title = "服务器管理", businessType = BusinessType.EXECUTE)
     @PostMapping("/test/{id}")
     public ApiResponse<TaskVo> test(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.submitConnectivityTest(id), requestId(request));
@@ -139,6 +144,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 不包含业务数据的统一成功响应
      */
+    @OperLog(title = "服务器管理", businessType = BusinessType.DELETE, resourceType = "server")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         // Service 使用 MyBatis-Plus removeById，将 is_deleted 更新为1而不是物理删除记录。

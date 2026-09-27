@@ -11,6 +11,7 @@
             <el-option v-for="item in CREDENTIAL_TYPE_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
+        <CreateTimeRange v-model="timeRange" />
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
@@ -155,6 +156,9 @@ import { pageCredential, createCredential, updateCredential, deleteCredential } 
 import type { CredentialVo, CredentialDto } from '@/api/deployTypes.ts'
 import { CREDENTIAL_TYPE_OPTIONS, CREDENTIAL_TYPE_MAP, CREDENTIAL_TYPE_TAG } from '@/constants/credentialType.ts'
 
+import CreateTimeRange from '@/components/CreateTimeRange.vue'
+import { splitTimeRange } from '@/utils/index.ts'
+
 defineOptions({ name: 'CredentialList' })
 
 /** 元数据示例：同时用于 placeholder 与 label 上「?」图标的悬浮提示，保证示例只有一份来源 */
@@ -166,7 +170,11 @@ const METADATA_EXAMPLE = `{
 // ==================== 搜索 ====================
 const searchForm = reactive({ name: '', type: '' })
 
+/** 创建时间区间：与后端 createTimeBegin / createTimeEnd 对应，未选择时两个参数都不传 */
+const timeRange = ref<string[]>([])
+
 /** 触发查询：页码重置为第一页后重新加载数据 */
+
 function handleSearch() {
   pagination.pageNum = 1
   fetchData()
@@ -176,6 +184,7 @@ function handleSearch() {
 function handleReset() {
   searchForm.name = ''
   searchForm.type = ''
+  timeRange.value = []
   handleSearch()
 }
 
@@ -192,7 +201,8 @@ async function fetchData() {
       pageNum: pagination.pageNum,
       pageSize: pagination.pageSize,
       name: searchForm.name || undefined,
-      type: searchForm.type || undefined
+      type: searchForm.type || undefined,
+      ...splitTimeRange(timeRange.value),
     })
     tableData.value = res.data.records
     pagination.total = Number(res.data.total)

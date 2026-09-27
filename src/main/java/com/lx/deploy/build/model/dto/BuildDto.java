@@ -1,9 +1,11 @@
 package com.lx.deploy.build.model.dto;
 
+import com.lx.deploy.common.model.TimeRangeQuery;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 /**
  * 构建任务请求对象。
@@ -16,8 +18,9 @@ import lombok.Data;
  * @since 2026-09-24 10:00:00
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @Schema(description = "构建任务请求")
-public class BuildDto {
+public class BuildDto extends TimeRangeQuery {
 
     /**
      * 关联项目 ID。

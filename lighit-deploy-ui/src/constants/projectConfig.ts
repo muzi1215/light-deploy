@@ -398,7 +398,60 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
     group: '静态产物',
     span: 12,
     placeholder: '默认 /usr/share/nginx/html/{项目编码}',
-    showIf: { runtimeType: ['STATIC'] }
+    tip: '填到「站点文件所在的那一层」：该目录里应直接是 index.html 等站点文件，不要再多套一层 dist/。'
+      + '平台发布时只替换这个目录里面的文件，目录本身不删不换（若该目录被 Docker bind mount 进容器，'
+      + '换目录会让容器里的挂载失效、全站 403，且只能重建容器恢复）。'
+      + '压缩包若多包了一层（解开是 aiops/index.html），平台会自动剥离那一层，这里填什么不受影响。',
+    showIf: { runtimeType: ['STATIC'] },
+    examples: [
+      {
+        label: '填法：nginx 站点根 + 项目目录（最常用的真实场景）',
+        text: '宿主机 nginx 根：/lx/docker/lx-nginx/www/html/\n'
+          + 'aiops 前端项目：/lx/docker/lx-nginx/www/html/aiops   ← 填这一整行\n\n'
+          + '不要把 nginx 根当成这里的值，否则发布会把该目录下别的站点内容一起搬走。'
+      },
+      {
+        label: '该目录里应该长什么样（直接放站点文件，不多套一层）',
+        text: '/lx/docker/lx-nginx/www/html/aiops\n'
+          + '├── index.html\n'
+          + '├── favicon.svg\n'
+          + '└── static/          ← 前端打包产物的 assets 目录\n\n'
+          + '若你上传的压缩包解开是 aiops/dist/index.html，则应填 .../aiops/dist。'
+      },
+      {
+        label: '留空时的默认值',
+        text: '/usr/share/nginx/html/{项目编码}\n\n'
+          + '只在你的 nginx 确实按这个约定配 root 时才适用，否则必须显式填写。'
+      }
+    ]
+  },
+  {
+    key: 'static_backup_dir',
+    label: '静态产物备份目录',
+    type: 'input',
+    group: '静态产物',
+    span: 12,
+    placeholder: '默认 {Nginx 根目录的父目录}/static-bak',
+    tip: '发布前把静态目录现有内容整体搬到这里（目录本身不动），回滚优先从这里还原，不走构建机。'
+      + '必须与 Nginx 根目录在同一挂载分区，否则搬迁会退化成跨分区复制、切换窗口变长。'
+      + '改动 static_root 会让默认备份目录随之变化，届时历史备份不再命中快路径（会改走构建机）。'
+      + '目录名不以点开头，终端 ls 能直接看到，翻备份和清磁盘都方便。',
+    showIf: { runtimeType: ['STATIC'] },
+    examples: [
+      {
+        label: '默认位置（可用，但在 nginx 站点根的同级，见下方风险）',
+        text: 'Nginx 根目录：/lx/docker/lx-nginx/www/html/aiops\n'
+          + '默认备份：    /lx/docker/lx-nginx/www/html/static-bak'
+      },
+      {
+        label: '建议：显式配到 web 根之外（强烈推荐）',
+        text: '/lx/docker/lx-nginx/backup/aiops\n\n'
+          + '默认位置落在 nginx 可访问范围内，http://host/static-bak/ 能取到历史版本，\n'
+          + '其中可能含 source map，等于把源码结构暴露出去。\n'
+          + '配到 web 根外即彻底规避；若只能留在 web 根内，在 nginx 加一条\n'
+          + 'location ^~ /static-bak/ { deny all; } 兜底。'
+      }
+    ]
   }
 ]
 
@@ -415,14 +468,27 @@ export const HEALTH_CONFIG_FIELDS: ConfigField[] = [
     tip: 'HTTP 2xx 视为健康，能反映应用是否真的可用；TCP 端口可连通即健康，只证明进程在监听、探不出假死；整段留空则跳过健康检查'
   },
   {
+    key: 'probe_from',
+    label: '探测位置',
+    type: 'select',
+    group: '探测方式',
+    span: 8,
+    options: [
+      { value: 'TARGET', label: '目标机本地（默认）' },
+      { value: 'PLATFORM', label: '平台侧' }
+    ],
+    placeholder: '默认 TARGET',
+    tip: 'TARGET：平台 SSH 登录目标机检查端口是否监听，结果不受云防火墙/安全组影响，业务端口无需对平台放行；PLATFORM：从平台所在机器直连 host:port，验证外部可达性，要求平台能访问该端口，否则应用正常也会被判失败'
+  },
+  {
     key: 'port',
     label: '探测端口',
     type: 'number',
     group: '探测方式',
     span: 8,
-    required: true,
+    required: false,
     placeholder: '业务端口，如 8080',
-    tip: '探测在平台侧发起，平台需能访问目标机该端口'
+    tip: '探测默认在目标机本地发起（TARGET），平台无需访问该端口；只有探测位置选了 PLATFORM 才要求平台能直达 host:port'
   },
   {
     key: 'path',
@@ -493,8 +559,11 @@ export const RUNTIME_CONFIG_EXAMPLE = `{
 }`
 
 /**
- * 健康检查配置示例（整段留空则跳过健康检查；探测在平台侧发起，平台需能访问目标机业务端口）
+ * 健康检查配置示例（整段留空则跳过健康检查）
  *
+ * 探测位置默认 TARGET：平台 SSH 登录目标机检查端口是否在监听，不受云防火墙/安全组影响，
+ * 业务端口不需要对平台放行。只有要验证「外部客户端能否访问」时才写 "probe_from": "PLATFORM"，
+ * 那时平台必须能直达目标机 host:port，否则应用正常也会被防火墙拦成假失败。
  * 这里演示 HTTP 探测：path 必须是免鉴权、直接返回 200 的接口，平台不跟随重定向，
  * 填 / 这类会跳登录页的路径会被判成不健康。
  * retry_count 给到 20 是给 Spring Boot 冷启动留观察窗（默认 3 次只有约 9 秒，往往不够）。
@@ -502,6 +571,7 @@ export const RUNTIME_CONFIG_EXAMPLE = `{
  */
 export const HEALTH_CONFIG_EXAMPLE = `{
   "type": "HTTP",
+  "probe_from": "TARGET",
   "port": 7888,
   "path": "/health",
   "timeout_seconds": 3,

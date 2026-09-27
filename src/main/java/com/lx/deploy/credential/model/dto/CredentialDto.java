@@ -1,8 +1,10 @@
 package com.lx.deploy.credential.model.dto;
 
+import com.lx.deploy.common.model.TimeRangeQuery;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 /**
  * 加密凭据请求对象。
@@ -18,8 +20,9 @@ import lombok.Data;
  * @since 2026-09-23 02:13:26
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @Schema(description = "加密凭据请求参数")
-public class CredentialDto {
+public class CredentialDto extends TimeRangeQuery {
 
     /**
      * 凭据名称。

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lx.deploy.common.util.TimeRangeSupport;
 import com.lx.deploy.common.crypto.CredentialCrypto;
 import com.lx.deploy.common.enums.credential.CredentialType;
 import com.lx.deploy.common.exception.DeployException;
@@ -19,7 +20,6 @@ import com.lx.deploy.project.model.Project;
 import com.lx.deploy.registry.mapper.RegistryMapper;
 import com.lx.deploy.registry.model.Registry;
 import org.springframework.beans.BeanUtils;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -53,16 +53,32 @@ public class CredentialService extends ServiceImpl<CredentialMapper, Credential>
     private static final int MAX_NAME_LENGTH = 100;
 
     /** 凭据加解密组件，明文只在加密方法调用前后短暂存在。 */
-    @Autowired
-    private CredentialCrypto credentialCrypto;
+    private final CredentialCrypto credentialCrypto;
 
     /** 项目 Mapper：删除凭据前统计 project.git_credential_id 的引用数量。 */
-    @Autowired
-    private ProjectMapper projectMapper;
+    private final ProjectMapper projectMapper;
 
     /** 镜像仓库 Mapper：删除凭据前统计 registry.credential_id 的引用数量。 */
-    @Autowired
-    private RegistryMapper registryMapper;
+    private final RegistryMapper registryMapper;
+
+    /**
+     * 注入加解密组件与跨模块 Mapper。
+     *
+     * <p>本表 CRUD 用的 Mapper 由 MyBatis-Plus 父类字段注入（{@code ServiceImpl} →
+     * {@code CrudRepository.baseMapper}），这里只声明跨模块依赖；
+     * 用构造器而不是字段注入，保证实例一出生就依赖齐全、且依赖不可被替换。</p>
+     *
+     * @param credentialCrypto 凭据加解密组件
+     * @param projectMapper 项目 Mapper
+     * @param registryMapper 镜像仓库 Mapper
+     */
+    public CredentialService(CredentialCrypto credentialCrypto,
+                             ProjectMapper projectMapper,
+                             RegistryMapper registryMapper) {
+        this.credentialCrypto = credentialCrypto;
+        this.projectMapper = projectMapper;
+        this.registryMapper = registryMapper;
+    }
 
     /**
      * 根据 DTO 中的非空条件分页查询加密凭据。
@@ -316,6 +332,8 @@ public class CredentialService extends ServiceImpl<CredentialMapper, Credential>
         // 有意不把 metadataJson 作为查询条件：它是自由文本元数据，参与查询没有业务价值，
         // 却容易让调用方通过模糊条件反推凭据内容，保持「敏感字段不参与条件查询」的口径。
         // 密文字段 encryptedValue 同样永远不参与查询。
+        // 创建时间区间：闭区间，开始晚于截止由 TimeRangeSupport 直接判参数错误。
+        TimeRangeSupport.apply(wrapper, Credential::getCreateTime, condition);
         wrapper.orderByDesc(Credential::getCreateTime);
         return wrapper;
     }

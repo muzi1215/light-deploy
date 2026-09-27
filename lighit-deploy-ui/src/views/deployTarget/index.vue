@@ -19,6 +19,7 @@
             <el-option label="停用" :value="0" />
           </el-select>
         </el-form-item>
+        <CreateTimeRange v-model="timeRange" />
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
@@ -198,10 +199,16 @@ import { listServers } from '@/api/server.ts'
 import type { DeployTargetVo, DeployTargetDto, ProjectVo, EnvironmentVo, ServerVo } from '@/api/deployTypes.ts'
 import { DEPLOY_ORDER_TIPS } from '@/constants/deploymentStatus.ts'
 
+import CreateTimeRange from '@/components/CreateTimeRange.vue'
+import { splitTimeRange } from '@/utils/index.ts'
+
 defineOptions({ name: 'DeployTargetList' })
 
 // ==================== 搜索 ====================
 const searchForm = reactive({ projectId: '', environmentId: '', status: undefined as number | undefined })
+
+/** 创建时间区间：与后端 createTimeBegin / createTimeEnd 对应，未选择时两个参数都不传 */
+const timeRange = ref<string[]>([])
 
 function handleSearch() {
   pagination.pageNum = 1
@@ -212,6 +219,7 @@ function handleReset() {
   searchForm.projectId = ''
   searchForm.environmentId = ''
   searchForm.status = undefined
+  timeRange.value = []
   handleSearch()
 }
 
@@ -252,7 +260,8 @@ async function fetchData() {
       pageSize: pagination.pageSize,
       projectId: searchForm.projectId || undefined,
       environmentId: searchForm.environmentId || undefined,
-      status: searchForm.status
+      status: searchForm.status,
+      ...splitTimeRange(timeRange.value),
     })
     tableData.value = res.data.records
     pagination.total = Number(res.data.total)

@@ -1,7 +1,9 @@
 package com.lx.deploy.project.model.dto;
 
+import com.lx.deploy.common.model.TimeRangeQuery;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 /**
  * 项目环境部署目标请求对象。
@@ -18,8 +20,9 @@ import lombok.Data;
  * @since 2026-09-02 02:05:03
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @Schema(description = "项目环境部署目标请求参数")
-public class ProjectEnvironmentTargetDto {
+public class ProjectEnvironmentTargetDto extends TimeRangeQuery {
 
     /**
      * 项目 ID。

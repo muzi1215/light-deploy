@@ -51,6 +51,22 @@ public class DeploymentTarget extends BaseEntity {
     private String serverId;
 
     /**
+     * 发布顺序快照，创建部署时从部署目标配置固化。
+     *
+     * <p><b>必须是快照而不是现查</b>：执行器按本字段升序决定「谁先发」，
+     * 若改用 {@code create_time} 排序，同一次创建的多条目标在同一秒插入
+     * （{@code DATETIME} 只到秒）会完全并列，MySQL 对并列行不保证稳定顺序，
+     * 实际由随机 UUID 主键决定，表现为「配了顺序 1 却先发顺序 2」。
+     * 若改为实时关联 project_environment_target 取顺序，则绑定被改序或删除会
+     * 倒过来污染已经发生过的历史部署，与「deployment 是一次执行的不可变快照」冲突。</p>
+     *
+     * <p>由服务端在创建部署时写入，调用方不可指定；历史数据为 NULL。</p>
+     */
+    @TableField("deploy_order")
+    @Schema(description = "发布顺序快照，创建部署时从部署目标配置固化")
+    private Integer deployOrder;
+
+    /**
      * 目标状态数字编码，取值见 {@link DeploymentTargetStatus}。
      *
      * <p>0 排队 / 1 发布中 / 2 成功 / 3 失败 / 4 已取消 / 5 已跳过；

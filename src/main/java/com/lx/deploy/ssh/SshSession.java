@@ -2,6 +2,7 @@ package com.lx.deploy.ssh;
 
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.response.ResponseCode;
+import com.lx.deploy.common.util.ShellQuote;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.channel.ChannelExec;
@@ -306,6 +307,78 @@ public class SshSession implements AutoCloseable {
             log.warn("SFTP 上传失败，serverId={}, host={}, remotePath={}", serverId, host, remotePath, e);
             throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
                     "SFTP 上传失败：" + rootMessage(e));
+        }
+    }
+
+    /**
+     * 上传大文件：优先用 exec 通道的 {@code cat > 文件} 流式管道，失败时回落 SFTP。
+     *
+     * <p><b>为什么不用 SFTP 打底</b>：SFTP 是有窗口和逐包确认的应用层协议，
+     * 在高延迟链路上吞吐会被往返时间压住——实测同一条链路上 74 MB 走 SFTP 要 325 s
+     * （约 0.23 MB/s），而裸管道由 TCP 自己做流控，通常能贴近实际带宽。
+     * 产物发布是平台里唯一的大文件传输场景，值得为它单独走一条快路径。</p>
+     *
+     * <p><b>为什么保留回落</b>：管道依赖远端有 {@code cat}（POSIX 必备）且 exec 通道
+     * 允许写标准输入。个别加固过的机器会禁掉这两者，此时退回 SFTP 至少还能发布成功。
+     * 两种方式写完都有 {@code sha256} 校验兜底，不会静默写入半截文件。</p>
+     *
+     * @param localPath  本地文件绝对路径，必须已存在
+     * @param remotePath 远端目标绝对路径，不允许为空
+     * @return 实际使用的传输方式描述，供任务日志展示
+     * @throws DeployException 路径非法、本地文件不存在，或两种方式都失败时抛出
+     */
+    public String uploadLarge(Path localPath, String remotePath) {
+        if (localPath == null || remotePath == null || remotePath.isBlank()) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "上传路径不能为空");
+        }
+        if (!Files.isRegularFile(localPath)) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "待上传的本地文件不存在：" + localPath);
+        }
+        try {
+            streamUpload(localPath, remotePath);
+            return "流式管道";
+        } catch (Exception e) {
+            log.warn("流式上传失败，回落 SFTP，serverId={}, host={}, remotePath={}, 原因：{}",
+                    serverId, host, remotePath, e.getMessage());
+            sftpUpload(localPath, remotePath);
+            return "SFTP 回落";
+        }
+    }
+
+    /**
+     * 通过 exec 通道把本地文件流直接写进远端文件。
+     *
+     * <p>写完必须关闭标准输入：远端 {@code cat} 要读到 EOF 才会退出，
+     * 不关就会一直等到超时。写入前远端已经截断目标文件，因此调用方一律
+     * 先写临时名再 {@code mv}，避免中途失败留下半截产物。</p>
+     *
+     * @param localPath  本地文件绝对路径
+     * @param remotePath 远端目标绝对路径
+     * @throws Exception 通道打开失败、写入失败、超时或远端非零退出时抛出
+     */
+    private void streamUpload(Path localPath, String remotePath) throws Exception {
+        long timeoutMs = longCommandTimeoutSeconds * 1000L;
+        OutputBuffer err = new OutputBuffer();
+        try (ChannelExec channel = session.createExecChannel("cat > " + ShellQuote.quote(remotePath));
+             InputStream in = Files.newInputStream(localPath)) {
+            channel.setOut(new OutputBuffer());
+            channel.setErr(err);
+            channel.open().verify(timeoutMs);
+            try (OutputStream remote = channel.getInvertedIn()) {
+                in.transferTo(remote);
+            }
+            Set<ClientChannelEvent> events = channel.waitFor(
+                    EnumSet.of(ClientChannelEvent.CLOSED, ClientChannelEvent.TIMEOUT), timeoutMs);
+            if (events.contains(ClientChannelEvent.TIMEOUT)) {
+                closeChannelQuietly(channel);
+                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                        "流式上传超时（" + longCommandTimeoutSeconds + " s）");
+            }
+            int code = exitCode(channel);
+            if (code != 0) {
+                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                        "流式上传失败，远端退出码 " + code + "：" + limit(err.text()));
+            }
         }
     }
 

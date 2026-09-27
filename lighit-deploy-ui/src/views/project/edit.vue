@@ -156,6 +156,8 @@
         <el-divider content-position="left">高级配置（表单 / JSON 双模式）</el-divider>
 
         <!-- 三段配置双模式编辑器：schema 见 constants/projectConfig.ts，键名契约见 docs/项目模块.md §2.3 -->
+        <!-- 仅发布产物（ARTIFACT_ONLY）不做构建：产物由上传通道登记，构建参数全部无意义，
+             整段折叠而不是渲染一张空表单（后者会让人以为漏填了什么）。 -->
         <ConfigEditor
           ref="buildEditorRef"
           v-model="buildConfigJson"
@@ -163,8 +165,12 @@
           :fields="BUILD_CONFIG_FIELDS"
           :context="editorContext"
           :example="BUILD_CONFIG_EXAMPLE"
+          :applicable="!isArtifactOnly"
+          not-applicable-text="构建模式为「仅发布已有产物」时不执行构建，无需填写构建参数"
           hint="表单模式适用于常用字段修改；自定义键或整段粘贴请用 JSON 模式"
         />
+        <!-- 运行配置与健康检查在仅发布产物模式下依然生效：
+             前者决定产物放到哪、后者决定发布后怎么确认服务活着，都与是否有构建步骤无关。 -->
         <ConfigEditor
           ref="runtimeEditorRef"
           v-model="runtimeConfigJson"
@@ -172,6 +178,7 @@
           :fields="RUNTIME_CONFIG_FIELDS"
           :context="editorContext"
           :example="RUNTIME_CONFIG_EXAMPLE"
+          hint="表单模式适用于常用字段修改；自定义键或整段粘贴请用 JSON 模式"
         />
         <ConfigEditor
           ref="healthEditorRef"
@@ -180,6 +187,7 @@
           :fields="HEALTH_CONFIG_FIELDS"
           :context="editorContext"
           :example="HEALTH_CONFIG_EXAMPLE"
+          hint="留空表示不检查；表单模式适用于常用字段修改，自定义键或整段粘贴请用 JSON 模式"
         />
 
         <!-- 项目描述（文本域，固定放表单最底部，约定见 AGENTS.md §20.2） -->
@@ -301,6 +309,14 @@ const editorContext = computed(() => ({
   runtimeType: formData.runtimeType || '',
   buildMode: formData.buildMode || ''
 }))
+
+/**
+ * 构建模式是否为「仅发布已有产物」。
+ *
+ * 该模式下平台不执行任何构建步骤，产物由上传通道直接登记，
+ * 因此构建参数（子模块、构建命令、产物路径等）全部不参与执行。
+ */
+const isArtifactOnly = computed(() => formData.buildMode === 'ARTIFACT_ONLY')
 
 const formRules: FormRules = {
   code: [

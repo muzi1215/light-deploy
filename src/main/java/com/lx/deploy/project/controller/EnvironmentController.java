@@ -1,5 +1,7 @@
 package com.lx.deploy.project.controller;
 
+import com.lx.deploy.common.annotation.OperLog;
+import com.lx.deploy.common.enums.audit.BusinessType;
 import com.lx.deploy.project.model.dto.EnvironmentDto;
 import com.lx.deploy.project.model.vo.EnvironmentVo;
 import com.lx.deploy.project.service.EnvironmentService;
@@ -79,6 +81,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @OperLog(title = "环境管理", businessType = BusinessType.INSERT)
     @PostMapping("/create")
     public ApiResponse<EnvironmentVo> create(@Valid @RequestBody EnvironmentDto dto,
                                            HttpServletRequest request) {
@@ -93,6 +96,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @OperLog(title = "环境管理", businessType = BusinessType.UPDATE, resourceType = "environment")
     @PutMapping("/update/{id}")
     public ApiResponse<EnvironmentVo> update(@PathVariable String id,
                                            @Valid @RequestBody EnvironmentDto dto,
@@ -107,6 +111,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @OperLog(title = "环境管理", businessType = BusinessType.DELETE, resourceType = "environment")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);

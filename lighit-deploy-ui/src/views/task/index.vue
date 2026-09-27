@@ -22,6 +22,7 @@
             <el-option label="已取消" :value="4" />
           </el-select>
         </el-form-item>
+        <CreateTimeRange v-model="timeRange" />
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
@@ -52,6 +53,7 @@
         </template>
       </el-table-column>
       <el-table-column prop="currentStage" label="当前阶段" min-width="120" show-overflow-tooltip align="center" />
+      <el-table-column prop="createTime" label="创建时间" min-width="170" align="center" />
       <el-table-column prop="startedAt" label="开始时间" min-width="170" align="center" />
       <el-table-column prop="finishedAt" label="结束时间" min-width="170" align="center" />
       <el-table-column prop="errorMessage" label="失败原因" min-width="150" show-overflow-tooltip align="center" />
@@ -149,6 +151,9 @@ import type { TaskVo } from '@/api/deployTypes.ts'
 import { LOG_LEVEL_TAG, getTaskStatusStyle, isTaskFinal } from '@/constants/taskStatus.ts'
 import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.ts'
 
+import CreateTimeRange from '@/components/CreateTimeRange.vue'
+import { splitTimeRange } from '@/utils/index.ts'
+
 defineOptions({ name: 'TaskList' })
 
 /** 任务类型展示映射（对应后端 TaskType 枚举） */
@@ -169,7 +174,11 @@ const TASK_TYPE_TAG: Record<string, string> = {
 // ==================== 搜索 ====================
 const searchForm = reactive({ taskNo: '', taskType: '', status: undefined as number | undefined })
 
+/** 创建时间区间：与后端 createTimeBegin / createTimeEnd 对应，未选择时两个参数都不传 */
+const timeRange = ref<string[]>([])
+
 /** 触发查询：页码重置为第一页后重新加载数据 */
+
 function handleSearch() {
   pagination.pageNum = 1
   fetchData()
@@ -180,6 +189,7 @@ function handleReset() {
   searchForm.taskNo = ''
   searchForm.taskType = ''
   searchForm.status = undefined
+  timeRange.value = []
   handleSearch()
 }
 
@@ -197,7 +207,8 @@ async function fetchData() {
       pageSize: pagination.pageSize,
       taskNo: searchForm.taskNo || undefined,
       taskType: searchForm.taskType || undefined,
-      status: searchForm.status
+      status: searchForm.status,
+      ...splitTimeRange(timeRange.value),
     })
     tableData.value = res.data.records
     pagination.total = Number(res.data.total)

@@ -1,8 +1,11 @@
 package com.lx.deploy.build.controller;
 
+import com.lx.deploy.common.annotation.OperLog;
+import com.lx.deploy.common.enums.audit.BusinessType;
 import com.lx.deploy.build.model.dto.BuildDto;
 import com.lx.deploy.build.model.vo.BuildArtifactVo;
 import com.lx.deploy.build.model.vo.BuildVo;
+import com.lx.deploy.build.service.ArtifactUploadService;
 import com.lx.deploy.build.service.BuildService;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
@@ -12,14 +15,18 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
 /**
  * 构建任务接口。
  *
- * <p>Controller 只负责接收请求、校验、调用 {@link BuildService} 并包装统一响应，不直接写库或执行远程操作。
- * 创建构建（POST）会同步触发一条 BUILD 异步任务，响应携带 taskId / taskNo，前端据此轮询任务日志。</p>
+ * <p>Controller 只负责接收请求、校验、调用 Service 并包装统一响应，不直接写库或执行远程操作。
+ * 创建构建（POST /create）会同步触发一条 BUILD 异步任务，响应携带 taskId / taskNo，前端据此轮询任务日志。</p>
+ *
+ * <p>产物上传（POST /upload）是另一条独立的入口：用于「本地已经构建好的包直接登记为版本」的场景
+ * （项目来源 UPLOAD + 构建模式 ARTIFACT_ONLY），它不产生构建任务，上传完成即可发布。</p>
  *
  * @author lx
  * @since 2026-09-24 10:00:00
@@ -31,6 +38,10 @@ public class BuildController {
     /** 构建业务服务，由 Spring 容器完成字段注入。 */
     @Autowired
     private BuildService service;
+
+    /** 产物上传服务，由 Spring 容器完成字段注入。 */
+    @Autowired
+    private ArtifactUploadService uploadService;
 
     /**
      * 根据 DTO 非空字段分页查询构建记录。
@@ -76,7 +87,7 @@ public class BuildController {
      *
      * @param id 构建主键
      * @param request 当前 HTTP 请求
-     * @return 构件产物 VO 列表
+     * @return 构建产物 VO 列表
      */
     @GetMapping("/artifacts/{id}")
     public ApiResponse<List<BuildArtifactVo>> artifacts(@PathVariable String id, HttpServletRequest request) {
@@ -90,9 +101,34 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 刚创建并触发的构建 VO（含 taskId / taskNo）
      */
+    @OperLog(title = "构建管理", businessType = BusinessType.EXECUTE)
     @PostMapping("/create")
     public ApiResponse<BuildVo> create(@Valid @RequestBody BuildDto dto, HttpServletRequest request) {
         return ApiResponse.success(service.createAndTrigger(dto), requestId(request));
+    }
+
+    /**
+     * 上传本地已构建好的产物，登记为一个可直接发布的版本。
+     *
+     * <p>适用项目来源为 UPLOAD、构建模式为 ARTIFACT_ONLY 且运行时为 JAR / STATIC 的项目：
+     * 前端 {@code npm run build} 后打包上传，或本机打好的 jar 直接上传，平台不做任何构建。
+     * 上传是同步的：只是传文件与登记版本，没有构建那样的分钟级等待。</p>
+     *
+     * <p>受支持的格式：{@code .zip} / {@code .tar.gz} / {@code .tgz}（静态产物）、{@code .jar}（JAR 运行时）。</p>
+     *
+     * @param projectId  目标项目 ID
+     * @param versionSeq 版本序号，可为空（为空时项目内自动递增取号）
+     * @param file       产物文件
+     * @param request    当前 HTTP 请求
+     * @return 本次上传登记的构建 VO
+     */
+    @OperLog(title = "构建管理", businessType = BusinessType.EXECUTE)
+    @PostMapping(value = "/upload", consumes = "multipart/form-data")
+    public ApiResponse<BuildVo> upload(@RequestParam("projectId") String projectId,
+                                       @RequestParam(value = "versionSeq", required = false) Integer versionSeq,
+                                       @RequestPart("file") MultipartFile file,
+                                       HttpServletRequest request) {
+        return ApiResponse.success(uploadService.upload(projectId, versionSeq, file), requestId(request));
     }
 
     /**
@@ -103,6 +139,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 修改后的构建 VO
      */
+    @OperLog(title = "构建管理", businessType = BusinessType.UPDATE, resourceType = "build")
     @PutMapping("/update/{id}")
     public ApiResponse<BuildVo> update(@PathVariable String id,
                                        @RequestBody BuildDto dto,
@@ -117,6 +154,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 不包含业务数据的统一成功响应
      */
+    @OperLog(title = "构建管理", businessType = BusinessType.DELETE, resourceType = "build")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);

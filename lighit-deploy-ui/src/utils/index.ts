@@ -70,6 +70,25 @@ export function formatTime(time: number | string, option?: string): string {
   }
 }
 
+/**
+ * 把日期区间选择器的值拆成后端查询参数。
+ *
+ * 全平台列表的创建时间筛选都走这一份转换：区间值在页面上是 [开始, 截止] 一个数组，
+ * 到后端是两个独立参数，拆的动作散在各个页面就会出现「有的页面漏传 end」这类偏差。
+ *
+ * @param range 日期区间值，形如 ['2026-09-01 00:00:00', '2026-09-30 23:59:59']；允许为空
+ * @returns 查询参数对象；未选区间时两个字段都是 undefined（不参与查询）
+ */
+export function splitTimeRange(range?: string[] | null): {
+  createTimeBegin?: string
+  createTimeEnd?: string
+} {
+  if (!range || range.length < 2) {
+    return { createTimeBegin: undefined, createTimeEnd: undefined }
+  }
+  return { createTimeBegin: range[0] || undefined, createTimeEnd: range[1] || undefined }
+}
+
 /** URL 参数解析为对象 */
 export function param2Obj(url: string): Record<string, string> {
   const search = decodeURIComponent(url.split('?')[1]).replace(/\+/g, ' ')

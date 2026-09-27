@@ -9,6 +9,7 @@
         <el-form-item label="环境名称">
           <el-input v-model="searchForm.name" placeholder="请输入环境名称" clearable style="width: 180px" @keyup.enter="handleSearch" />
         </el-form-item>
+        <CreateTimeRange v-model="timeRange" />
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
@@ -55,11 +56,6 @@
             </template>
             <span class="hover-underline">{{ row.batchSize }}</span>
           </el-tooltip>
-        </template>
-      </el-table-column>
-      <el-table-column prop="defaultServerId" label="默认服务器" min-width="140" align="center" show-overflow-tooltip>
-        <template #default="{ row }">
-          {{ serverNameMap[row.defaultServerId] || row.defaultServerId || '-' }}
         </template>
       </el-table-column>
       <el-table-column prop="aiopsEnabled" label="AIops联动" min-width="110" align="center">
@@ -116,7 +112,7 @@
             </el-col>
           </el-row>
 
-          <!-- 第二行：批次大小 + 默认服务器 -->
+          <!-- 第二行：批次大小 + AIops 联动 -->
           <el-row :gutter="20">
             <el-col :span="12">
               <el-form-item label="批次大小" prop="batchSize">
@@ -132,10 +128,9 @@
               </el-form-item>
             </el-col>
             <el-col :span="12">
-              <el-form-item label="默认服务器" prop="defaultServerId">
-                <el-select v-model="formData.defaultServerId" placeholder="请选择（选填）" clearable filterable style="width: 100%">
-                  <el-option v-for="s in serverOptions" :key="s.id" :label="`${s.serverName}（${s.host}）`" :value="s.id" />
-                </el-select>
+              <el-form-item label="AIops联动" prop="aiopsEnabled">
+                <el-switch v-model="formData.aiopsEnabled" :active-value="1" :inactive-value="0" />
+                <span class="form-tip">开启后发布期间自动创建 AIops 告警静默窗口</span>
               </el-form-item>
             </el-col>
           </el-row>
@@ -168,17 +163,7 @@
             </el-col>
           </el-row>
 
-          <!-- 第四行：AIops 联动开关 -->
-          <el-row :gutter="20">
-            <el-col :span="12">
-              <el-form-item label="AIops联动" prop="aiopsEnabled">
-                <el-switch v-model="formData.aiopsEnabled" :active-value="1" :inactive-value="0" />
-                <span class="form-tip">开启后发布期间自动创建 AIops 告警静默窗口</span>
-              </el-form-item>
-            </el-col>
-          </el-row>
-
-          <!-- 第五行：环境描述（文本域，固定放表单最底部） -->
+          <!-- 第四行：环境描述（文本域，固定放表单最底部） -->
           <el-row :gutter="20">
             <el-col :span="24">
               <el-form-item label="环境描述" prop="description">
@@ -202,7 +187,8 @@
  *
  * 对接后端 /environment 标准六接口。业务约定：
  * 1. 环境编码创建后不允许修改（编辑时禁用），后端做唯一性与小写格式校验；
- * 2. 默认服务器下拉来源于 /server/list 启用服务器，后端校验存在性；
+ * 2. 环境不持有服务器：某项目在该环境下发哪些机器由「项目 → 部署目标」绑定决定，
+ *    环境层面的「默认服务器」语义不成立（详见 AGENTS.md §24.11）；
  * 3. 批次大小仅对 ROLLING 滚动发布策略生效。
  */
 import { ref, reactive, computed } from 'vue'
@@ -210,14 +196,16 @@ import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, Plus, Edit, Delete } from '@element-plus/icons-vue'
 import { pageEnvironment, createEnvironment, updateEnvironment, deleteEnvironment } from '@/api/environment.ts'
-import { listServers } from '@/api/server.ts'
-import type { EnvironmentVo, EnvironmentDto, ServerVo } from '@/api/deployTypes.ts'
+import type { EnvironmentVo, EnvironmentDto } from '@/api/deployTypes.ts'
 import {
   DEPLOY_STRATEGY_MAP,
   DEPLOY_STRATEGY_OPTIONS,
   DEPLOY_STRATEGY_TIPS,
   BATCH_SIZE_TIPS
 } from '@/constants/deploymentStatus.ts'
+
+import CreateTimeRange from '@/components/CreateTimeRange.vue'
+import { splitTimeRange } from '@/utils/index.ts'
 
 defineOptions({ name: 'EnvironmentList' })
 
@@ -230,6 +218,9 @@ const strategyOptions = DEPLOY_STRATEGY_OPTIONS
 // ==================== 搜索 ====================
 const searchForm = reactive({ code: '', name: '' })
 
+/** 创建时间区间：与后端 createTimeBegin / createTimeEnd 对应，未选择时两个参数都不传 */
+const timeRange = ref<string[]>([])
+
 function handleSearch() {
   pagination.pageNum = 1
   fetchData()
@@ -238,6 +229,7 @@ function handleSearch() {
 function handleReset() {
   searchForm.code = ''
   searchForm.name = ''
+  timeRange.value = []
   handleSearch()
 }
 
@@ -246,17 +238,6 @@ const loading = ref(false)
 const tableData = ref<EnvironmentVo[]>([])
 const pagination = reactive({ pageNum: 1, pageSize: 10, total: 0 })
 
-/** 启用服务器下拉选项与 id→名称 映射，用于表格展示和表单选择 */
-const serverOptions = ref<ServerVo[]>([])
-const serverNameMap = ref<Record<string, string>>({})
-
-async function loadServerOptions() {
-  // 只取启用状态的服务器作为默认服务器候选
-  const res = await listServers({ status: 1 })
-  serverOptions.value = res.data || []
-  serverNameMap.value = Object.fromEntries(serverOptions.value.map(s => [s.id, `${s.serverName}（${s.host}）`]))
-}
-
 async function fetchData() {
   loading.value = true
   try {
@@ -264,7 +245,8 @@ async function fetchData() {
       pageNum: pagination.pageNum,
       pageSize: pagination.pageSize,
       code: searchForm.code || undefined,
-      name: searchForm.name || undefined
+      name: searchForm.name || undefined,
+      ...splitTimeRange(timeRange.value),
     })
     tableData.value = res.data.records
     pagination.total = Number(res.data.total)
@@ -274,7 +256,6 @@ async function fetchData() {
 }
 
 fetchData()
-loadServerOptions()
 
 // ==================== 新增/编辑 ====================
 const dialogVisible = ref(false)
@@ -288,7 +269,6 @@ const formData = reactive<EnvironmentDto>({
   name: '',
   deployStrategy: 'SINGLE_TARGET',
   batchSize: 1,
-  defaultServerId: '',
   aiopsEnabled: 0,
   description: ''
 })
@@ -320,7 +300,6 @@ function handleEdit(row: EnvironmentVo) {
   formData.name = row.name
   formData.deployStrategy = row.deployStrategy
   formData.batchSize = row.batchSize
-  formData.defaultServerId = row.defaultServerId || ''
   formData.aiopsEnabled = row.aiopsEnabled
   formData.description = row.description || ''
   dialogVisible.value = true
@@ -331,7 +310,6 @@ function resetForm() {
   formData.name = ''
   formData.deployStrategy = 'SINGLE_TARGET'
   formData.batchSize = 1
-  formData.defaultServerId = ''
   formData.aiopsEnabled = 0
   formData.description = ''
   editId.value = ''

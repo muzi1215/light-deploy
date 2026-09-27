@@ -41,6 +41,15 @@ public class DeploymentTargetVo {
     @Schema(description = "目标服务器地址")
     private String serverHost;
 
+    /**
+     * 发布顺序快照，创建部署时从部署目标配置固化。
+     *
+     * <p>页面按它展示「第几台发」，与执行器的实际执行顺序同源；
+     * 历史部署该字段为空（当时未记录顺序）。</p>
+     */
+    @Schema(description = "发布顺序快照，创建部署时固化")
+    private Integer deployOrder;
+
     /** 目标状态数字编码，见 DeploymentTargetStatus。 */
     @Schema(description = "目标状态：0排队，1发布中，2成功，3失败，4已取消，5已跳过")
     private Integer status;

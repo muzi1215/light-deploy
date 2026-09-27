@@ -18,6 +18,7 @@
             <el-option v-for="(item, key) in DEPLOY_STATUS_MAP" :key="key" :label="item.label" :value="Number(key)" />
           </el-select>
         </el-form-item>
+        <CreateTimeRange v-model="timeRange" />
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
@@ -72,6 +73,7 @@
           <span v-if="(row.targetFailed ?? 0) > 0" class="failed-count">（失败 {{ row.targetFailed }}）</span>
         </template>
       </el-table-column>
+      <el-table-column prop="createTime" label="创建时间" min-width="170" align="center" />
       <el-table-column prop="startedAt" label="开始时间" min-width="170" align="center" />
       <el-table-column prop="finishedAt" label="结束时间" min-width="170" align="center" />
       <el-table-column prop="taskNo" label="关联任务" min-width="160" show-overflow-tooltip align="center" />
@@ -146,9 +148,18 @@
             <el-option v-for="item in projectOptions" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </el-form-item>
+        <!--
+          环境下拉只列「该项目已绑定启用目标」的环境，选项带目标台数（如 生产环境（2 台））。
+          全量环境下拉在这里没有意义：绝大多数环境与当前项目无关，选了只会在提交阶段才报错。
+        -->
         <el-form-item label="环境" prop="environmentId">
-          <el-select v-model="createForm.environmentId" placeholder="请选择环境" style="width: 100%">
-            <el-option v-for="item in environmentOptions" :key="item.id" :label="item.name" :value="item.id" />
+          <el-select v-model="createForm.environmentId" placeholder="请先选择项目" style="width: 100%">
+            <el-option
+              v-for="item in projectEnvOptions"
+              :key="item.id"
+              :label="`${item.name}（${item.targetCount} 台）`"
+              :value="item.id"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="发布版本" prop="releaseId">
@@ -232,6 +243,22 @@
       <el-table v-loading="targetLoading" :data="targets" border stripe>
         <el-table-column prop="serverName" label="服务器" min-width="140" show-overflow-tooltip align="center" />
         <el-table-column prop="serverHost" label="地址" min-width="130" align="center" />
+        <!--
+          发布顺序来自创建部署时固化的快照，与执行器决定「谁先发」的顺序同源：
+          滚动/分批发布按它从前往后执行，页面上看到的顺序就是实际执行顺序。
+          历史部署（该字段上线前创建）未记录顺序，显示为「—」，其顺序由 create_time 兜底。
+        -->
+        <el-table-column label="发布顺序" width="100" align="center">
+          <template #default="{ row }">
+            <el-tooltip
+              placement="top"
+              content="本次部署固化的发布顺序，滚动/分批发布按此顺序从前往后执行；历史部署未记录该顺序"
+            >
+              <span v-if="row.deployOrder !== null && row.deployOrder !== undefined">{{ row.deployOrder }}</span>
+              <span v-else class="muted">—</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" min-width="100" align="center">
           <template #default="{ row }">
             <el-tag :type="getDeployTargetStatusStyle(row.status).tag">
@@ -437,12 +464,14 @@ import {
 import { listReleases } from '@/api/release.ts'
 import { listProjects } from '@/api/project.ts'
 import { listEnvironments } from '@/api/environment.ts'
+import { listProjectEnvironments } from '@/api/deployTarget.ts'
 import type {
   DeploymentVo,
   DeploymentTargetVo,
   RollbackPreviewVo,
   ProjectVo,
   EnvironmentVo,
+  EnvironmentOptionVo,
   ReleaseRecordVo
 } from '@/api/deployTypes.ts'
 import { LOG_LEVEL_TAG, getTaskStatusStyle } from '@/constants/taskStatus.ts'
@@ -465,11 +494,22 @@ import {
 // 日志查看器与日志时间格式化：5 处日志视图共用同一份实现
 import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.ts'
 
+import CreateTimeRange from '@/components/CreateTimeRange.vue'
+import { splitTimeRange } from '@/utils/index.ts'
+
 defineOptions({ name: 'DeploymentList' })
 
 // ==================== 下拉数据 ====================
 const projectOptions = ref<ProjectVo[]>([])
+/** 搜索区用：全量环境，便于按环境筛选历史发布记录（不限项目） */
 const environmentOptions = ref<EnvironmentVo[]>([])
+/**
+ * 新建部署用：只含当前项目已绑定启用目标的环境。
+ *
+ * 与搜索区分开是有意的——搜索要能筛到「任何环境的历史记录」，新建部署只能选「这个项目真能发的环境」，
+ * 两者的数据源和语义都不同，共用一个列表必然有一边是错的。
+ */
+const projectEnvOptions = ref<EnvironmentOptionVo[]>([])
 const releaseOptions = ref<ReleaseRecordVo[]>([])
 
 async function loadOptions() {
@@ -488,6 +528,9 @@ const loading = ref(false)
 const tableData = ref<DeploymentVo[]>([])
 const pagination = reactive({ pageNum: 1, pageSize: 10, total: 0 })
 
+/** 创建时间区间：与后端 createTimeBegin / createTimeEnd 对应，未选择时两个参数都不传 */
+const timeRange = ref<string[]>([])
+
 function handleSearch() {
   pagination.pageNum = 1
   fetchData()
@@ -497,6 +540,7 @@ function handleReset() {
   searchForm.projectId = ''
   searchForm.environmentId = ''
   searchForm.status = undefined
+  timeRange.value = []
   handleSearch()
 }
 
@@ -508,7 +552,8 @@ async function fetchData() {
       pageSize: pagination.pageSize,
       projectId: searchForm.projectId || undefined,
       environmentId: searchForm.environmentId || undefined,
-      status: searchForm.status
+      status: searchForm.status,
+      ...splitTimeRange(timeRange.value),
     })
     tableData.value = res.data.records
     pagination.total = Number(res.data.total)
@@ -577,7 +622,7 @@ const STRATEGY_POPPER_OPTIONS = {
  * 滚动发布额外带上批次大小，因为批次只在滚动下生效，顺便提醒它取的是环境上的值、这里改不了。
  */
 const envDefaultStrategyText = computed(() => {
-  const env = environmentOptions.value.find(item => item.id === createForm.environmentId)
+  const env = projectEnvOptions.value.find(item => item.id === createForm.environmentId)
   if (!env?.deployStrategy) {
     return ''
   }
@@ -591,15 +636,29 @@ function openCreate() {
   createVisible.value = true
 }
 
-/** 切换项目后重新加载该项目的可发布版本；版本列表只取「可发布」状态 */
+/**
+ * 切换项目后重新加载该项目「能发什么」：可发布版本 + 已绑定启用目标的环境。
+ *
+ * 版本列表只取「可发布」状态；环境只取已绑定启用目标的，两者都是提交前就能确定的前置条件，
+ * 与其让用户在提交时才收到后端报错，不如在下拉里就不给错误选项。
+ */
 async function handleProjectChange(projectId: string) {
   createForm.releaseId = ''
+  createForm.environmentId = ''
   releaseOptions.value = []
+  projectEnvOptions.value = []
   if (!projectId) return
-  const res = await listReleases({ projectId, status: 1 })
-  releaseOptions.value = res.data
+  const [releaseRes, envRes] = await Promise.all([
+    listReleases({ projectId, status: 1 }),
+    listProjectEnvironments(projectId)
+  ])
+  releaseOptions.value = releaseRes.data
+  projectEnvOptions.value = envRes.data
   if (releaseOptions.value.length === 0) {
     ElMessage.warning('该项目暂无可发布版本，请先完成一次成功的构建')
+  }
+  if (projectEnvOptions.value.length === 0) {
+    ElMessage.warning('该项目还没有绑定启用状态的部署目标，请先在「部署目标」中绑定服务器')
   }
 }
 
@@ -620,6 +679,7 @@ function resetCreate() {
   createForm.releaseId = ''
   createForm.strategy = ''
   releaseOptions.value = []
+  projectEnvOptions.value = []
   createFormRef.value?.resetFields()
 }
 

@@ -11,7 +11,8 @@ import type {
   PageParams,
   ListParams,
   DeployTargetVo,
-  DeployTargetDto
+  DeployTargetDto,
+  EnvironmentOptionVo
 } from './deployTypes.ts'
 
 /** 条件分页查询部署目标（支持 projectId / environmentId / serverId 过滤） */
@@ -22,6 +23,18 @@ export function pageDeployTarget(params: PageParams): Promise<ApiResponse<PageRe
 /** 条件列表查询部署目标 */
 export function listDeployTargets(params?: ListParams): Promise<ApiResponse<DeployTargetVo[]>> {
   return request({ url: '/projectEnvironmentTarget/list', method: 'get', params })
+}
+
+/**
+ * 查询指定项目已绑定启用目标的环境选项（新建部署的选环境下拉）。
+ *
+ * 只返回能真正发布的环境（至少一台启用绑定），并带回目标台数；
+ * 项目没有启用绑定时返回空数组，而不是全量环境。
+ */
+export function listProjectEnvironments(
+  projectId: string
+): Promise<ApiResponse<EnvironmentOptionVo[]>> {
+  return request({ url: '/projectEnvironmentTarget/env-options', method: 'get', params: { projectId } })
 }
 
 /** 根据主键查询部署目标详情 */

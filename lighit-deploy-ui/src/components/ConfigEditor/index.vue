@@ -2,12 +2,30 @@
   <div class="config-editor">
     <!-- 头部：标题 + 编辑方式切换 -->
     <div class="ce-header">
-      <span class="ce-title">{{ title }}</span>
-      <el-radio-group v-if="!readonly" v-model="mode" size="small" @change="handleModeChange">
+      <span class="ce-title" :class="{ 'ce-title-muted': !applicable }">{{ title }}</span>
+      <el-radio-group
+        v-if="!readonly && applicable"
+        v-model="mode"
+        size="small"
+        @change="handleModeChange"
+      >
         <el-radio-button value="form">表单编辑</el-radio-button>
         <el-radio-button value="json">JSON 编辑</el-radio-button>
       </el-radio-group>
+      <el-tag v-if="!applicable" type="info" size="small" effect="plain">本次不适用</el-tag>
       <span class="ce-hint">{{ modeHint }}</span>
+    </div>
+
+    <!-- 整段不适用：当前构建模式 / 运行时组合下这一段没有意义，直接说明而非渲染空表单 -->
+    <div v-if="!applicable" class="ce-na">
+      <el-alert type="info" :closable="false" show-icon>
+        <template #title>
+          <span>{{ notApplicableText || '当前项目配置下这一段不生效，无需填写' }}</span>
+        </template>
+        <div v-if="!readonly" class="ce-na-detail">
+          下方内容已折叠。如该段落此前填过值，平台保留原内容不会清空，只是本次不参与执行。
+        </div>
+      </el-alert>
     </div>
 
     <!-- JSON 模式：整段文本编辑，适合粘贴与 schema 外的自定义键 -->
@@ -22,7 +40,7 @@
     />
 
     <!-- 表单模式：按 schema 分组渲染，已填值与未知键保留 -->
-    <template v-else>
+    <template v-else-if="applicable">
       <div v-for="group in visibleGroups" :key="group" class="ce-group">
         <div class="ce-group-title">{{ group }}</div>
         <el-row :gutter="16">
@@ -118,6 +136,15 @@ const props = withDefaults(
     hint?: string
     /** 只读态（详情页使用）：控件禁用、不可切换 JSON 模式 */
     readonly?: boolean
+    /**
+     * 本段配置在当前组合下是否适用。
+     *
+     * false 时整段折叠为一句说明（如「仅发布产物」模式不需要构建参数），
+     * 而不是渲染一张全空或全是无关字段的表单——后者会让人误以为漏填了什么。
+     */
+    applicable?: boolean
+    /** 不适用时的说明文案，缺省用通用文案 */
+    notApplicableText?: string
   }>(),
   {
     modelValue: '',
@@ -125,7 +152,9 @@ const props = withDefaults(
     example: '',
     title: '',
     hint: '',
-    readonly: false
+    readonly: false,
+    applicable: true,
+    notApplicableText: ''
   }
 )
 
@@ -148,6 +177,7 @@ const jsonText = ref('')
 
 const modeHint = computed(() => {
   if (props.readonly) return '只读内容，如需修改请点击列表中的「编辑」'
+  if (!props.applicable) return '当前组合下不生效'
   if (props.hint) return props.hint
   return mode.value === 'form'
     ? '表单模式适用于常用字段修改；自定义键或整段粘贴请用 JSON 模式'
@@ -371,6 +401,8 @@ function getValue(): string {
  * @returns 校验通过返回 { ok: true }；否则返回首个错误信息
  */
 function validate(): { ok: boolean; message?: string } {
+  // 整段不适用时不参与校验：既没有可填字段，也不该因为历史残留值拦住保存。
+  if (!props.applicable) return { ok: true }
   const value = getValue()
   if (value) {
     try {
@@ -421,6 +453,22 @@ defineExpose({ getValue, validate })
 .ce-title {
   font-weight: 600;
   font-size: 14px;
+}
+
+.ce-title-muted {
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+}
+
+.ce-na {
+  margin-top: 4px;
+}
+
+.ce-na-detail {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  margin-top: 4px;
+  line-height: 1.5;
 }
 
 .ce-hint {

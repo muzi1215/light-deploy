@@ -1,7 +1,9 @@
 package com.lx.deploy.registry.model.dto;
 
+import com.lx.deploy.common.model.TimeRangeQuery;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 /**
  * 镜像仓库请求对象。
@@ -16,8 +18,9 @@ import lombok.Data;
  * @since 2026-09-23 02:13:27
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @Schema(description = "镜像仓库请求参数")
-public class RegistryDto {
+public class RegistryDto extends TimeRangeQuery {
 
     /**
      * 仓库名称，新增必填，长度上限 100，与已存在名称重复时抛 DATA_CONFLICT(4005)。查询时等值过滤。

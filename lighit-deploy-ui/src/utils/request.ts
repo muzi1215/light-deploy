@@ -16,6 +16,15 @@ service.interceptors.request.use(
     if (userStore.token) {
       config.headers['Authorization'] = `Bearer ${userStore.token}`
     }
+    // 操作人随请求带出：后端操作日志切面读这两个头落审计记录（audit_log.operator_id/name）。
+    // 过渡期没有登录态也没有服务端会话，这两个头是后端唯一能拿到「谁在操作」的入口；
+    // 缺失时后端记 system，不会让请求失败。
+    if (userStore.id) {
+      config.headers['X-Operator-Id'] = userStore.id
+    }
+    if (userStore.name) {
+      config.headers['X-Operator-Name'] = userStore.name
+    }
     return config
   },
   (error: any) => {

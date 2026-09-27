@@ -39,7 +39,13 @@ Light Deploy 是面向中小企业的轻量化部署发布平台，采用 Spring
 
 - `DOCKER`：Dockerfile 或 Docker Compose 部署；
 - `JAR`：Java JAR 配合 systemd 部署；
-- `STATIC`：前端静态产物配合 Nginx 部署。
+- `STATIC`：前端静态产物配合 Nginx 部署。**平台只替换静态根目录下的文件内容（目录本身不动，见 §3.2），不碰 nginx**——
+  不生成站点配置、不改 `root`、**不执行 `nginx -t` 与 `nginx -s reload`**。三条理由：
+  ① nginx 每次请求重新解析路径，目录内容替换后新内容即时生效，reload 不是必需动作；
+  ② nginx 未必由目标机上的那个二进制在跑（常见于容器内 nginx + 宿主机挂载目录，
+     或由另一台机器承担），用 `command -v nginx` 判别「该不该 reload」本身就不成立；
+  ③ reload 失败会把一次「文件已成功替换」的发布判成失败，结论与磁盘实际状态相反，
+     即「发布失败但文件是新的」这种最难排查的组合。真需要 reload 由 nginx 侧自己解决；
 
 Docker 构建模式预留：
 
@@ -61,12 +67,54 @@ JAR 运行时采用「固定工作目录 + 原地替换」，**不按版本建�
 - `work_dir` **必须写绝对路径**：平台不校验存在性也不做规范化（只去首尾空白与结尾斜杠），写成 `./lx/...` 这类相对路径会相对 SSH 登录用户的家目录解析（root 即 `/root/lx/...`），与填写时的预期位置完全不同；
 - **systemd 单元只在首次部署生成，之后不再重写**——运维手工调整过的启动参数（`-Xmx`、`--spring.config.location` 等）必须被尊重；
 - 发版动作固定为四步：备份旧 jar 到 `exec/bak` → 投放新 jar → `systemctl restart` → `is-active` 确认。回滚走同一路径，只是投放 `old_version` 的 jar；
+- 投放前先在目标机比对现有 jar 的 `sha256`：与本次版本一致时**跳过备份与上传**（重复发布、失败重试都会命中），两种传输方式与日志拆分要求见 §24.7；
 - jar 与配置分离：配置文件放在工作目录的 `config/` 下，由 `build_config_json.config_paths` 随产物转存，**平台不覆盖目标机已存在的配置**；
 - 备份命名为 `{jar名}_bak_{时间戳}_{版本号}.jar`（如 `auth-tool_bak_20260925222851_auth-7888-v6-c9bb25d3.jar`），**被替换包的版本号内嵌在文件名里**，`ls` 一眼就能看出每个备份是哪个版本。取不到版本时省略版本段，退化为 `{jar名}_bak_{时间戳}.jar`；同一秒同版本重名时追加 `_2`、`_3`——该序号**只是防撞名，与版本无关**。三种形态 `jar-update.py` / `jar-fallback.py` 都必须能识别；
 - **版本段逐字保留平台版本号，不把其中的连字符换成下划线**：`release_record.version`、Docker 镜像 tag、`VERSION` 文件里写的都是 `auth-7888-v7-1521739f`，文件名必须与之字面一致，才能直接复制去查库、搜日志、比对镜像。若为「统一下划线」把 `-` 换成 `_`，读回时就得按段回译，而项目编码本身允许含 `_`，回译不再双射——拿一个隐式约定换一点视觉整齐，不划算。文件名里 `-` 与 `_` 混用**是有意为之**：`_` 分隔备份名的结构段，`-` 属于版本号本身；
 - 部署脚本内置在 `resources/scripts/jar-deploy/`，由平台上传执行。这类脚本必须**非交互（不接受 input）且返回明确退出码**：SSH 执行没有 TTY，交互式脚本会挂起到超时，而退出码恒为 0 会让平台把失败判成成功。
 
 本形态只约束「JAR + 脚本构建」链路。**DOCKER 不受影响**：仍按 `dockerfile_path` 构建镜像、`docker pull + run` 发布，不使用工作目录与上述脚本；`config_paths` 也不在 DOCKER 分支消费。
+
+### 3.2 STATIC 静态发布形态（固定目录 + 内容替换）
+
+STATIC 运行时采用「固定目录 + 内容替换」，**不按版本建子目录，也不换目录**：
+
+- `static_root` 是 nginx `root` 指向的那个目录，平台只替换它**里面的文件**；
+- **禁止 rename / 删除 `static_root` 本身**（2026-09-28 定稿，血泪教训）：目录的 inode 必须全程恒定。
+  原因——Docker 的 bind mount 是容器启动时按宿主机路径**解析一次并绑定 inode** 的，
+  源目录一旦被 rename 走，容器仍握着旧 inode，容器内看到的就是空目录（源 inode 被彻底删除时），
+  nginx 报 `directory index of "..." is forbidden`、站点全站 403。
+  此时 `nginx -s reload` 无效（reload 不重新挂载），**只能重建容器**才能恢复。
+  静态站点跑在容器里是常规形态，这条没有例外；
+- 因此切换动作是「旧内容整体搬到备份目录 → 新内容搬进来」两批按条目 rename，
+  由 `StaticDeployService.MOVE_CONTENTS` 里的 shell 函数 `_ld_move` 完成。
+  代价是切换期间存在极短的目录为空窗口；可接受的原因是两种失败模式不对等：
+  **内容替换**最坏结果是瞬时 404 且自愈，**换目录**最坏结果是容器陷入失效挂载、必须重建容器；
+- **整体搬走旧内容，不做增量覆盖**：只有整体搬走才能保证新版本是**精确替换**——
+  旧版本独有的文件（改名过的 js/css）会随备份一起离开，不会残留在站点里；
+- 备份命名为 `{目录名}_bak_{时间戳}_{版本号}`，与 §3.1 同构，落在 `static_backup_dir`
+  （默认 `static_root` 同级的 `static-bak`）。回滚优先用目标机本地备份 `cp -a` 还原，不过构建机；
+- **不执行 `nginx -t` / `nginx -s reload`**：平台不修改 nginx 配置，
+  且 nginx 未必由目标机上的那个二进制在跑（它在容器里、或在另一台机器上），
+  用 `command -v nginx` 判别「该不该 reload」这件事本身就不成立。
+  目录内容替换后 nginx 每次请求重新解析路径，新内容即时生效。
+  唯一例外是 nginx 开了 `open_file_cache`，那是 nginx 侧配置，在 nginx 那边解决，不由发布链路代劳；
+- 每次切换在任务日志里输出 `static_root` 的 inode（发布前 → 发布后），
+  让「容器内看到空目录」这类故障能直接在日志里定性，不必登机器对比；
+- 产物解压后为空时**中止发布**（站点此时还没被碰过），不允许「清空站点却报发布成功」。
+- 产物从构建机到目标机的完整分发逻辑（两跳中转、传输通道抉择、每一步的失败语义）见 `docs/产物分发链路.md`。
+
+### 3.3 产物上传形态（只接受单个压缩包）
+
+来源为 `UPLOAD` + 构建模式为 `ARTIFACT_ONLY` 的项目，产物由运维在页面上直接上传：
+
+- **上传只接受单个文件**：`.zip` / `.tar.gz` / `.tgz`（静态产物）与 `.jar`（JAR 运行时），单文件 500MB；
+- **不做文件夹上传**：目录选择要同时付出三项代价——前端 `webkitdirectory` 另传一份相对路径数组、后端放开文件名白名单允许 `/`、接口从单个 `MultipartFile` 改成数组，最后还要回答「要不要剥掉最外层目录」，怎么做都是隐式约定。**压缩包把这三项全部消掉**；
+- **压缩包推荐平铺打包，但不是硬要求**：在产物目录内打包（`cd dist && zip -r app.zip .`）解开后直接是 `index.html`；在父目录打包（`zip -r aiops.zip aiops`）会多出一层，由 `StaticDeployService.stripTopLevelDir` **自动剥离**（等价于 `tar --strip-components=1`），不必为打包姿势重传。剥壳与 `static_root` 指向哪一层无关——它作用在解压后的暂存目录上，剥完再替换 `static_root` 的**内容**（目录本身不动，见 §3.2）；
+  - **剥壳判据三条全中才动**：根下恰好一个条目 + 该条目是目录 + 该目录内存在 `index.html`。只满足「单目录」就剥会误伤根下只有 `assets/` 这类包；要求内层有 `index.html` 后，平铺包天然不满足第一条，不会被误剥；
+  - 判据不满足且形态异常时由 `warnIfNested` 告警（**只告警不阻断**：少数站点入口文件不叫 index.html，平台不该替运维做这个决定）；
+- 备份目录名**禁止以点开头**：曾经叫 `.static-bak`，本意是让 nginx 不容易直接暴露它，但隐藏目录在终端 `ls` 里看不见，回滚翻备份、清磁盘找目录都受影响，**看不见比被访问到更麻烦**。安全那条由「把备份目录配到 web 根之外」解决，不靠隐藏。暂存目录同理；
+- 构建机上已经是目录的产物，由平台自己 `tar -czf pkg -C {目录} .` 打包，同样是平铺的，与上传侧口径一致。
 
 ## 4. 数据库约定
 
@@ -246,7 +294,7 @@ status                 服务器启用状态
 3 = 生产环境
 ```
 
-环境标签表示服务器的默认环境归属，用于服务器列表展示和筛选。正式项目发布目标仍以项目环境绑定配置为准。
+环境标签表示服务器的默认环境归属，**仅用于服务器列表展示和筛选**。它与 `environment` 表**没有外键、没有一致性校验**：把 `env_tag=1（开发）` 的机器绑到 prod 环境，平台既不拒绝也不警告。正式发布目标只认 `project_environment_target`（详见 §24.11）。
 
 ### 6.3 服务器状态
 
@@ -419,6 +467,25 @@ private String buildConfigJson;
 - `UuidIdentifierGenerator#nextId(Object)`（`ASSIGN_ID` 数值主键分支）当前没有实体使用，属于**兼容保留**：保留它是为了将来出现数值主键的扩展实体时不被本 Bean 影响。该分支必须继续委托 `DefaultIdentifierGenerator`，其返回类型是 `Number`，**不得**改成返回 UUID 字符串，否则破坏 MyBatis-Plus 的接口契约；
 - 新增实体一律 `VARCHAR(32)` 主键 + `ASSIGN_UUID`。确需数值主键属于例外，必须先在模块文档里说明理由；
 - 校验方式：编译通过只能证明业务代码侧这条链路，插槽侧要实际新增一条记录后确认落库 `id` 是 32 位小写十六进制（长度不对说明两处格式已经分叉）；修改 `IdGenerator` 的产出格式时，必须同步检查 `nextUUID` 这条链路。
+
+### 10.4 列表查询统一支持创建时间区间
+
+**所有带搜索区的分页列表都必须支持「创建时间区间」筛选**，三处必须成套出现，缺一处即视为未完成：
+
+| 位置 | 实现 | 说明 |
+| --- | --- | --- |
+| 后端 DTO | 继承 `common.model.TimeRangeQuery` | 提供 `createTimeBegin` / `createTimeEnd`，字段上带 `@DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")` |
+| 后端 Service | `TimeRangeSupport.apply(wrapper, Xxx::getCreateTime, condition)` | 闭区间 `ge` / `le`；开始晚于截止抛 `VALIDATION_ERROR`「开始时间不能晚于截止时间」 |
+| 前端页面 | `<CreateTimeRange v-model="timeRange" />` + `...splitTimeRange(timeRange.value)` | 组件在 `components/CreateTimeRange.vue`，参数拆在 `utils/index.ts` |
+
+约束：
+
+- **只筛 `create_time`，不引入业务时间维度**：构建有 `started_at` / `finished_at`、任务有开始与结束时间，但这些列在排队或执行中时是空的，按它们筛会让「明明有数据却查不到」变成常态。创建时间对任何一行都存在，语义也最直白——「这段时间里新增了哪些」。业务时间照常作为列展示，只是不参与筛选；
+- **只传一端按单边过滤**，两端都不传等于不限；**区间是闭区间**（`>=` 与 `<=`），用开区间会让恰好落在边界上的记录消失，而这类消失几乎不可能被复现；
+- **禁止各 Service 自己写 `ge` / `le` 与区间校验**：复制十遍的判空与校验，第十一遍总会漏掉「开始晚于截止」这类边界，而漏掉的表现是「查出 0 条」而不是报错，属于最难发现的一类问题；
+- **前端不要各页复制 `el-date-picker`**：`default-time`、 `value-format` 这类细节一旦分叉，表现是「选同一天查不到数据」——既不报错也难以复现。组件的默认时刻固定为开始 `00:00:00`、截止 `23:59:59`；
+- **列表必须有「创建时间」列**（流水型页面原先只有开始 / 结束时间列的要补上）：筛选项与展示列对不上，用户无法核对筛选是否生效；
+- 新增列表页时同步补齐这三处，并在模块文档的「接口清单」里注明支持该条件。
 
 ## 11. 代码生成器
 
@@ -1266,6 +1333,24 @@ com.lx.deploy.common.constants
 6. **保留数为 null 或 ≤ 0 时不做任何回收**，没有明确配额就删东西风险太高；
 7. **置「已废弃」而非物理删除**，废弃版本不再出现在新建部署的版本下拉里（下拉只列「可发布」），避免出现「看得到却发不了」。早期约定「历史版本永不置已废弃」在保留策略接入后不再无条件成立——超出保留数且不在保护窗口内的版本会被废弃，「手工换包后补一次新建部署重发对应版本」要趁那个版本还在窗口内做。
 
+### 23.7 健康检查默认在目标机本地探测
+
+`health_config_json.probe_from` 决定探测从哪里发起，**缺省与任何非 `PLATFORM` 的取值都按 `TARGET` 处理**：
+
+| 取值 | 行为 | 判定的是什么 | 前置条件 |
+| --- | --- | --- | --- |
+| `TARGET`（默认） | 平台通过 SSH 登录目标机，TCP 用 `ss` 判端口监听（无 `ss` 时回落 bash `/dev/tcp`），HTTP 用 python3 请求 `127.0.0.1` | 服务有没有起来 | 只需 SSH 可达，业务端口无需对平台放行 |
+| `PLATFORM` | 平台 JVM 直接连 `server.host:port` | 外部客户端能不能访问 | 平台必须能直达业务端口 |
+
+必须遵守：
+
+1. **默认只能是 `TARGET`**。发布后健康检查的目的就是确认应用活了，这个事实只取决于目标机自身。默认走平台侧会把「云防火墙/安全组没放行」报成发布失败——应用明明在跑、进程正常，却要求运维去放行端口，而放行本身不是部署的必要条件，还扩大了暴露面；
+2. **TCP 探测判「端口处于监听状态」，不判「能否连上回环地址」**：服务可能只绑在具体网卡 IP 上，此时连 `127.0.0.1:port` 会失败但服务是好的。`ss -lntn` 与绑定地址无关，是更准确的判据；
+3. **`TARGET` 模式下一次检查只建一条 SSH 连接**，多轮重试复用同一会话，不能把 `retry_count` 放大成同等数量的握手；
+4. **不要因为「目标机可能没装 curl / nc」就退回平台侧**：目标机必然有 python3（JAR 部署脚本本身就是 python 的，初始化阶段还会显式探测），bash 的 `/dev/tcp` 也零依赖；
+5. **`PLATFORM` 保留给「确实要验证外部可达性」的场景**，它的结论受平台所在网络出口影响——在笔记本上跑平台与在服务器上跑平台，对同一个端口可能得到相反结论。用 `PLATFORM` 排查失败时，必须在**平台那台机器**上复测，开发机的结果不作数；
+6. **JAR 运行时健康检查失败时补 systemd 诊断**（`DeploySupport.appendServiceDiagnosis`）：`systemctl is-active = active` 只说明进程活着，不代表端口在监听。不把 `systemctl status` 的尾部输出写进任务日志，运维就只能登机器翻 journalctl，而发布日志本身会显示「服务启动成功」紧接「健康检查失败」这种无从解释的矛盾。
+
 ## 24. 任务执行与远程执行层约定
 
 ### 24.1 任务执行器
@@ -1338,6 +1423,13 @@ com.lx.deploy.common.constants
 - 部署列表的版本列：已回滚时在版本号下方补一行「当前 xxx」并给 tooltip 说明两者差别；其他状态不补（要么 `version` 就是当前版本，要么还没有确定结论）；
 - 目标明细的版本对照**统一按「当前 → 目标」表述**，两种场景都自解释、方向永远与事实一致：发布 = `old_version → new_version`，回滚 = `new_version → old_version`。**禁止**按字段顺序直接拼 `oldVersion → newVersion`——回滚执行的恰恰是把 `new_version` 换回 `old_version`，箭头会反向；而这两个字段名不含角色信息，看的人只能猜「哪个是现在的」；
 - 回滚预览接口里的 `currentVersion` / `targetVersion` 取法与此同源（`currentVersion` 取 `new_version`、`targetVersion` 取 `old_version`，见 `toRollbackTargetVo`），**三处口径必须一致**。
+- **「动作完成后机器在跑什么」一律取 `DeployContext.targetVersionOf`，禁止用 `currentVersionOf`**（2026-09-28 修）。
+  两者的方向是相反的：`targetVersionOf` = 回滚 ? `old_version` : `new_version`（本次写上去的、也就是动作结束后在跑的）；
+  `currentVersionOf` = 回滚 ? `new_version` : `old_version`（本次被换掉的、只用于备份命名）。
+  用反的表现极其隐蔽：**首次发布那次 `old_version` 为空 → 推断出「这台机器没有纳管版本」
+  → 之后每一次发布的 `old_version` 都为空 → 回滚永远被判成「首次发布，无法回滚」，
+  且备份名永远不带版本段**。涉及的三处：`DeploymentTargetPlanner.resolveCurrentVersions`（推断下次的 `old_version`）、
+  `DeploymentVoAssembler.resolveCurrentVersion`（页面当前版本）、`DeployContext` 自身的 JavaDoc 警示。
 
 **关于目标机 `exec/bak`**：平台回滚走的是「重新发布 `old_version`」，靠**版本记录 + 构建机上的产物**，**不读** `exec/bak` 里的手工备份包。因此判断「能不能回滚」要看历史版本产物是否还在（`historyArtifactAvailable`），不能看目标机上有没有备份包。`exec/bak` 的定位是运维断网/平台不可用时手工应急（`jar-fallback.py`）；注意**备份名里的时间戳指向「替换它的那次发布」，不是包里的版本**，版本对照靠**备份文件名内嵌的版本段**或 SHA256 比对（详见 §24.7）。
 
@@ -1405,6 +1497,12 @@ com.lx.deploy.common.constants
 - 登记摘要为空（历史版本）或目标机算不出摘要（缺 `sha256sum`）时**跳过并写明原因**，不阻断发布——这两种情况都不是产物损坏；
 - 校验通过**也要写 INFO 日志**并带上摘要值，让「检查确实执行过」可被追溯。日志级别只有 INFO / ERROR（见 `TaskLogLevel`），跳过类信息归 INFO。
 
+**二之二、产物投放：摘要比对跳过、传输方式与日志拆分**
+
+- **重复发布同一版本时跳过上传**：投放前在目标机算现有 jar 的 `sha256`，与 `release_record.sha256` 一致就跳过备份与上传（`JarDeployService.artifactUpToDate`）。产物要经两跳传输，74 MB 在窄带链路上要传数分钟，而比对只是一次目标机本地 `sha256sum`。命中时既不备份也不上传——被替换者与替换者是同一个包，备份没有意义。版本未登记摘要、目标机还没有 jar、目标机算不出摘要三种情况一律按「需要上传」处理，**保守方向不能反**；
+- **大文件走流式管道，SFTP 只作回落**：`SshSession.uploadLarge` 优先用 exec 通道 `cat > 文件` 写标准输入，任何失败都回落 `sftpUpload`。SFTP 是带窗口与逐包确认的应用层协议，高延迟链路上吞吐被往返时间压住（实测 74 MB 走 SFTP 需 325 s，约 0.23 MB/s），而管道由 TCP 自己做流控。两条路径写完同样要过上面的 `sha256` 校验，不会静默写入半截文件；
+- **投放日志必须拆「开始 / 完成」两条**：`开始投放 x.jar（74.01 MB）到 …` 与 `投放完成（流式管道，耗时 xx s，x.xx MB/s）`。只写一条「投放 … 到 …」会让上传耗时看起来凭空消失——其余步骤都是**完成时**措辞，唯独这条是**进行时**，按字面排时间线必然把上传耗时算到别的步骤头上；
+- **健康检查通过时同样输出 `systemctl status`**（`DeploySupport.appendServiceDiagnosis` 的 `healthy` 参数）：通过时是「留证」，INFO 级、只保留能证明服务在跑的头部 8 行；失败时是「取证」，ERROR 级、放宽到 30 行，因为要找的原因往往在尾部。只在失败时输出，等于成功时没有任何证据表明服务真的起来了。
 **三、手工回退的版本识别口径**
 
 运维在目标机手工回退时，按可靠性依次使用：
@@ -1419,7 +1517,7 @@ com.lx.deploy.common.constants
 
 手工换包后**平台状态会与机器实际脱节**：`resolveCurrentVersions` 读的是数据库快照，下次发布算出的 `old_version` 会错。因此手工回退后**应在平台补一次「新建部署、重发对应版本」**，把平台状态对齐。
 
-**适用范围**：本节三项能力目前只覆盖 **JAR** 运行时。DOCKER 的版本就是镜像 tag（`docker images` 即可识别），无需额外标识；STATIC 直接覆盖 `static_root`，**既无本地备份也无版本标识**，其回退完全依赖平台重发旧版本——若要支持静态站点的手工回退，需引入「按版本建目录 + `current` 软链接」方案，属独立改造，不在本节范围内。
+**适用范围**：本节三项能力目前只覆盖 **JAR** 运行时。DOCKER 的版本就是镜像 tag（`docker images` 即可识别），无需额外标识；STATIC **有本地备份**（`static_backup_dir` 下 `{目录名}_bak_{时间戳}_{版本号}`，见 §3.2），但**没有落在目标机上的版本标识文件**（无 `VERSION` 等价物），`current_version` 仍来自平台数据库快照；其手工回退就是直接把备份目录 `cp -a` 回 `static_root`，若要让平台识别「目标机当前是哪个版本」，则需引入站点内的版本标识文件，属独立改造，不在本节范围内。
 
 ### 24.8 项目连通性测试（`PROJECT_TEST`）
 
@@ -1442,6 +1540,84 @@ com.lx.deploy.common.constants
 `lds_task.task_type` 是字符串列，新增任务类型**不需要 DDL**。完整字段语义与探活项见
 [项目模块](docs/项目模块.md) §6.7。
 
+### 24.9 部署目标的执行顺序（发布顺序快照）
+
+发布顺序是部署目标配置（`project_environment_target.deploy_order`）的属性，但**执行用的顺序必须随
+`deployment_target` 快照一起固化**，不允许执行时现查。
+
+- 创建部署时把 `binding.deployOrder` 写入 `deployment_target.deploy_order`；执行器
+  （`DeployTaskHandler`）与页面目标明细（`DeploymentService.listTargets`）一律按
+  `deploy_order ASC` 取顺序，`create_time` 仅作历史数据（`deploy_order IS NULL`）的兜底键；
+- **禁止只用 `create_time` 排序**：同一次创建的多条目标在同一秒插入，而 `create_time` 是秒级
+  `DATETIME`，排序键**完全并列**；MySQL 对并列行不保证稳定顺序，实际退化为随机 UUID 主键顺序。
+  现象是「部署目标配了顺序 1，滚动发布却先发顺序 2」，`ROLLING` + `batchSize` 分批时后果最明显
+  （顺序直接等于批次划分）。注意这条更隐蔽的形态：`ORDER BY create_time` 本意是保证顺序，
+  一旦写出显式排序，InnoDB 反而从「插入的物理顺序」切到索引/filesort 顺序，把随机性引了进来；
+- **必须是快照，不得实时关联 `project_environment_target`**：那张表是可变的（可改序、可解绑），
+  回头去读它会让后续的配置变更**倒过来改写已经发生过的历史部署**，与 §24.6「deployment 是一次执行的
+  不可变快照」直接冲突；
+- 该字段只服务于「一次部署内几条目标」的排序，结果集为个位数，**不建索引**；
+- DDL 见 `src/main/resources/db/upgrade-deployment-target-order.sql`，配套只读校验
+  `verify-deployment-target-order.sql`。历史部署的数据**故意不回填**：回填只能依据并列的
+  `create_time`，等于把随机顺序固化成看似可信的数据，反而误导排查；`NULL` 的语义明确表示
+  「该字段上线前的部署未记录顺序」。
+
+### 24.10 回滚产物的来源：构建机为准，本机备份为应急
+
+**平台回滚取产物的正式来源只有一个：构建机的产物持久目录** `{build_artifact_dir}/{项目编码}/{版本号}/`
+（路径由 `release_record.artifact_path` 记录；`build_artifact_dir` 来自**服务器档案按机器配置**，
+不是平台全局配置，DDL 默认 `/opt/light-deploy/artifacts`）。JAR 与 STATIC 皆然，Docker 不在此体系内。
+
+而目标机上的 `exec/bak`（JAR）与 `static-bak`（STATIC）是**应急副本，不是版本仓库**。它有三个消费者，
+必须分清，否则会误判「回滚到底走的哪条路」：
+
+| 消费者 | 谁在用 | 触发时机 | 代码 |
+| --- | --- | --- | --- |
+| 平台自愈 | 平台自动 | 发布中途失败（JAR 完整性校验失败 / STATIC 新内容就位失败）时还原回发布前 | `JarDeployService.restorePreviousJar`、`StaticDeployService.switchDirectory` 的失败分支 |
+| 平台加速 | 平台自动 | **仅 STATIC 回滚**：先查本机备份，命中即 `cp -a` 还原、不过构建机 | `StaticDeployService.restoreFromBackup` |
+| 人工兜底 | 运维上机 | 平台状态与磁盘脱节时手工恢复 | 目标机脚本 `jar-fallback.py`；备份名内嵌版本号可直接辨认 |
+
+几条硬性要求：
+
+- **判定顺序必须是「先确认构建机产物可用 → 再考虑本机快路径」**，不能反过来。
+  `DeploymentRollbackService.historyArtifactAvailable` 要求 JAR/STATIC 的 `buildServerId + artifactPath`
+  都在，缺失即在入口判不可回滚 —— 也就是说**本机备份救不了「产物已被保留策略回收」的版本**，
+  判定反了会出现「按钮可点、执行到一半才失败，机器已经动了半截」；
+- **本机快路径只能用 `cp -a`，禁止 `mv`**：备份必须保留，否则回滚一次后再回滚同一版本就得重新走构建机；
+- 备份命名**必须内嵌平台版本号**（`{名}_bak_{时间戳}_{版本}`），取不到版本时退化为不带版本段——不猜版本；
+- 本机备份**多版本累积且无保留策略**：每次发布新增一份、从不清理，只涨不减。静态 dist 体积大、
+  文件多，涨得比 JAR 快，需人工关注磁盘；
+- **改构建机的 `build_artifact_dir` 是高危操作**：历史 `release_record.artifact_path` 存的是绝对路径，
+  改完会让所有历史版本指向不存在的路径，须先确认没有仍在使用的历史版本；
+- **JAR 不查本机备份回滚是「未实现」而非「不可行」**。该类曾以「exec/bak 命名只有时间戳、
+  无法对应平台版本」为由排除本机路径，该理由随 §24.7 备份名内嵌版本号后已失效。
+  若要补这条快路径，与 STATIC 同构即可，且**不得**因此放宽入口判定。
+
+### 24.11 发布发到哪台机器：只看部署目标绑定，环境不决定机器
+
+发布时选环境，平台只是拿 `(projectId, environmentId)` 去查 `project_environment_target`，**环境本身不持有机器**。完整说明与运维操作手册见 `docs/环境与部署目标.md`。
+
+- **唯一的发布依据是 `project_environment_target`**（项目 × 环境 × 服务器，`status=1` 启用才参与）。
+  `DeploymentService.createAndTrigger` 只查这一张表；环境不提供任何机器，也没有任何兜底逻辑。
+- **`environment.default_server_id` 已于 2026-09-28 移除，不得再加回来**。
+  它原先只有环境的 CRUD 与列表展示读取，发布链路零消费；运维常误以为设了它机器就会被发布到。
+  更根本的问题是**维度错误**：环境是全局共享的（被多个项目引用），而各项目在该环境下绑哪些机器
+  由 `project_environment_target` 决定，「某个环境的默认服务器」这个语义本身不成立。
+  需要表达「主要发这一台」请用 `project_environment_target.is_primary`（项目×环境维度，且真的生效）。
+  存量库可手工清理（不执行也不影响运行，MyBatis-Plus 只按实体字段生成 SELECT 列）：
+  `ALTER TABLE environment DROP COLUMN default_server_id;`
+- **`server.env_tag` 同样不参与**（§6.2）。
+- **策略会二次裁剪**：`SINGLE_TARGET` 只发 1 台（主目标优先，无主目标取 `deploy_order` 最小），
+  绑了 N 台也只发这一台——这是「以为发了全部其实只发一台」的唯一成因，页面与日志都必须把台数显示出来。
+- **`server.status=0`（服务器停用）是失败不是跳过**：被选中的目标里含停用服务器时，
+  `createAndTrigger` 直接抛错「部署目标服务器 X 已停用，不允许发布」。要摘机器应**停用绑定**
+  （`project_environment_target.status=0`），它保留绑定关系且不影响其他项目。
+- **`deployment_target` 不存 host 快照**，只存 `server_id`。改服务器 IP 会让历史部署记录显示的 IP
+  跟着变，事后无法从平台确认「当时发到了哪个 IP」——换 IP 前先摘除该绑定。
+- **不要给每台服务器各建一个环境**：版本链按「项目 + 环境」推断 `old_version`，拆成两个环境会让
+  两条链路互不可见（永远判首次发布、无法回滚），且防重失效（进行中部署的判定同样按项目 + 环境）。
+
+
 ## 25. 内置脚本约定
 
 平台内置在 `src/main/resources/scripts/jar-deploy/` 下的脚本（`jar-init.py` / `jar-update.py` / `jar-fallback.py`）会被投放到目标机并执行，属于**平台资产**：
@@ -1463,3 +1639,94 @@ com.lx.deploy.common.constants
 - 重写 `deploy.conf` 用「剔除旧 `version=` 行 → 追加新行 → 原子替换」，**不使用 `sed -i`**（各发行版 `-i` 参数与转义规则不一致，且版本号可能含特殊字符）；
 - 版本对照**必须来自文件或文件名**（`{workdir}/VERSION` 与备份名的版本段），不允许靠备份文件时间戳反推；旧格式备份名里没有版本段时只报「未登记」并提示用 `sha256sum` 与平台比对。回退到这类备份后，`VERSION` 与 `deploy.conf` 一并写空——磁盘上确实是「未登记版本」，**留着旧值反而与磁盘错位**；
 
+
+## 26. 操作日志约定（AOP + 注解）
+
+「谁在什么时候、通过哪个接口、改了什么」由 `audit_log` 记录，写入方式固定为 **`@OperLog` 注解 +
+`OperLogAspect` 切面**，业务代码不手工写审计日志。
+
+- **只有被 `@OperLog` 标注的方法会留痕**，且只标**会改变状态**的接口（新增 / 修改 / 删除 /
+  发布 / 回滚 / 取消 / 触发构建 / 连通性测试）。查询类接口不标注：量大且没有追溯价值，
+  全量记录只会让操作日志退化成第二份访问日志；
+- **失败同样落库**：一次被拒绝的新增往往比成功的更值得查，因此切面 catch 分支记 `result=0`
+  并带上脱敏后的失败原因。**异常原样向上抛**，切面不吞异常、不改变业务结果；
+- **落库失败只记 ERROR 不抛异常**（§14.3）：审计是旁路，写不进去最多是「这次没留痕」，
+  绝不能反过来让操作本身失败；
+- **敏感字段先脱敏再落库**：请求参数过 `SecretMasker.maskJsonFields`（按
+  password / credential / secret / token / privateKey / encrypted 键名递归替换值），异常消息过
+  `SecretMasker.maskSecret`。服务器、凭据这类**参数整体就是凭据**的接口必须显式写
+  `recordParam = false`——脱敏是兜底，不是把明文收进数据库的理由；
+- **只记 URI 不记查询串**，与访问日志 `RequestTraceFilter` 的口径一致（§14）；
+- **本表只追加**：Service 只暴露分页与详情，不提供新增 / 修改 / 删除接口——审计记录被改写
+  就不再是审计，与其靠约定禁止，不如让接口层根本没有入口；
+- **操作人来自请求头** `X-Operator-Id` / `X-Operator-Name`（前端拦截器统一带出），取不到时记
+  `system`。过渡期没有登录态（§16），接入统一权限中心后改为从认证信息填充，切面读取逻辑不变；
+- **`trace_id` 必须落库**：它与响应头 `X-Request-Id`、日志里的 `%X{requestId}` 是同一个值，
+  是「一条操作日志 → 当次请求全部日志」的唯一线索；
+- 切面用 `@Around` 而不是「`@AfterReturning` + `@AfterThrowing`」：耗时与成败需要统一收口，
+  拆成两个通知要靠 ThreadLocal 传状态，更容易在异常路径上漏写；
+- **绝不注入容器管理的 `ObjectMapper`**：Spring Boot 4 起容器只自动配置 Jackson 3
+  （`tools.jackson.databind.ObjectMapper`），而项目代码引用的是 Jackson 2
+  （`com.fasterxml.jackson.databind.ObjectMapper`），按惯例注入会直接让上下文启动失败。
+  序列化统一走 `SecretMasker.toJson / toTree / parseTree`（内部静态实例），**不再新增注入点**。
+  另一个理由是审计文本不该跟随业务序列化器的全局配置变动——命名策略一改，历史日志的可读性就跟着变。
+  **该静态实例必须注册 `JavaTimeModule`**，否则序列化含 `java.time` 字段的对象会被吞成 null（§26.3）；
+- **返回结果同样过 `SecretMasker.maskJsonFields`**：统一响应里可能带回凭据类字段，
+  只脱敏请求参数等于防线只修了一半；
+- 字段扩展 DDL 见 `src/main/resources/db/upgrade-audit-log-operation.sql`（操作字段）、
+  `upgrade-audit-log-application.sql`（应用系统字段），配套只读校验 `verify-audit-log-operation.sql`，
+  完整设计见 [操作日志模块](docs/操作日志模块.md)。
+
+### 26.3 应用系统字段与审计序列化
+
+`audit_log.application` 回答「这条操作属于哪个系统」，取值来自配置 **`light-deploy.application-name`**
+（默认「轻量部署发布系统」），由 `OperLogAspect` 构造注入并在写日志时统一填充：
+
+- **禁止在 `@OperLog` 注解上逐个写系统名**：它是实例级事实，28 个接口各写一遍，改名时要改 28 处
+  且必然漏，漏改的表现是同一张表里出现两种系统名，比字段缺失更难解释。改名只改配置一行，
+  历史记录不受影响（历史行由 `upgrade-audit-log-application.sql` 回填一次）；
+- 该列**不加索引**：取值在整个实例里高度重复（通常只有一种），索引只会增加写入成本，
+  筛选用的是时间、操作人与模块（已有 `idx_audit_create_time` / `idx_audit_operator`）。
+
+审计链路的序列化**必须显式注册 `JavaTimeModule`**（`SecretMasker` 内的静态 Jackson 2 实例）：
+
+- Jackson 2.21 起 `java.time` 类型默认要求显式处理器，未注册时序列化 `LocalDateTime` 直接抛
+  `InvalidDefinitionException`，而 `toJson / toTree` 会把它吞成 null；
+- 后果是双重的且都**静默**：统一响应 `ApiResponse.timestamp` 序列化失败 → `json_result` 全空
+  （页面显示「无返回结果」）；实体快照 `toTree` 失败 → `changed_fields` 也永远采不到
+  （实体基类 `BaseEntity` 自带 `create_time` / `update_time`）。两者都不会报错，只会「少了东西」；
+- 因此 `ResourceDiffRecorder.snapshot` 在快照为 null 但实体非 null 时必须留一条 WARN（§14.3），
+  排查时优先看 `verify-audit-log-operation.sql` 结果集 4 的「返回结果」列与结果集 6 的空值占比。
+
+### 26.2 字段级变更明细
+
+修改与删除类操作在 `@OperLog` 上额外声明 `resourceType`（Server `server`、部署目标
+`projectEnvironmentTarget`、凭据 `credential`、项目 `project`、环境 `environment`、
+镜像仓库 `registry`、发布 `deployment`、构建 `build`），切面据此在 `changed_fields` 里记下
+「哪个字段从什么改成了什么」：
+
+- **前置快照必须在 `proceed()` 之前取**：业务方法一执行旧值就被覆盖，之后再查只会比出空。
+  这也是把采集放在切面层而不是各 Service 上报的原因——漏写一处就永久少一个模块的明细；
+- **只有「修改 / 删除」声明 `resourceType`**：新增没有旧值可比，比出来只会是满屏
+  「- → 新值」的噪音，因此 insert 一律不声明；
+- **资源定位走 Mapper 索引**：`ResourceDiffRecorder` 用
+  `getBeansOfType(BaseMapper.class)` 扫描，bean 名去掉 `Mapper` 后缀即为资源类型，
+  新增模块无需改动该类。**不要改成构造器注入 `Map<String, BaseMapper<?>>`**——那依赖容器对泛型
+  通配符的可赋值判定，判定失败就是启动崩溃；
+- **两类字段不进明细**：基础字段（`update_time` 每次必变却无业务含义）与敏感字段
+  （凭据、私钥、令牌，判定与请求参数脱敏共用 `SecretMasker.isSensitiveKey`）；
+- **删除操作**查不到变更后记录时，旧值全部以 `(已删除)` 作为新值呈现，回答「删掉的是什么」；
+- 字段名中文映射在前端 `src/constants/auditLog.ts` 的 `fieldLabel()`，三级回落到原字段名——
+  翻译表是展示层职责，放后端会让每次加字段都要改后端。
+
+### 26.1 新建部署的选环境下拉
+
+新建部署弹窗的**环境下拉只列该项目已绑定启用目标的环境**，选项格式为「生产环境（2 台）」：
+
+- 数据源是 `GET /projectEnvironmentTarget/env-options?projectId=`，只返回至少有一台**启用**
+  绑定的环境，台数也只数启用绑定——与发布模块展开目标的过滤条件
+  （`DeploymentService.createAndTrigger` 取 `EnableStatus.ENABLED`）一致，否则会出现
+  「下拉写着 2 台、提交后说没有启用目标」的矛盾；
+- 与搜索区的环境下拉**不共用数据**：搜索要能筛到「任何环境的历史记录」，新建部署只能选
+  「这个项目真能发的环境」，两者语义不同，共用一个列表必然有一边是错的；
+- 台数在 Service 内按环境分组统计，不新增 Mapper 方法：一个项目下的绑定通常只有几台。

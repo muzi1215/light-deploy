@@ -1,7 +1,9 @@
 package com.lx.deploy.server.model.dto;
 
+import com.lx.deploy.common.model.TimeRangeQuery;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 /**
  * 部署服务器请求对象。
@@ -18,8 +20,9 @@ import lombok.Data;
  * @since 2026-08-23 19:56:21
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @Schema(description = "部署服务器请求参数")
-public class ServerDto {
+public class ServerDto extends TimeRangeQuery {
 
     /**
      * 服务器名称。

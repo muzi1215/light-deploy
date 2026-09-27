@@ -168,6 +168,13 @@ export const constantRoutes: AppRouteRecordRaw[] = [
         name: 'RegistryList',
         component: () => import('@/views/registry/index.vue'),
         meta: { title: '镜像仓库' }
+      },
+      {
+        // 操作日志：由后端 AOP 切面写入，页面只提供查询与详情，不提供任何写操作入口
+        path: 'oper-log',
+        name: 'AuditLogList',
+        component: () => import('@/views/auditLog/index.vue'),
+        meta: { title: '操作日志' }
       }
     ]
   }

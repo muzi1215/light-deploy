@@ -146,7 +146,11 @@ CREATE TABLE IF NOT EXISTS environment (
     name VARCHAR(100) NOT NULL COMMENT '环境名称',
     deploy_strategy VARCHAR(30) NOT NULL DEFAULT 'SINGLE_TARGET' COMMENT '部署策略',
     batch_size INT NOT NULL DEFAULT 1 COMMENT '滚动发布批次大小',
-    default_server_id VARCHAR(64) NULL COMMENT '默认目标服务器ID',
+    -- 2026-09-28 移除 default_server_id：环境是全局共享的（被多个项目引用），
+    -- 「某个环境的默认服务器」这个语义不成立。同一语义的正确实现是
+    -- project_environment_target.is_primary（项目×环境维度，且真的影响发布选机器）。
+    -- 存量库清理（可选，不执行也不影响运行，MyBatis-Plus 只按实体字段生成 SELECT 列）：
+    --   ALTER TABLE environment DROP COLUMN default_server_id;
     aiops_enabled TINYINT NOT NULL DEFAULT 0 COMMENT '是否启用AIops联动',
     description VARCHAR(500) NULL COMMENT '环境描述',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -259,6 +263,7 @@ CREATE TABLE IF NOT EXISTS deployment_target (
     id VARCHAR(64) NOT NULL COMMENT '部署目标主键',
     deployment_id VARCHAR(64) NOT NULL COMMENT '部署主任务ID',
     server_id VARCHAR(64) NOT NULL COMMENT '目标服务器ID',
+    deploy_order INT NULL COMMENT '发布顺序快照，创建部署时从部署目标配置固化；历史数据为空',
     status TINYINT NOT NULL DEFAULT 0 COMMENT '目标任务状态：0排队中，1发布中，2成功，3失败，4已取消，5已跳过',
     old_version VARCHAR(100) NULL COMMENT '旧版本',
     new_version VARCHAR(100) NULL COMMENT '新版本',
@@ -297,19 +302,31 @@ CREATE TABLE IF NOT EXISTS aiops_event (
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id VARCHAR(64) NOT NULL COMMENT '审计日志主键',
-    operator_id VARCHAR(100) NULL COMMENT '操作者ID',
-    operator_name VARCHAR(100) NULL COMMENT '操作者名称',
-    action VARCHAR(50) NOT NULL COMMENT '操作动作',
-    resource_type VARCHAR(50) NULL COMMENT '资源类型',
-    resource_id VARCHAR(100) NULL COMMENT '资源ID',
-    request_uri VARCHAR(500) NULL COMMENT '请求地址',
-    request_body JSON NULL COMMENT '请求内容',
+    trace_id VARCHAR(64) NULL COMMENT '请求追踪ID，与响应头 X-Request-Id、日志 %X{requestId} 一致',
+    application VARCHAR(64) NULL COMMENT '应用系统名称，来自配置 light-deploy.application-name',
+    operator_id VARCHAR(100) NULL COMMENT '操作者ID，来自请求头 X-Operator-Id，缺省记 system',
+    operator_name VARCHAR(100) NULL COMMENT '操作者名称，来自请求头 X-Operator-Name，缺省记 system',
+    title VARCHAR(100) NULL COMMENT '操作模块，来自 @OperLog 注解的 title',
+    action VARCHAR(50) NULL COMMENT '操作类型：INSERT/UPDATE/DELETE/EXPORT/IMPORT/EXECUTE/ROLLBACK/CANCEL/OTHER',
+    resource_type VARCHAR(50) NULL COMMENT '资源类型，来自 @OperLog 的 resourceType，空表示不采集变更明细',
+    resource_id VARCHAR(100) NULL COMMENT '资源主键，来自被操作方法的 id 入参',
+    method VARCHAR(200) NULL COMMENT '操作方法，格式 类全名#方法名',
+    request_method VARCHAR(10) NULL COMMENT 'HTTP请求方法：GET/POST/PUT/DELETE',
+    request_uri VARCHAR(500) NULL COMMENT '请求地址（不含查询串，避免泄露敏感参数）',
+    oper_ip VARCHAR(128) NULL COMMENT '操作IP，优先取 X-Forwarded-For 首段',
+    os VARCHAR(64) NULL COMMENT '操作系统，由 User-Agent 粗粒度解析',
+    browser VARCHAR(64) NULL COMMENT '浏览器，由 User-Agent 粗粒度解析',
+    request_body JSON NULL COMMENT '请求参数（敏感键已替换为 ***）',
+    json_result TEXT NULL COMMENT '返回结果，超长截断',
     result TINYINT NOT NULL DEFAULT 1 COMMENT '操作结果：0失败，1成功',
-    error_message VARCHAR(1000) NULL COMMENT '错误信息',
+    error_message VARCHAR(1000) NULL COMMENT '错误信息，成功时为空',
+    cost_time INT NULL COMMENT '操作耗时（毫秒）',
+    changed_fields JSON NULL COMMENT '字段级变更明细 [{field,oldValue,newValue}]，无变更或未声明资源类型时为空',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     is_deleted TINYINT NOT NULL DEFAULT 0 COMMENT '软删除标记：0未删除，1已删除',
     PRIMARY KEY (id),
     KEY idx_audit_operator (operator_id, create_time),
-    KEY idx_audit_resource (resource_type, resource_id)
+    KEY idx_audit_resource (resource_type, resource_id),
+    KEY idx_audit_create_time (create_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='操作审计日志';

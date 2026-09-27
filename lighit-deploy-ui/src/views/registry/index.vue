@@ -15,6 +15,7 @@
             <el-option label="停用" :value="0" />
           </el-select>
         </el-form-item>
+        <CreateTimeRange v-model="timeRange" />
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
@@ -167,6 +168,9 @@ import { listCredentials } from '@/api/credential.ts'
 import type { RegistryVo, RegistryDto, CredentialVo } from '@/api/deployTypes.ts'
 import { CREDENTIAL_TYPE_MAP, GIT_CREDENTIAL_TYPES } from '@/constants/credentialType.ts'
 
+import CreateTimeRange from '@/components/CreateTimeRange.vue'
+import { splitTimeRange } from '@/utils/index.ts'
+
 defineOptions({ name: 'RegistryList' })
 
 // ==================== 搜索 ====================
@@ -176,7 +180,11 @@ const searchForm = reactive({
   status: undefined as number | undefined
 })
 
+/** 创建时间区间：与后端 createTimeBegin / createTimeEnd 对应，未选择时两个参数都不传 */
+const timeRange = ref<string[]>([])
+
 /** 触发查询：页码重置为第一页后重新加载数据 */
+
 function handleSearch() {
   pagination.pageNum = 1
   fetchData()
@@ -187,6 +195,7 @@ function handleReset() {
   searchForm.name = ''
   searchForm.registryUrl = ''
   searchForm.status = undefined
+  timeRange.value = []
   handleSearch()
 }
 
@@ -207,7 +216,8 @@ async function fetchData() {
       pageSize: pagination.pageSize,
       name: searchForm.name || undefined,
       registryUrl: searchForm.registryUrl || undefined,
-      status: searchForm.status
+      status: searchForm.status,
+      ...splitTimeRange(timeRange.value),
     })
     tableData.value = res.data.records
     pagination.total = Number(res.data.total)

@@ -10,6 +10,7 @@ import com.lx.deploy.build.model.BuildArtifact;
 import com.lx.deploy.build.model.dto.BuildDto;
 import com.lx.deploy.build.model.vo.BuildArtifactVo;
 import com.lx.deploy.build.model.vo.BuildVo;
+import com.lx.deploy.common.util.TimeRangeSupport;
 import com.lx.deploy.common.constants.BuildStatus;
 import com.lx.deploy.common.constants.EnableStatus;
 import com.lx.deploy.common.constants.ReleaseStatus;
@@ -190,6 +191,13 @@ public class BuildService extends ServiceImpl<BuildMapper, Build> {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
                     "项目运行时 " + runtimeType.getCode() + " 不支持构建模式 " + buildMode.getCode()
                             + "，该运行时的可选构建模式为：" + runtimeType.supportedBuildModeCodes());
+        }
+        // ARTIFACT_ONLY 不做构建：这类项目的产物由 POST /build/upload 上传登记。
+        // 在创建入口拦住，避免它占住构建机排队、跑到执行阶段才失败，
+        // 而用户真正该做的是去上传页面。
+        if (buildMode == BuildMode.ARTIFACT_ONLY) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "构建模式 ARTIFACT_ONLY（仅发布产物）不发起构建任务，请通过产物上传接口 POST /build/upload 登记版本");
         }
         // 镜像类构建必须绑定镜像仓库，否则构建出的镜像无处推送。
         if (runtimeType == RuntimeType.DOCKER && !StringUtils.hasText(project.getRegistryId())) {
@@ -559,6 +567,8 @@ public class BuildService extends ServiceImpl<BuildMapper, Build> {
                 Build::getProjectId, condition.getProjectId());
         wrapper.eq(StringUtils.hasText(condition.getBuildServerId()),
                 Build::getBuildServerId, condition.getBuildServerId());
+        // 创建时间区间：闭区间，开始晚于截止由 TimeRangeSupport 直接判参数错误。
+        TimeRangeSupport.apply(wrapper, Build::getCreateTime, condition);
         wrapper.orderByDesc(Build::getCreateTime);
         return wrapper;
     }

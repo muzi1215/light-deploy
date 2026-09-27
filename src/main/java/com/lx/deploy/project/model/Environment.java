@@ -65,16 +65,6 @@ public class Environment extends BaseEntity {
     private Integer batchSize;
 
     /**
-     * 默认目标服务器 ID，指向 server 表。
-     *
-     * <p>选填，Service 校验其真实存在；用于项目首次绑定环境时的默认建议目标，
-     * 不替代项目环境目标的显式绑定。</p>
-     */
-    @TableField("default_server_id")
-    @Schema(description = "默认目标服务器ID，选填，存在性校验")
-    private String defaultServerId;
-
-    /**
      * 是否启用 AIops 联动。
      *
      * <p>0 关闭，1 开启，未指定时 Service 填充默认值 0；

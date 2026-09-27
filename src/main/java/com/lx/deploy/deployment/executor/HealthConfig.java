@@ -45,4 +45,16 @@ public class HealthConfig {
     /** 两次探测之间的等待秒数，默认 3；给应用留出启动时间。 */
     @JsonProperty("interval_seconds")
     private Integer intervalSeconds = 3;
+
+    /**
+     * 探测位置：TARGET 在目标机本地探测（默认），PLATFORM 从平台侧探测。
+     *
+     * <p>运维视角：填 TARGET 时平台通过 SSH 登录目标机检查端口是否监听，
+     * 不受云防火墙/安全组影响，也不需要业务端口对平台放行；
+     * 只有想验证「外部客户端能不能访问到」时才填 PLATFORM，
+     * 此时平台必须能直达 {@code server.host:port}，否则会被防火墙拦成假失败。
+     * 不填按 TARGET 处理。</p>
+     */
+    @JsonProperty("probe_from")
+    private String probeFrom = "TARGET";
 }

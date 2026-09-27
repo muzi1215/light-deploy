@@ -64,3 +64,27 @@ export function deleteBuild(id: string): Promise<ApiResponse<void>> {
 export function getBuildArtifacts(id: string): Promise<ApiResponse<BuildArtifactVo[]>> {
   return request({ url: `/build/artifacts/${id}`, method: 'get' })
 }
+
+/**
+ * 上传本地已构建好的产物并登记为一个可发布版本。
+ *
+ * 对应后端 POST /build/upload（multipart 同步接口）。适用「代码不从仓库来、
+ * 产物在本地已经构建好」的项目：项目来源必须为 UPLOAD、构建模式必须为 ARTIFACT_ONLY，
+ * 运行时为 JAR 或 STATIC（DOCKER 的产物是镜像，不支持上传文件）。
+ *
+ * 与其他接口不同，本接口<b>不生成 BUILD 异步任务</b>：上传只是「传文件 + 登记版本」，
+ * 没有分钟级的构建等待，因此同步返回；产物落地成功后立即可用于新建部署。
+ *
+ * @param formData 含 file（必填）、projectId（必填）、versionSeq（选填）的表单数据
+ * @returns 本次上传对应的构建记录（成功态，可通过产物接口查看登记信息）
+ */
+export function uploadArtifact(formData: FormData): Promise<ApiResponse<BuildVo>> {
+  return request({
+    url: '/build/upload',
+    method: 'post',
+    data: formData,
+    // multipart 必须显式声明：axios 对 FormData 会自行推断 Content-Type，
+    // 但显式写出可以杜绝被其它拦截器覆写成 application/json 导致后端收不到文件。
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+}

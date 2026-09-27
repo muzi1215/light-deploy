@@ -13,12 +13,14 @@ import lombok.Data;
  *   <li>DOCKER：container_name、port_mappings、extra_docker_args；</li>
  *   <li>JAR：work_dir、service_name、jvm_options、java_bin、spring_profiles_active、
  *       config_dir、config_file——jar 与配置分离部署，发版为固定目录原地替换；</li>
- *   <li>STATIC：static_root（Nginx 根目录）。</li>
+ *   <li>STATIC：static_root、static_backup_dir——静态目录整体替换，备份留在同级目录。</li>
  * </ul>
  *
- * <p>work_dir 及其配套字段只在 JAR 分支消费，DOCKER / STATIC 的发布路径不受影响。</p>
+ * <p>各运行时的字段互不干扰：JAR 的字段只在 JAR 分支消费，STATIC 的字段只在 STATIC 分支消费，
+ * 三个运行时各自对应独立的发布服务（{@code JarDeployService} / {@code StaticDeployService} /
+ * {@code DockerDeployService}），不会出现「配了 A 影响 B」。</p>
  *
- * <p>字段缺失时由 {@link DeployTaskHandler} 给出按项目编码推导的默认值，
+ * <p>字段缺失时由各发布服务给出按项目编码推导的默认值，
  * 保证「不填也能发布」——中小企业的第一诉求是把东西发上去，不是先配一堆参数。</p>
  *
  * <p>JSON 键为 snake_case，每个字段用 {@link JsonProperty} 显式绑定。</p>
@@ -32,7 +34,7 @@ public class DeployConfig {
     /**
      * 应用在目标机上的部署根目录，JAR 运行时使用。
      *
-     * <p>留空时由 {@link DeployTaskHandler} 推导为「目标机部署根目录 + /apps」：
+     * <p>留空时由发布服务推导为「目标机部署根目录 + /apps」：
      * 目标机部署根目录在服务器页面按机器配置，因此这里不再写任何默认绝对路径。</p>
      */
     @JsonProperty("deploy_base")
@@ -84,7 +86,25 @@ public class DeployConfig {
     @JsonProperty("spring_profiles_active")
     private String springProfilesActive;
 
-    /** 静态产物发布根目录（Nginx root），默认 /usr/share/nginx/html/项目编码。 */
+    /**
+     * 静态产物发布根目录（Nginx root），默认 /usr/share/nginx/html/项目编码。
+     *
+     * <p>这里填的就是运维在 nginx 里已经配好的那个目录，平台<b>不会</b>要求为了发布去改 nginx 配置。</p>
+     */
     @JsonProperty("static_root")
     private String staticRoot;
+
+    /**
+     * 静态产物备份目录，默认 {@code static_root} 父目录下的 {@code .static-bak}。
+     *
+     * <p>发布时旧版本目录被整目录移到这里，命名 {@code {目录名}_bak_{时间戳}_{版本号}}，
+     * 回滚优先从这里还原，不必回头找构建机。</p>
+     *
+     * <p>两个约束：其一，必须与 {@code static_root} 处在同一分区，否则目录级 mv 会退化成
+     * 跨分区复制，切换期间网站处于半新半旧状态（发布时会检测并告警）；
+     * 其二，建议配到 web 根之外——默认位置在 nginx 根的同级目录，
+     * 旧版本里的 source map 等文件理论上可以被外部请求到。</p>
+     */
+    @JsonProperty("static_backup_dir")
+    private String staticBackupDir;
 }

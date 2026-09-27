@@ -1,7 +1,9 @@
 package com.lx.deploy.task.model.dto;
 
+import com.lx.deploy.common.model.TimeRangeQuery;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.time.LocalDateTime;
 
@@ -20,8 +22,9 @@ import java.time.LocalDateTime;
  * @since 2026-09-03 02:01:00
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @Schema(description = "异步任务请求参数")
-public class TaskDto {
+public class TaskDto extends TimeRangeQuery {
 
     /**
      * 任务编号。

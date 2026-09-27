@@ -1,7 +1,9 @@
 package com.lx.deploy.project.model.dto;
 
+import com.lx.deploy.common.model.TimeRangeQuery;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 /**
  * 部署环境请求对象。
@@ -10,15 +12,19 @@ import lombok.Data;
  * 主键、审计字段和软删除字段由服务端维护，调用方不能通过请求体修改。</p>
  *
  * <p><b>字段维护边界：</b>code/name 新增必填；deployStrategy/batchSize/aiopsEnabled
- * 选填，未传时由 Service 填充默认值；defaultServerId 选填但必须指向真实存在的服务器。
- * 修改请求同样要求 code 必填（唯一性预检排除自身）。</p>
+ * 选填，未传时由 Service 填充默认值。修改请求同样要求 code 必填（唯一性预检排除自身）。</p>
+ *
+ * <p><b>本类不接收任何服务器字段，这是刻意的：</b>环境是全局共享的，一个环境被多个项目引用，
+ * 而各项目在该环境下绑定哪些机器由 project_environment_target 决定，环境层面给不出有意义的
+ * 「默认服务器」（详见 AGENTS.md §24.11）。要表达「主要发这一台」请用部署目标的 is_primary。</p>
  *
  * @author lx
  * @since 2026-09-02 02:05:03
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @Schema(description = "部署环境请求参数")
-public class EnvironmentDto {
+public class EnvironmentDto extends TimeRangeQuery {
 
     /**
      * 环境编码。
@@ -53,15 +59,6 @@ public class EnvironmentDto {
      */
     @Schema(description = "滚动发布批次大小，最小1，默认1")
     private Integer batchSize;
-
-    /**
-     * 默认目标服务器 ID。
-     *
-     * <p>选填，传入时 Service 校验服务器真实存在，不存在返回 DATA_NOT_FOUND；
-     * 查询时等值过滤。</p>
-     */
-    @Schema(description = "默认目标服务器ID，选填，存在性校验")
-    private String defaultServerId;
 
     /**
      * 是否启用 AIops 联动。

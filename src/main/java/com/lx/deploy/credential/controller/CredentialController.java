@@ -1,5 +1,7 @@
 package com.lx.deploy.credential.controller;
 
+import com.lx.deploy.common.annotation.OperLog;
+import com.lx.deploy.common.enums.audit.BusinessType;
 import com.lx.deploy.credential.model.dto.CredentialDto;
 import com.lx.deploy.credential.model.vo.CredentialVo;
 import com.lx.deploy.credential.service.CredentialService;
@@ -79,6 +81,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @OperLog(title = "凭据管理", businessType = BusinessType.INSERT, recordParam = false)
     @PostMapping("/create")
     public ApiResponse<CredentialVo> create(@Valid @RequestBody CredentialDto dto,
                                            HttpServletRequest request) {
@@ -93,6 +96,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @OperLog(title = "凭据管理", businessType = BusinessType.UPDATE, recordParam = false, resourceType = "credential")
     @PutMapping("/update/{id}")
     public ApiResponse<CredentialVo> update(@PathVariable String id,
                                            @Valid @RequestBody CredentialDto dto,
@@ -107,6 +111,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @OperLog(title = "凭据管理", businessType = BusinessType.DELETE, resourceType = "credential")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);

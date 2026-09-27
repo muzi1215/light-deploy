@@ -11,8 +11,10 @@ import java.time.LocalDateTime;
  * <p>VO 只用于 Controller 出参，由 EnvironmentService 从数据库实体转换而来。
  * 敏感字段不会生成到 VO，避免密码、密文、Token 或私钥被返回给调用方。</p>
  *
- * <p>前端消费方式：deployStrategy/aiopsEnabled 渲染为标签/开关，
- * defaultServerId 需前端通过服务器列表接口做 ID→名称映射展示。</p>
+ * <p>前端消费方式：deployStrategy/aiopsEnabled 渲染为标签/开关。</p>
+ *
+ * <p><b>本类不含服务器字段，这是刻意的：</b>环境不持有机器，环境在各项目下绑定哪些机器
+ * 由 project_environment_target 决定（详见 AGENTS.md §24.11）。</p>
  *
  * @author lx
  * @since 2026-09-02 02:05:03
@@ -78,15 +80,6 @@ public class EnvironmentVo {
      */
     @Schema(description = "滚动发布批次大小")
     private Integer batchSize;
-
-    /**
-     * 默认目标服务器 ID。
-     *
-     * <p>指向 server 表的外键引用；只存 ID 不存名称，
-     * 前端需调用服务器列表接口做本地名称映射。</p>
-     */
-    @Schema(description = "默认目标服务器ID")
-    private String defaultServerId;
 
     /**
      * 是否启用 AIops 联动。

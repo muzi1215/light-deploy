@@ -1,6 +1,9 @@
 package com.lx.deploy.project.controller;
 
+import com.lx.deploy.common.annotation.OperLog;
+import com.lx.deploy.common.enums.audit.BusinessType;
 import com.lx.deploy.project.model.dto.ProjectEnvironmentTargetDto;
+import com.lx.deploy.project.model.vo.EnvironmentOptionVo;
 import com.lx.deploy.project.model.vo.ProjectEnvironmentTargetVo;
 import com.lx.deploy.project.service.ProjectEnvironmentTargetService;
 import com.lx.deploy.common.model.PageQuery;
@@ -61,6 +64,23 @@ public class ProjectEnvironmentTargetController {
     }
 
     /**
+     * 查询指定项目已绑定启用目标的环境选项。
+     *
+     * <p>与 {@code /list} 的区别：本接口面向「新建部署」的选环境下拉，只返回能真正发布的环境，
+     * 并带回启用目标台数（页面渲染为「生产环境（2 台）」）。项目没有启用绑定时返回空列表，
+     * 而不是全量环境——全量环境里绝大多数与当前项目无关，选了只会在提交阶段报错。</p>
+     *
+     * @param projectId 项目主键，必填
+     * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
+     * @return 环境选项列表；projectId 为空时返回空列表
+     */
+    @GetMapping("/env-options")
+    public ApiResponse<List<EnvironmentOptionVo>> envOptions(@RequestParam String projectId,
+                                                             HttpServletRequest request) {
+        return ApiResponse.success(service.listEnvironmentOptions(projectId), requestId(request));
+    }
+
+    /**
      * 根据主键查询单条项目环境部署目标。
      *
      * @param id 数据主键
@@ -79,6 +99,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @OperLog(title = "部署目标", businessType = BusinessType.INSERT)
     @PostMapping("/create")
     public ApiResponse<ProjectEnvironmentTargetVo> create(@Valid @RequestBody ProjectEnvironmentTargetDto dto,
                                            HttpServletRequest request) {
@@ -93,6 +114,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @OperLog(title = "部署目标", businessType = BusinessType.UPDATE, resourceType = "projectEnvironmentTarget")
     @PutMapping("/update/{id}")
     public ApiResponse<ProjectEnvironmentTargetVo> update(@PathVariable String id,
                                            @Valid @RequestBody ProjectEnvironmentTargetDto dto,
@@ -107,6 +129,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @OperLog(title = "部署目标", businessType = BusinessType.DELETE, resourceType = "projectEnvironmentTarget")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);

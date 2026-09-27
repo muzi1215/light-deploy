@@ -1,5 +1,7 @@
 package com.lx.deploy.project.controller;
 
+import com.lx.deploy.common.annotation.OperLog;
+import com.lx.deploy.common.enums.audit.BusinessType;
 import com.lx.deploy.project.model.dto.ProjectDto;
 import com.lx.deploy.project.model.vo.ProjectVo;
 import com.lx.deploy.project.service.ProjectService;
@@ -80,6 +82,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @OperLog(title = "项目管理", businessType = BusinessType.INSERT)
     @PostMapping("/create")
     public ApiResponse<ProjectVo> create(@Valid @RequestBody ProjectDto dto,
                                            HttpServletRequest request) {
@@ -94,6 +97,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @OperLog(title = "项目管理", businessType = BusinessType.UPDATE, resourceType = "project")
     @PutMapping("/update/{id}")
     public ApiResponse<ProjectVo> update(@PathVariable String id,
                                            @Valid @RequestBody ProjectDto dto,
@@ -112,6 +116,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 新建的异步任务（状态为 0 排队中）
      */
+    @OperLog(title = "项目管理", businessType = BusinessType.EXECUTE)
     @PostMapping("/test/{id}")
     public ApiResponse<TaskVo> test(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.submitConnectivityTest(id), requestId(request));
@@ -124,6 +129,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @OperLog(title = "项目管理", businessType = BusinessType.DELETE, resourceType = "project")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);

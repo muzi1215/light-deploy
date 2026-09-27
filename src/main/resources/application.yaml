@@ -5,6 +5,12 @@ server:
     context-path: /deploy
 
 spring:
+  servlet:
+    # 产物上传上限：前端 dist 打包后常见几十 MB，Spring Boot 默认单文件 1MB 会直接拒绝。
+    # 平台自身是内网运维系统，上限放宽到 500MB；真正的边界由网关与磁盘空间决定。
+    multipart:
+      max-file-size: 500MB
+      max-request-size: 500MB
   application:
     # 应用名称，同时用于 Spring 运行日志和监控识别。
     name: light-deploy
@@ -72,6 +78,12 @@ logging:
     com.lx.deploy: info
 
 light-deploy:
+  # 操作日志里「应用系统」列的取值（见 AGENTS.md §26.3）。
+  # 一个平台实例只对应一个系统名，属于系统级事实而非接口级事实，
+  # 因此配在这里由切面统一写入 audit_log.application，而不是在每个 @OperLog 注解上重复写一遍
+  # （28 个接口各写一次，改名时要改 28 处，且必然漏）。改名只改这一行即可，历史记录不受影响。
+  application-name: 轻量部署发布系统
+
   # 访问日志参数（见 AGENTS.md §14.2）。
   access-log:
     # 静默路径前缀（不含 server.servlet.context-path 的 /deploy）：

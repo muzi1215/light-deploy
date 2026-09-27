@@ -1,5 +1,7 @@
 package com.lx.deploy.deployment.controller;
 
+import com.lx.deploy.common.annotation.OperLog;
+import com.lx.deploy.common.enums.audit.BusinessType;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
@@ -106,6 +108,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 刚创建并触发的部署 VO（含 taskId / taskNo）
      */
+    @OperLog(title = "发布管理", businessType = BusinessType.EXECUTE)
     @PostMapping("/create")
     public ApiResponse<DeploymentVo> create(@Valid @RequestBody DeploymentDto dto, HttpServletRequest request) {
         return ApiResponse.success(service.createAndTrigger(dto), requestId(request));
@@ -119,6 +122,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 修改后的部署 VO
      */
+    @OperLog(title = "发布管理", businessType = BusinessType.UPDATE, resourceType = "deployment")
     @PutMapping("/update/{id}")
     public ApiResponse<DeploymentVo> update(@PathVariable String id,
                                             @RequestBody DeploymentDto dto,
@@ -133,6 +137,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 进入回滚中的部署 VO（含新的 taskId / taskNo）
      */
+    @OperLog(title = "发布管理", businessType = BusinessType.ROLLBACK)
     @PutMapping("/rollback/{id}")
     public ApiResponse<DeploymentVo> rollback(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.rollback(id), requestId(request));
@@ -160,6 +165,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 取消后的部署 VO
      */
+    @OperLog(title = "发布管理", businessType = BusinessType.CANCEL)
     @PutMapping("/cancel/{id}")
     public ApiResponse<DeploymentVo> cancel(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.cancel(id), requestId(request));
@@ -172,6 +178,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 不包含业务数据的统一成功响应
      */
+    @OperLog(title = "发布管理", businessType = BusinessType.DELETE, resourceType = "deployment")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);

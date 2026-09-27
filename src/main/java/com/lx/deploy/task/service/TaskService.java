@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.lx.deploy.common.util.TimeRangeSupport;
 import com.lx.deploy.common.enums.task.TaskType;
 import com.lx.deploy.common.constants.TaskStatus;
 import com.lx.deploy.common.exception.DeployException;
@@ -447,6 +448,8 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
         wrapper.eq(condition.getStatus() != null,
                 Task::getStatus, condition.getStatus());
         // 默认按创建时间倒序返回，优先展示最近提交的任务。
+        // 创建时间区间：闭区间，开始晚于截止由 TimeRangeSupport 直接判参数错误。
+        TimeRangeSupport.apply(wrapper, Task::getCreateTime, condition);
         wrapper.orderByDesc(Task::getCreateTime);
         return wrapper;
     }

@@ -1,5 +1,7 @@
 package com.lx.deploy.registry.controller;
 
+import com.lx.deploy.common.annotation.OperLog;
+import com.lx.deploy.common.enums.audit.BusinessType;
 import com.lx.deploy.registry.model.dto.RegistryDto;
 import com.lx.deploy.registry.model.vo.RegistryVo;
 import com.lx.deploy.registry.service.RegistryService;
@@ -79,6 +81,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @OperLog(title = "镜像仓库", businessType = BusinessType.INSERT)
     @PostMapping("/create")
     public ApiResponse<RegistryVo> create(@Valid @RequestBody RegistryDto dto,
                                            HttpServletRequest request) {
@@ -93,6 +96,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @OperLog(title = "镜像仓库", businessType = BusinessType.UPDATE, resourceType = "registry")
     @PutMapping("/update/{id}")
     public ApiResponse<RegistryVo> update(@PathVariable String id,
                                            @Valid @RequestBody RegistryDto dto,
@@ -107,6 +111,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @OperLog(title = "镜像仓库", businessType = BusinessType.DELETE, resourceType = "registry")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);

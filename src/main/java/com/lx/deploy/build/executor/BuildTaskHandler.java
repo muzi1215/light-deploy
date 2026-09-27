@@ -26,7 +26,7 @@ import com.lx.deploy.project.model.Project;
 import com.lx.deploy.registry.mapper.RegistryMapper;
 import com.lx.deploy.registry.model.Registry;
 import com.lx.deploy.release.model.ReleaseRecord;
-import com.lx.deploy.release.service.ReleaseRetentionService;
+import com.lx.deploy.release.service.ReleaseRetentionExecutor;
 import com.lx.deploy.server.mapper.ServerMapper;
 import com.lx.deploy.server.model.Server;
 import com.lx.deploy.ssh.SshCommandResult;
@@ -221,8 +221,8 @@ public class BuildTaskHandler implements TaskHandler {
     /** JSON 解析器：解析 build_config_json。 */
     private final ObjectMapper objectMapper;
 
-    /** 发布版本保留策略：构建收尾时按项目保留数回收超额的历史版本。 */
-    private final ReleaseRetentionService releaseRetentionService;
+    /** 发布版本保留策略执行器：构建收尾时按项目保留数回收超额的历史版本。 */
+    private final ReleaseRetentionExecutor retentionExecutor;
 
     /**
      * 创建构建任务处理器。
@@ -240,7 +240,7 @@ public class BuildTaskHandler implements TaskHandler {
      * @param sshSessionFactory   SSH 会话工厂
      * @param taskService         任务服务
      * @param taskLogService      任务日志服务
-     * @param releaseRetentionService 发布版本保留策略
+     * @param retentionExecutor 发布版本保留策略执行器
      */
     public BuildTaskHandler(BuildMapper buildMapper,
                             BuildService buildService,
@@ -252,7 +252,7 @@ public class BuildTaskHandler implements TaskHandler {
                             SshSessionFactory sshSessionFactory,
                             TaskService taskService,
                             TaskLogService taskLogService,
-                            ReleaseRetentionService releaseRetentionService) {
+                            ReleaseRetentionExecutor retentionExecutor) {
         this.buildMapper = buildMapper;
         this.buildService = buildService;
         this.projectMapper = projectMapper;
@@ -264,7 +264,7 @@ public class BuildTaskHandler implements TaskHandler {
         this.taskService = taskService;
         this.taskLogService = taskLogService;
         this.objectMapper = new ObjectMapper();
-        this.releaseRetentionService = releaseRetentionService;
+        this.retentionExecutor = retentionExecutor;
     }
 
     /**
@@ -327,10 +327,11 @@ public class BuildTaskHandler implements TaskHandler {
         if (runtimeType == null || buildMode == null) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR, "项目的运行时或构建模式非法");
         }
-        // v1 不含 ARTIFACT_ONLY：该模式需要已有产物，不在本链路范围内。
+        // ARTIFACT_ONLY 不做任何构建：产物由调用方通过 POST /build/upload 上传登记。
+        // 走到这里说明有人对这类项目误发起了构建任务，与其在执行阶段失败，不如在入口说清正确入口。
         if (buildMode == BuildMode.ARTIFACT_ONLY) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
-                    "构建模式 ARTIFACT_ONLY（仅发布产物）v1 暂未实现，请改用 SCRIPT_DEPLOY / PROJECT_DOCKERFILE / LAYERED_DOCKER");
+                    "构建模式 ARTIFACT_ONLY（仅发布产物）不发起构建任务，请通过产物上传接口 POST /build/upload 登记版本");
         }
         // 工作区与产物目录取自构建机档案：目录属于具体机器而不是平台全局配置，
         // 由服务器页面维护。未配置时给出可操作的提示，不在代码里猜一个默认路径兜底。
@@ -1582,8 +1583,10 @@ public class BuildTaskHandler implements TaskHandler {
      * 运维只能上机手工找目录。回收<b>不是</b>构建成功的必要条件——任何一步失败都只记日志，
      * 不影响本次构建结论，否则会把「磁盘清理不顺」误报成「构建失败」。</p>
      *
-     * <p>回收清单由 {@link ReleaseRetentionService} 给出，其中已排除最近部署引用过的版本，
-     * 因此不会把某台机器正跑着的版本清掉（那会让回滚与新发同时断掉）。</p>
+     * <p>回收清单由 {@link com.lx.deploy.release.service.ReleaseRetentionService} 给出，
+     * 其中已排除最近部署引用过的版本，因此不会把某台机器正跑着的版本清掉
+     * （那会让回滚与新发同时断掉）。具体执行已下沉到 {@link ReleaseRetentionExecutor}，
+     * 产物上传链路复用同一份实现。</p>
      *
      * @param task        当前任务，用于写回收日志
      * @param project     项目，提供编码与保留版本数
@@ -1591,98 +1594,20 @@ public class BuildTaskHandler implements TaskHandler {
      * @param session     本次构建的已认证会话
      */
     private void applyRetentionPolicy(Task task, Project project, Server buildServer, SshSession session) {
-        List<ReleaseRetentionService.RecycleItem> items;
+        // 回收实现放在 ReleaseRetentionExecutor：产物上传链路也要走同一套判断，
+        // 「删哪些、能不能删」在全局必须只有一处定义。
+        ReleaseRetentionExecutor.RetentionReport report;
         try {
-            items = releaseRetentionService.plan(project);
+            report = retentionExecutor.execute(project, buildServer, session);
         } catch (Exception e) {
-            log.error("计算版本保留回收计划失败（不影响构建结论），projectId={}", project.getId(), e);
-            appendLog(task, STAGE_FINISH, TaskLogLevel.ERROR,
-                    "版本保留策略计算失败（不影响本次构建）：" + safeMessage(e));
-            return;
-        }
-        if (items.isEmpty()) {
-            return;
-        }
-        List<String> recycled = new ArrayList<>();
-        // 历史版本可能产自另一台构建机，按需开会话；本次构建的会话由外层管理，不在这里关闭。
-        Map<String, SshSession> opened = new HashMap<>();
-        try {
-            for (ReleaseRetentionService.RecycleItem item : items) {
-                if (!StringUtils.hasText(item.dir())) {
-                    // 目录无法确定（构建机缺失 / 未配产物目录 / 版本号不安全）：只废弃记录，磁盘不猜路径删。
-                    recycled.add(item.releaseId());
-                    continue;
-                }
-                SshSession target = resolveSession(item.serverId(), buildServer, session, opened);
-                if (target == null) {
-                    appendLog(task, STAGE_FINISH, TaskLogLevel.ERROR,
-                            "回收版本产物失败（保留记录）：" + item.version() + " - 无法连接产物所在构建机");
-                    continue;
-                }
-                SshCommandResult result = target.exec("rm -rf " + shellQuote(item.dir()));
-                if (result.success()) {
-                    recycled.add(item.releaseId());
-                    appendLog(task, STAGE_FINISH, TaskLogLevel.INFO,
-                            "已回收超额版本产物：" + item.version() + "（" + item.dir() + "）");
-                } else {
-                    appendLog(task, STAGE_FINISH, TaskLogLevel.ERROR,
-                            "回收版本产物失败（保留记录）：" + item.version() + " - " + firstLine(result.stderr()));
-                }
-            }
-        } catch (Exception e) {
-            log.error("回收超额版本产物异常（不影响构建结论），projectId={}", project.getId(), e);
+            // 理论上不该发生（执行器内部已吞异常），这里兜住是为了「磁盘清理不顺」绝不影响构建结论。
+            log.error("版本回收执行异常（不影响构建结论），projectId={}", project.getId(), e);
             appendLog(task, STAGE_FINISH, TaskLogLevel.ERROR,
                     "版本回收异常（不影响本次构建）：" + safeMessage(e));
-        } finally {
-            for (SshSession extra : opened.values()) {
-                try {
-                    extra.close();
-                } catch (Exception ignore) {
-                    // 关闭失败不影响结论，只留一条告警日志。
-                    log.warn("关闭回收用 SSH 会话失败");
-                }
-            }
-        }
-        if (recycled.isEmpty()) {
             return;
         }
-        int updated = releaseRetentionService.markDeprecated(recycled);
-        appendLog(task, STAGE_FINISH, TaskLogLevel.INFO,
-                "已按保留版本数 " + project.getRetainReleaseCount() + " 回收 " + updated + " 个历史版本");
-    }
-
-    /**
-     * 取回收目标所在的 SSH 会话：本次构建机直接复用，其它机器按需新开并缓存。
-     *
-     * @param serverId    产物所在构建机主键
-     * @param buildServer 本次构建机
-     * @param session     本次构建会话
-     * @param opened      已额外打开的会话缓存
-     * @return 可用会话；连接不上时返回 null
-     */
-    private SshSession resolveSession(String serverId, Server buildServer, SshSession session,
-                                      Map<String, SshSession> opened) {
-        if (!StringUtils.hasText(serverId)) {
-            return null;
-        }
-        if (serverId.equals(buildServer.getId())) {
-            return session;
-        }
-        SshSession cached = opened.get(serverId);
-        if (cached != null) {
-            return cached;
-        }
-        Server server = serverMapper.selectById(serverId);
-        if (server == null) {
-            return null;
-        }
-        try {
-            SshSession extra = sshSessionFactory.open(server);
-            opened.put(serverId, extra);
-            return extra;
-        } catch (Exception e) {
-            log.warn("连接产物所在构建机失败，serverId={}", serverId, e);
-            return null;
+        for (String message : report.messages()) {
+            appendLog(task, STAGE_FINISH, message.startsWith("已") ? TaskLogLevel.INFO : TaskLogLevel.ERROR, message);
         }
     }
 

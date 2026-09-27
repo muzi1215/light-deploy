@@ -3,6 +3,7 @@ package com.lx.deploy.project.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.lx.deploy.common.util.TimeRangeSupport;
 import com.lx.deploy.common.enums.project.DeployStrategy;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
@@ -14,8 +15,6 @@ import com.lx.deploy.project.model.Environment;
 import com.lx.deploy.project.model.ProjectEnvironmentTarget;
 import com.lx.deploy.project.model.dto.EnvironmentDto;
 import com.lx.deploy.project.model.vo.EnvironmentVo;
-import com.lx.deploy.server.mapper.ServerMapper;
-import com.lx.deploy.server.model.Server;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -42,19 +41,13 @@ public class EnvironmentService extends ServiceImpl<EnvironmentMapper, Environme
     /** 项目环境部署目标 Mapper，用于删除环境前检查引用关系，避免 Service 之间循环依赖。 */
     private final ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper;
 
-    /** 服务器 Mapper，用于校验默认目标服务器存在。 */
-    private final ServerMapper serverMapper;
-
     /**
      * 注入跨模块 Mapper。
      *
      * @param projectEnvironmentTargetMapper 项目环境部署目标 Mapper
-     * @param serverMapper 服务器 Mapper
      */
-    public EnvironmentService(ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper,
-                              ServerMapper serverMapper) {
+    public EnvironmentService(ProjectEnvironmentTargetMapper projectEnvironmentTargetMapper) {
         this.projectEnvironmentTargetMapper = projectEnvironmentTargetMapper;
-        this.serverMapper = serverMapper;
     }
 
     /**
@@ -96,7 +89,7 @@ public class EnvironmentService extends ServiceImpl<EnvironmentMapper, Environme
     /**
      * 根据请求 DTO 新增一条部署环境。
      *
-     * <p>新增前校验编码格式与唯一性、部署策略取值、批次大小和默认服务器存在性，
+     * <p>新增前校验编码格式与唯一性、部署策略取值和批次大小，
      * 并为部署策略和 AIops 联动填充默认值。</p>
      *
      * @param dto 待新增的请求参数，不包含主键和审计字段
@@ -199,11 +192,6 @@ public class EnvironmentService extends ServiceImpl<EnvironmentMapper, Environme
                 && dto.getAiopsEnabled() != 0 && dto.getAiopsEnabled() != 1) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR, "AIops 联动开关只能为 0 或 1");
         }
-        // 默认目标服务器可选，传入时必须真实存在，避免环境指向无效服务器。
-        if (StringUtils.hasText(dto.getDefaultServerId())
-                && serverMapper.selectById(dto.getDefaultServerId()) == null) {
-            throw new DeployException(ResponseCode.DATA_NOT_FOUND, "默认目标服务器不存在");
-        }
         // 编码唯一性检查，修改场景排除当前记录自身。
         LambdaQueryWrapper<Environment> codeWrapper = new LambdaQueryWrapper<Environment>()
                 .eq(Environment::getCode, dto.getCode());
@@ -298,13 +286,12 @@ public class EnvironmentService extends ServiceImpl<EnvironmentMapper, Environme
         // 部署策略：非空字符串使用等值条件查询。
         wrapper.eq(StringUtils.hasText(condition.getDeployStrategy()),
                 Environment::getDeployStrategy, condition.getDeployStrategy());
-        // 默认目标服务器ID：非空字符串使用等值条件查询。
-        wrapper.eq(StringUtils.hasText(condition.getDefaultServerId()),
-                Environment::getDefaultServerId, condition.getDefaultServerId());
         // 是否启用AIops联动：字段非空时使用等值条件查询。
         wrapper.eq(condition.getAiopsEnabled() != null,
                 Environment::getAiopsEnabled, condition.getAiopsEnabled());
         // 默认按创建时间倒序返回，优先展示最近新增的数据。
+        // 创建时间区间：闭区间，开始晚于截止由 TimeRangeSupport 直接判参数错误。
+        TimeRangeSupport.apply(wrapper, Environment::getCreateTime, condition);
         wrapper.orderByDesc(Environment::getCreateTime);
         return wrapper;
     }

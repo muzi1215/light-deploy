@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lx.deploy.common.util.TimeRangeSupport;
 import com.lx.deploy.common.constants.EnableStatus;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
@@ -17,6 +18,7 @@ import com.lx.deploy.project.model.Environment;
 import com.lx.deploy.project.model.Project;
 import com.lx.deploy.project.model.ProjectEnvironmentTarget;
 import com.lx.deploy.project.model.dto.ProjectEnvironmentTargetDto;
+import com.lx.deploy.project.model.vo.EnvironmentOptionVo;
 import com.lx.deploy.project.model.vo.ProjectEnvironmentTargetVo;
 import com.lx.deploy.server.mapper.ServerMapper;
 import com.lx.deploy.server.model.Server;
@@ -25,7 +27,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 项目环境部署目标服务。
@@ -92,6 +97,59 @@ public class ProjectEnvironmentTargetService
     public List<ProjectEnvironmentTargetVo> listByCondition(ProjectEnvironmentTargetDto condition) {
         // 查询结果在 Service 层统一脱敏并转换为 VO。
         return list(buildQueryWrapper(condition)).stream().map(this::toVo).toList();
+    }
+
+    /**
+     * 查询指定项目已绑定启用目标的环境选项，供「新建部署」这类选环境的下拉使用。
+     *
+     * <p>只返回至少绑定了一台<b>启用</b>目标的环境，并带回该环境下的启用目标台数。
+     * 过滤条件与发布模块展开目标时完全一致（{@code EnableStatus.ENABLED}），
+     * 避免下拉列出一个「选了必然提交失败」的环境。</p>
+     *
+     * <p>台数在内存里按环境分组统计，不走 SQL 聚合：一个项目下的绑定通常只有几台，
+     * 一次查询 + 分组比 group-by 再关联环境表更好读，也避免为这个场景新增 Mapper 方法。</p>
+     *
+     * @param projectId 项目主键；为空时返回空列表而不是全量环境
+     * @return 环境选项列表，按环境创建时间升序；项目没有任何启用绑定时为空列表
+     */
+    public List<EnvironmentOptionVo> listEnvironmentOptions(String projectId) {
+        if (!StringUtils.hasText(projectId)) {
+            return List.of();
+        }
+        List<ProjectEnvironmentTarget> bindings = list(new LambdaQueryWrapper<ProjectEnvironmentTarget>()
+                .eq(ProjectEnvironmentTarget::getProjectId, projectId)
+                .eq(ProjectEnvironmentTarget::getStatus, EnableStatus.ENABLED));
+        if (bindings.isEmpty()) {
+            return List.of();
+        }
+        // 按环境分组统计台数：停用的绑定已在上面的查询条件里排除。
+        Map<String, Long> targetCounts = bindings.stream()
+                .collect(Collectors.groupingBy(ProjectEnvironmentTarget::getEnvironmentId, Collectors.counting()));
+        List<Environment> environments = environmentMapper.selectList(
+                new LambdaQueryWrapper<Environment>().in(Environment::getId, targetCounts.keySet()));
+        return environments.stream()
+                // 环境列表页默认按创建时间倒序，这里升序即可与「先建的环境在前面」的直觉一致。
+                .sorted(Comparator.comparing(Environment::getCreateTime).thenComparing(Environment::getCode))
+                .map(env -> toEnvironmentOption(env, targetCounts.get(env.getId())))
+                .toList();
+    }
+
+    /**
+     * 将环境档案与台数组装成下拉选项。
+     *
+     * @param environment 环境档案实体
+     * @param targetCount 该项目在该环境下的启用目标台数
+     * @return 供页面渲染的下拉选项
+     */
+    private EnvironmentOptionVo toEnvironmentOption(Environment environment, Long targetCount) {
+        EnvironmentOptionVo vo = new EnvironmentOptionVo();
+        vo.setId(environment.getId());
+        vo.setCode(environment.getCode());
+        vo.setName(environment.getName());
+        vo.setTargetCount(targetCount == null ? 0 : targetCount.intValue());
+        vo.setDeployStrategy(environment.getDeployStrategy());
+        vo.setBatchSize(environment.getBatchSize());
+        return vo;
     }
 
     /**
@@ -356,6 +414,8 @@ public class ProjectEnvironmentTargetService
         wrapper.eq(condition.getStatus() != null,
                 ProjectEnvironmentTarget::getStatus, condition.getStatus());
         // 先按创建时间倒序分组，再按发布顺序升序排列。
+        // 创建时间区间：闭区间，开始晚于截止由 TimeRangeSupport 直接判参数错误。
+        TimeRangeSupport.apply(wrapper, ProjectEnvironmentTarget::getCreateTime, condition);
         wrapper.orderByDesc(ProjectEnvironmentTarget::getCreateTime);
         wrapper.orderByAsc(ProjectEnvironmentTarget::getDeployOrder);
         return wrapper;
