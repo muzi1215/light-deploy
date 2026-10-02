@@ -18,9 +18,6 @@ import java.util.Arrays;
 @Getter
 public enum BuildMode {
 
-    /** 平台内置 Dockerfile 模板构建。 */
-    PLATFORM_TEMPLATE("PLATFORM_TEMPLATE", "平台模板"),
-
     /** 使用项目仓库内自带的 Dockerfile 构建。 */
     PROJECT_DOCKERFILE("PROJECT_DOCKERFILE", "项目Dockerfile"),
 

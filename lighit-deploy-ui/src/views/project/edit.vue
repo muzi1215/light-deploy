@@ -164,7 +164,6 @@
           title="构建配置"
           :fields="BUILD_CONFIG_FIELDS"
           :context="editorContext"
-          :example="BUILD_CONFIG_EXAMPLE"
           :applicable="!isArtifactOnly"
           not-applicable-text="构建模式为「仅发布已有产物」时不执行构建，无需填写构建参数"
           hint="表单模式适用于常用字段修改；自定义键或整段粘贴请用 JSON 模式"
@@ -177,7 +176,6 @@
           title="运行配置"
           :fields="RUNTIME_CONFIG_FIELDS"
           :context="editorContext"
-          :example="RUNTIME_CONFIG_EXAMPLE"
           hint="表单模式适用于常用字段修改；自定义键或整段粘贴请用 JSON 模式"
         />
         <ConfigEditor
@@ -186,7 +184,6 @@
           title="健康检查配置"
           :fields="HEALTH_CONFIG_FIELDS"
           :context="editorContext"
-          :example="HEALTH_CONFIG_EXAMPLE"
           hint="留空表示不检查；表单模式适用于常用字段修改，自定义键或整段粘贴请用 JSON 模式"
         />
 
@@ -236,10 +233,7 @@ import {
   BUILD_MODE_OPTIONS,
   BUILD_CONFIG_FIELDS,
   RUNTIME_CONFIG_FIELDS,
-  HEALTH_CONFIG_FIELDS,
-  BUILD_CONFIG_EXAMPLE,
-  RUNTIME_CONFIG_EXAMPLE,
-  HEALTH_CONFIG_EXAMPLE
+  HEALTH_CONFIG_FIELDS
 } from '@/constants/projectConfig.ts'
 import ConfigEditor from '@/components/ConfigEditor/index.vue'
 
@@ -278,7 +272,7 @@ const formData = reactive<ProjectDto>({
   gitUrl: '',
   gitBranch: '',
   gitCredentialId: '',
-  buildMode: 'PLATFORM_TEMPLATE',
+  buildMode: 'PROJECT_DOCKERFILE',
   registryId: '',
   buildServerId: '',
   retainReleaseCount: 5,

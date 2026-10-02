@@ -237,7 +237,6 @@ import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.
 
 /** 构建模式展示映射（与后端 BuildMode 枚举一致，仅用于列表展示） */
 const BUILD_MODE_MAP: Record<string, string> = {
-  PLATFORM_TEMPLATE: '平台模板',
   PROJECT_DOCKERFILE: '项目Dockerfile',
   LAYERED_DOCKER: '分层构建',
   SCRIPT_DEPLOY: '脚本部署',

@@ -11,6 +11,7 @@ import com.lx.deploy.common.crypto.CredentialCrypto;
 import com.lx.deploy.common.enums.build.ArtifactType;
 import com.lx.deploy.common.enums.credential.CredentialType;
 import com.lx.deploy.common.enums.project.BuildMode;
+import com.lx.deploy.common.util.ComposeInjection;
 import com.lx.deploy.common.enums.project.RuntimeType;
 import com.lx.deploy.common.enums.task.TaskLogLevel;
 import com.lx.deploy.common.enums.task.TaskType;
@@ -149,6 +150,9 @@ public class BuildTaskHandler implements TaskHandler {
      */
     private static final int MAX_BUILD_OUTPUT_LINES = 200;
 
+    /** 失败摘要保留的末尾行数：命令失败的原因（failed to solve 等）一律排在最后几行。 */
+    private static final int MAX_ERROR_HINT_LINES = 5;
+
     /**
      * 构建命令实时回传的行数上限。
      *
@@ -156,6 +160,9 @@ public class BuildTaskHandler implements TaskHandler {
      * 不封顶会把日志表刷爆、页面也难以翻阅。超过后不再逐行回传，末尾仍会汇总补录。</p>
      */
     private static final int MAX_STREAM_OUTPUT_LINES = 500;
+
+    /** 构建机启动级验证默认窗口（秒）：镜像前台运行，由 timeout 在该秒数后终止，窗口内持续存活即视为通过。 */
+    private static final int DEFAULT_DOCKER_VERIFY_TIMEOUT_SECONDS = 30;
 
     /**
      * 构建进程组 PID 文件的路径前缀。
@@ -324,8 +331,16 @@ public class BuildTaskHandler implements TaskHandler {
         // 解析运行时与构建模式，二者是后续所有分支的总开关。
         RuntimeType runtimeType = RuntimeType.fromCode(project.getRuntimeType());
         BuildMode buildMode = BuildMode.fromCode(project.getBuildMode());
-        if (runtimeType == null || buildMode == null) {
-            throw new DeployException(ResponseCode.VALIDATION_ERROR, "项目的运行时或构建模式非法");
+        if (runtimeType == null) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR, "项目的运行时非法：" + project.getRuntimeType());
+        }
+        if (buildMode == null) {
+            // 平台模板模式已下线（Dockerfile 改由项目自带），存量记录会走到这里。
+            // 这里必须指名该改什么，否则用户只看到「构建模式非法」却无从下手。
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "项目的构建模式「" + project.getBuildMode() + "」不受支持；"
+                            + "平台模板已下线，Dockerfile 与 Compose 文件请由项目仓库提供，"
+                            + "并在项目里改用「项目Dockerfile」或「分层构建」模式");
         }
         // ARTIFACT_ONLY 不做任何构建：产物由调用方通过 POST /build/upload 上传登记。
         // 走到这里说明有人对这类项目误发起了构建任务，与其在执行阶段失败，不如在入口说清正确入口。
@@ -373,16 +388,22 @@ public class BuildTaskHandler implements TaskHandler {
 
             // 3) 按运行时与构建模式执行构建，并收集产物。
             List<BuildArtifact> artifacts = new ArrayList<>();
+            String composeContent = null;
+            String contextArtifactPath = null;
             if (runtimeType == RuntimeType.DOCKER) {
-                buildDocker(task, session, project, config, runtimeType, buildMode, workspacePath, commit,
-                        releaseVersion.version(), artifacts);
+                composeContent = buildDocker(task, session, project, config, runtimeType, buildMode,
+                        workspacePath, commit, releaseVersion.version(), artifacts);
+                // COMPOSE + 指定 work_dir 形态要往目标机下发构建上下文，先把它打成 tarball 落构建机产物目录。
+                contextArtifactPath = captureBuildContext(task, session, buildServer, workspacePath,
+                        artifactBase, project, config, releaseVersion.version());
             } else {
                 buildFileArtifact(task, session, buildServer, project, config, runtimeType, workspacePath,
                         artifactBase, commit, releaseVersion.version(), artifacts);
             }
 
             // 4) 登记状态、产物与发布版本。
-            ReleaseRecord release = assembleRelease(project, runtimeType, commit, releaseVersion, artifacts);
+            ReleaseRecord release = assembleRelease(project, runtimeType, commit, releaseVersion, artifacts,
+                    composeContent, contextArtifactPath);
             buildService.completeSuccess(buildId, commit, artifacts, release);
             taskService.updateProgress(task.getId(), STAGE_FINISH, PROGRESS_DONE);
             appendLog(task, STAGE_FINISH, TaskLogLevel.INFO, "构建完成，已生成发布版本 " + release.getVersion());
@@ -646,8 +667,8 @@ public class BuildTaskHandler implements TaskHandler {
     /**
      * 执行 DOCKER 运行时构建并推送镜像。
      *
-     * <p>按构建模式分支：PROJECT_DOCKERFILE 用项目自带 Dockerfile；LAYERED_DOCKER 先推基础镜像再推应用镜像；
-     * PLATFORM_TEMPLATE 由平台生成 Maven 多阶段模板。推送成功后取镜像摘要登记产物。</p>
+     * <p>按构建模式分支：PROJECT_DOCKERFILE 用项目自带 Dockerfile；LAYERED_DOCKER 先推基础镜像再推应用镜像。
+     * Dockerfile 一律来自项目仓库，平台不生成模板。推送成功后取镜像摘要登记产物。</p>
      *
      * @param task         当前任务
      * @param session      已认证会话
@@ -659,14 +680,15 @@ public class BuildTaskHandler implements TaskHandler {
      * @param commit       提交 ID，仅用于日志与溯源
      * @param releaseVersion 发布版本号，由调用方定稿，作为镜像 tag
      * @param artifacts    构建产物收集列表（方法内追加）
-     * @throws DeployException 构建/推送失败时抛出
+     * @return 项目自带的 docker-compose.yml 原文；项目未使用该文件时返回 null
+     * @throws DeployException 构建/推送失败，或 compose 文件不可用（显式配置却读不到、缺版本占位符）时抛出
      */
-    private void buildDocker(Task task, SshSession session, Project project, BuildConfig config,
-                             RuntimeType runtimeType, BuildMode buildMode,
-                             String workspacePath, String commit, String releaseVersion,
-                             List<BuildArtifact> artifacts) {
+    private String buildDocker(Task task, SshSession session, Project project, BuildConfig config,
+                               RuntimeType runtimeType, BuildMode buildMode,
+                               String workspacePath, String commit, String releaseVersion,
+                               List<BuildArtifact> artifacts) {
         if (!reportProgress(task, STAGE_BUILD, PROGRESS_BUILDING)) {
-            return;
+            return null;
         }
         String imageRepo = resolveImageRepository(project, config);
         // 版本号由调用方一次性定稿：镜像 tag 必须与版本记录、产物目录用同一个值。
@@ -694,21 +716,163 @@ public class BuildTaskHandler implements TaskHandler {
             // 应用镜像引用基础镜像。
             dockerfileOption = "-f " + config.getDockerfilePath() + " --build-arg BASE_IMAGE=" + baseImage;
         } else {
-            // PLATFORM_TEMPLATE：平台生成 Maven 多阶段模板（v1 面向 Java/Maven 应用）。
-            String template = generatePlatformDockerfile(project, config);
-            writeRemoteFile(session, workspacePath + "/Dockerfile.platform", template);
-            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "已生成平台内置 Dockerfile（Maven 多阶段模板）");
-            dockerfileOption = "-f Dockerfile.platform";
+            // Dockerfile 全部由项目仓库提供，平台不生成任何模板；
+            // 能走到这里说明组合校验被绕过，宁可明确失败也不要猜一份模板去构建。
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "构建模式 " + buildMode.getCode() + " 不支持构建镜像，"
+                            + "仅 PROJECT_DOCKERFILE / LAYERED_DOCKER 会执行 docker build");
         }
 
         dockerBuild(task, session, workspacePath, dockerfileOption, fullImage);
         appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "镜像构建完成");
+
+        // 方案 C 闸门：镜像构建完成后、推送仓库前，先在构建机本地跑起来确认不是"构建成功但一启动就崩"。
+        dockerRunVerify(task, session, fullImage, config);
 
         dockerPush(task, session, project, fullImage);
         String digest = dockerDigest(session, fullImage);
         artifacts.add(imageArtifact(ArtifactType.APP_IMAGE, fullImage, tag, digest));
         appendLog(task, STAGE_PUSH, TaskLogLevel.INFO, "镜像已推送：" + fullImage
                 + (StringUtils.hasText(digest) ? "，摘要 " + digest : ""));
+        return readComposeFile(task, session, config, workspacePath);
+    }
+
+    /**
+     * 解析本次构建对应的模块目录：module_dir → module_name → 空（仓库根）。
+     *
+     * <p>必须全平台只用这一份实现：决定「cd 到哪个目录执行构建命令」的 {@link #buildFileArtifact}
+     * 与决定「哪些源码进上下文 tarball」的 {@link #captureBuildContext} 若各自取一套值，就会出现
+     * 「构建在子模块里执行、下发到目标机的却是整仓源码」的割裂——运维上机看到一堆跟本次发布无关的兄弟模块。</p>
+     *
+     * <p>回落 module_name 是必要的：UI 上多数多模块仓库目录名与模块名同名，习惯只填 module_name
+     * （前端「模块目录」的说明也是「默认等于子模块名」），只认 module_dir 会让这类项目悄悄退回整仓打包。</p>
+     *
+     * @param config 构建配置，可能为 null（此时按仓库根处理）
+     * @return 相对仓库根的模块目录，仓库根返回空串
+     */
+    private String resolveModuleDir(BuildConfig config) {
+        if (config == null) {
+            return "";
+        }
+        if (StringUtils.hasText(config.getModuleDir())) {
+            return config.getModuleDir().trim();
+        }
+        if (StringUtils.hasText(config.getModuleName())) {
+            return config.getModuleName().trim();
+        }
+        return "";
+    }
+
+    /**
+     * 把构建上下文打成 tarball 持久化到构建机产物目录，供 COMPOSE 形态指定 work_dir 时下发到目标机重建。
+     *
+     * <p>仅 DOCKER 运行时在 {@link #buildDocker} 成功后、工作区清理前调用。
+     * tarball 是「够用就好」的重建素材，不是整仓快照：</p>
+     * <ul>
+     *   <li><b>配了 {@code module_dir} 就只打「根 pom + 该模块目录」</b>：整仓打包会把兄弟模块的源码
+     *       一起下发到目标机，运维在机器上看到一堆跟本次发布无关的目录（多模块仓库尤其明显）。
+     *       兄弟模块缺失不影响重建——子模块 pom 若没有依赖到它们，用 {@code -f <module>/pom.xml}
+     *       单模块自己就能构建起来；</li>
+     *   <li><b>剔除 {@code logs} 与 {@code *.log}</b>：日志是运行时沉淀物，既不属于源码，
+     *       也可能混入其他服务历史上的输出，下发过去只会污染目标机、让人误判；</li>
+     *   <li>同时排除 .git 与常见构建产物目录（target / node_modules / dist / build 等）。</li>
+     * </ul>
+     * <p>docker build 的上下文目录仍是仓库根语义（含根 pom + 目标模块），运维解包后即可
+     * {@code docker build -f <dockerfile> .}；Dockerfile 通常就在目标模块目录内，随之一并落入 tarball。</p>
+     *
+     * <p>打包失败只记 WARN 不阻断：上下文是「应急上机重建」的辅助材料，一次已成功的镜像构建不应因为它而失败；
+     * 返回 null 表示本次未产出上下文 tarball，发布阶段据此跳过下发。</p>
+     *
+     * @param task           当前任务
+     * @param session        已认证的构建机会话
+     * @param buildServer    构建机档案，仅用于日志语义
+     * @param workspacePath  仓库工作区绝对路径（即 docker build 上下文目录）
+     * @param artifactBase   构建机产物持久目录，已校验非空
+     * @param project        项目，提供编码
+     * @param config         构建配置，提供模块目录（module_dir / module_name）用于收敛打包范围
+     * @param releaseVersion 发布版本号，作为产物持久目录名
+     * @return 构建机上的 tarball 绝对路径；打包失败或无需打包时返回 null
+     */
+    private String captureBuildContext(Task task, SshSession session, Server buildServer,
+                                       String workspacePath, String artifactBase,
+                                       Project project, BuildConfig config, String releaseVersion) {
+        String persistDir = artifactBase.strip() + "/" + project.getCode() + "/" + releaseVersion;
+        String tarPath = persistDir + "/build-context.tar.gz";
+        // 排除项：版本控制、构建产物与运行时垃圾（日志 / IDE 配置），避免把几十~几百 MB 的无用内容打进 tarball。
+        String excludes = "--exclude=.git --exclude=node_modules --exclude=target "
+                + "--exclude=dist --exclude=build --exclude=logs --exclude=.idea "
+                + "--exclude='*.class' --exclude='*.jar' --exclude='*.war' --exclude='*.log'";
+        // 打包范围：多模块仓库收敛到「根 pom + 本次部署的模块」，其余模块不下发。
+        // 目录口径必须与执行构建命令时的 cd 目录同源（见 resolveModuleDir），否则会出现
+        // 「构建在子模块里执行、上下文却把整仓源码下发到目标机」的割裂。
+        String moduleDir = resolveModuleDir(config);
+        String sources = StringUtils.hasText(moduleDir) ? "pom.xml " + shellQuote(moduleDir) : ".";
+        String cmd = "mkdir -p " + shellQuote(persistDir)
+                + " && cd " + shellQuote(workspacePath)
+                + " && tar czf " + shellQuote(tarPath) + " " + excludes + " " + sources;
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "打包构建上下文到 " + tarPath);
+        SshCommandResult result = session.exec(cmd);
+        if (!result.success()) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                    "构建上下文打包失败（不影响镜像发布）：" + briefError(result.stderr())
+                            + "；若提示找不到 pom.xml，请确认 module_dir / module_name 填的是真实存在的子模块目录");
+            return null;
+        }
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "构建上下文已打包 " + tarPath);
+        return tarPath;
+    }
+
+    /**
+     * 读取项目自带的 docker-compose.yml 原文。
+     *
+     * <p>「显式配置了路径」与「顺着默认文件名找」的失败语义完全不同，必须区别对待：</p>
+     * <ul>
+     *   <li><b>显式配置却读不到</b>：路径写错或文件没提交，直接报错。静默跳过会把错误推迟到
+     *       发布阶段才爆——而那时往往是在半夜发版，排障成本翻好几倍；</li>
+     *   <li><b>默认文件不存在</b>：项目压根不用 compose（绝大多数 {@code docker run} 项目如此），
+     *       静默返回 null，不能因为缺一个可选文件就让构建失败。</li>
+     * </ul>
+     *
+     * <p>读到内容后统一交给 {@link ComposeInjection#requireUsable} 校验：缺少版本占位符的 compose
+     * 会让容器始终拉同一个 tag，而发布流程全程报成功——这类错误必须在构建期拦下来。</p>
+     *
+     * @param task          当前任务
+     * @param session       已认证会话
+     * @param config        构建配置，提供 compose_file_path
+     * @param workspacePath 仓库工作区绝对路径
+     * @return compose 原文；项目未使用 compose 时返回 null
+     * @throws DeployException 显式配置的路径读不到，或内容缺少版本占位符时抛出
+     */
+    private String readComposeFile(Task task, SshSession session, BuildConfig config, String workspacePath) {
+        boolean explicit = StringUtils.hasText(config.getComposeFilePath());
+        String relative = explicit ? config.getComposeFilePath().strip() : ComposeInjection.COMPOSE_FILE;
+        SshCommandResult result = session.exec("cat " + shellQuote(workspacePath + "/" + relative));
+        if (!result.success()) {
+            if (!explicit) {
+                return null;
+            }
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "读取 compose 文件失败（仓库路径 " + relative + "）：" + briefError(result.stderr())
+                            + "。请确认该文件已提交到仓库，且 compose_file_path 写的是相对仓库根目录的路径");
+        }
+        String content = ComposeInjection.requireUsable(result.stdout());
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                "已快照 compose 文件 " + relative + "（" + content.length() + " 字符）");
+        return content;
+    }
+
+    /**
+     * 把远程命令的错误输出压成适合放进异常文案的一行。
+     *
+     * @param stderr 命令标准错误输出，可为 null
+     * @return 去除换行并截断后的文本；无内容时返回「无错误输出」
+     */
+    private String briefError(String stderr) {
+        if (!StringUtils.hasText(stderr)) {
+            return "无错误输出";
+        }
+        String flat = stderr.strip().replace("\n", " ").replace("\r", " ");
+        return flat.length() <= 200 ? flat : flat.substring(0, 200) + "…";
     }
 
     /**
@@ -763,9 +927,8 @@ public class BuildTaskHandler implements TaskHandler {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
                     runtimeType + " 运行时必须在 build_config_json.artifact_path 中给出产物相对路径");
         }
-        // 模块目录：填写 module_dir 用 module_dir，否则用 module_name，都没有则仓库根目录。
-        String moduleDir = StringUtils.hasText(config.getModuleDir()) ? config.getModuleDir()
-                : (StringUtils.hasText(config.getModuleName()) ? config.getModuleName() : "");
+        // 模块目录：见 resolveModuleDir——填了 module_dir 用它，否则回落 module_name，都没有则仓库根。
+        String moduleDir = resolveModuleDir(config);
         String buildDir = StringUtils.hasText(moduleDir) ? workspacePath + "/" + moduleDir : workspacePath;
 
         // 命令前缀：`. /etc/profile` 兜底把登录态 PATH 引入非交互会话；紧随其后的机器级
@@ -967,16 +1130,47 @@ public class BuildTaskHandler implements TaskHandler {
      * @return 逐行消费者
      */
     private Consumer<String> buildOutputConsumer(Task task) {
+        return streamingLogConsumer(task, STAGE_BUILD);
+    }
+
+    /**
+     * 生成指定阶段的实时日志逐行消费者，并对回传行数封顶。
+     *
+     * <p>与 {@link #buildOutputConsumer} 同源，差别只在写入的阶段：构建日志落 STAGE_BUILD，
+     * 推送日志落 STAGE_PUSH，避免"构建"阶段里混进推送输出、页面按阶段筛选时串台。</p>
+     *
+     * @param task  当前任务
+     * @param stage 日志所属阶段（STAGE_BUILD / STAGE_PUSH 等）
+     * @return 逐行消费者
+     */
+    private Consumer<String> streamingLogConsumer(Task task, String stage) {
         AtomicInteger received = new AtomicInteger();
         return line -> {
             int index = received.incrementAndGet();
             if (index <= MAX_STREAM_OUTPUT_LINES) {
-                appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, line);
+                appendLog(task, stage, TaskLogLevel.INFO, line);
             } else if (index == MAX_STREAM_OUTPUT_LINES + 1) {
-                appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                appendLog(task, stage, TaskLogLevel.INFO,
                         "（实时输出已超过 " + MAX_STREAM_OUTPUT_LINES + " 行，后续不再逐行展示，命令结束后补录末尾输出）");
             }
         };
+    }
+
+    /**
+     * 实时回传超过上限后，补录命令末尾输出，避免末尾关键信息（如 push 摘要、digest）因封顶丢失。
+     *
+     * @param task   当前任务
+     * @param stage  日志阶段
+     * @param result 已执行命令的结果（stdout/stderr 仍保留全量文本）
+     */
+    private void fillTailIfTruncated(Task task, String stage, SshCommandResult result) {
+        String output = StringUtils.hasText(result.stdout()) ? result.stdout() : result.stderr();
+        long lines = StringUtils.hasText(output) ? output.strip().lines().count() : 0;
+        if (lines > MAX_STREAM_OUTPUT_LINES) {
+            appendLog(task, stage, TaskLogLevel.INFO,
+                    "实时回传已达上限 " + MAX_STREAM_OUTPUT_LINES + " 行，补录末尾 " + MAX_BUILD_OUTPUT_LINES + " 行：");
+            writeLines(task, stage, TaskLogLevel.INFO, tailLines(output, MAX_BUILD_OUTPUT_LINES), MAX_BUILD_OUTPUT_LINES);
+        }
     }
 
     /**
@@ -1322,15 +1516,20 @@ public class BuildTaskHandler implements TaskHandler {
      */
     private void dockerBuild(Task task, SshSession session, String workspacePath, String dockerfileOpt, String fullImage) {
         String cmd = "cd " + workspacePath + " && docker build " + dockerfileOpt + " -t " + fullImage + " .";
-        // 镜像构建是耗时命令（拉基础镜像、装依赖、编译），按长命令超时等待。
-        SshCommandResult result = session.execLong(cmd);
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "执行 docker build（输出实时回传）：" + cmd);
+        // 镜像构建是耗时命令（拉基础镜像、装依赖、编译），按长命令超时等待，并实时回传逐行输出。
+        SshCommandResult result = session.execLong(cmd, streamingLogConsumer(task, STAGE_BUILD));
         if (!result.success()) {
-            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR, "docker build 失败：" + firstLine(result.stderr()));
+            String raw = StringUtils.hasText(result.stderr()) ? result.stderr() : result.stdout();
+            // 摘要取末尾而不是首行：buildkit 第一行固定是 "#0 building with ... instance using docker driver"，
+            // 那只是开场白，真正的失败（failed to solve / 基础镜像拉不动 / COPY 找不到文件）排在最后。
+            String hint = tailLines(raw, MAX_ERROR_HINT_LINES);
+            // 把完整 stderr/stdout 落日志：docker build 的失败原因全在 stderr，摘要之外这里补全细节。
+            writeError(task, STAGE_BUILD, raw, MAX_BUILD_OUTPUT_LINES);
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR, "docker build 失败：" + hint);
         }
-        // 镜像构建日志同样按构建类上限回显（普通命令的 30 行会让构建错误被截掉）。
-        if (StringUtils.hasText(result.stdout())) {
-            writeLines(task, STAGE_BUILD, TaskLogLevel.INFO, result.stdout(), MAX_BUILD_OUTPUT_LINES);
-        }
+        // 实时回传已落过一遍，仅当输出超上限时补录末尾，避免同一段日志重复刷屏。
+        fillTailIfTruncated(task, STAGE_BUILD, result);
     }
 
     /**
@@ -1357,7 +1556,7 @@ public class BuildTaskHandler implements TaskHandler {
                         throw new DeployException(ResponseCode.DATA_NOT_FOUND, "镜像仓库绑定的凭据不存在");
                     }
                     String plaintext = credentialCrypto.decrypt(credential.getEncryptedValue());
-                    String[] up = RegistryAuthSupport.parseUserPassword(plaintext);
+                    String[] up = RegistryAuthSupport.resolveRegistryCredentials(plaintext, credential.getMetadataJson());
                     loginHost = registry.getRegistryUrl();
                     // 密码经文件 + stdin 传给 docker，**不走命令行**：`docker login -p <密码>` 会把明文
                     // 留在构建机的进程列表（ps -ef）里，同机其他用户可直接看到。
@@ -1374,18 +1573,73 @@ public class BuildTaskHandler implements TaskHandler {
                 }
             }
             appendLog(task, STAGE_PUSH, TaskLogLevel.INFO, "推送镜像 " + fullImage);
-            SshCommandResult pushResult = session.execLong("docker push " + fullImage);
+            // 实时回传逐行输出：分层镜像逐层推送，进度能看着走，而不是干等后一次性看到结果。
+            SshCommandResult pushResult = session.execLong("docker push " + fullImage, streamingLogConsumer(task, STAGE_PUSH));
             if (!pushResult.success()) {
-                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR, "docker push 失败：" + firstLine(pushResult.stderr()));
+                String hint = StringUtils.hasText(pushResult.stderr()) ? firstLine(pushResult.stderr()) : firstLine(pushResult.stdout());
+                writeError(task, STAGE_PUSH, StringUtils.hasText(pushResult.stderr()) ? pushResult.stderr() : pushResult.stdout(),
+                        MAX_BUILD_OUTPUT_LINES);
+                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR, "docker push 失败：" + hint);
             }
-            // 推送日志按构建类上限回显：分层镜像逐层推送，30 行往往只够看到第一层。
-            if (StringUtils.hasText(pushResult.stdout())) {
-                writeLines(task, STAGE_PUSH, TaskLogLevel.INFO, pushResult.stdout(), MAX_BUILD_OUTPUT_LINES);
-            }
+            fillTailIfTruncated(task, STAGE_PUSH, pushResult);
         } finally {
             // 密码文件与登录态**成功失败都要清**：推送失败时更不能把明文密码留在构建机磁盘上。
             cleanupRegistryCredential(task, session, passwordFile, loginHost);
         }
+    }
+
+    /**
+     * 构建机启动级验证：把刚构建好的镜像真正跑起来，确认不是"构建成功但一启动就崩"的缺陷镜像。
+     *
+     * <p>方案 C 的核心闸门：验证不过的镜像绝不上推，把"跑不起来"拦在构建机，
+     * 而不是等发布到目标机半夜才爆。验证只覆盖<b>启动级</b>——容器在验证窗口内持续存活即视为通过；
+     * 需要连数据库/外部接口的<b>业务级</b>验证交给目标机发布后做（见 DockerDeployService）。</p>
+     *
+     * <p>为何用"持续存活"而非探活端口：项目自带 Dockerfile 形态各异，可能用 distroless（无 bash、无
+     * /dev/tcp），硬编码探活会误杀正常镜像。持续存活是最通用的"没崩"信号，能拦住绝大多数镜像缺陷
+     * （ENTRYPOINT 写错、jar 缺失、JVM 参数非法、启动即退出）。</p>
+     *
+     * <p>外部依赖陷阱：若应用启动就必须连数据库/三方接口、而构建机网络不通，容器会启动失败退出，
+     * 这里会<b>误判</b>为镜像缺陷。这类项目在 build_config_json 设 {@code docker_verify_on_build=false}，
+     * 跳过构建机验证、完全依赖目标机业务级验证——这是已知取舍，不是 bug。</p>
+     *
+     * @param task      当前任务
+     * @param session   已认证的构建机会话
+     * @param fullImage 刚构建好的镜像全名（含 tag）
+     * @param config    构建配置（取验证开关与超时）
+     */
+    private void dockerRunVerify(Task task, SshSession session, String fullImage, BuildConfig config) {
+        if (config.getDockerVerifyOnBuild() != null && !config.getDockerVerifyOnBuild()) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                    "build_config_json.docker_verify_on_build=false，跳过构建机启动级验证（交由目标机业务级验证）");
+            return;
+        }
+        int timeout = (config.getDockerVerifyTimeoutSeconds() != null && config.getDockerVerifyTimeoutSeconds() > 0)
+                ? config.getDockerVerifyTimeoutSeconds() : DEFAULT_DOCKER_VERIFY_TIMEOUT_SECONDS;
+        String containerName = "ld_verify_" + task.getBizId();
+        // 先清掉可能残留的同名验证容器（上一次中断未清理），避免 "name already in use"。
+        session.execLong("docker rm -f " + containerName + " || true");
+        // 前台运行 + timeout 包装：窗口内持续存活会被 timeout 杀掉（退出码 124），代表"能正常跑"；
+        // 应用启动即崩溃时 docker run 以非零码提前退出，容器日志已实时回传，直接判定失败。
+        // --rm 保证无论怎么退出，验证容器都不会残留在构建机。
+        String cmd = "timeout -k 5 " + timeout + "s docker run --rm --name " + containerName + " " + fullImage;
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                "启动级验证：构建机本地以 " + timeout + " 秒窗口运行镜像 " + fullImage
+                        + "（窗口内持续存活即视为通过，验证容器自动清理）");
+        // exec 超时留足余量：timeout 杀掉容器后 Spring Boot 优雅停机还需几秒，窗口 + 60s 足够。
+        SshCommandResult result = session.exec(cmd, timeout + 60, streamingLogConsumer(task, STAGE_BUILD));
+        // 124 = 前台超时被杀（容器一直活着）；0 = 窗口内自行退出（多为正常 shutdown），也放行但提示。
+        if (result.exitCode() == 124 || result.exitCode() == 0) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                    "启动级验证通过：镜像在 " + timeout + " 秒窗口内正常启动"
+                            + (result.exitCode() == 0 ? "（容器在窗口内自行退出，请确认是否为预期行为）" : ""));
+            return;
+        }
+        // 失败保险：极端情况下 --rm 未生效导致容器残留，确保不污染构建机。
+        session.execLong("docker rm -f " + containerName + " || true");
+        throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                "启动级验证失败：镜像 " + fullImage + " 启动后退出（退出码 " + result.exitCode()
+                        + "）。若为数据库/外部接口不可达导致，请在 build_config_json 设 docker_verify_on_build=false");
     }
 
     /**
@@ -1489,38 +1743,6 @@ public class BuildTaskHandler implements TaskHandler {
     }
 
     /**
-     * 生成平台内置 Dockerfile（Maven 多阶段模板，v1 面向 Java 应用）。
-     */
-    private String generatePlatformDockerfile(Project project, BuildConfig config) {
-        String moduleDir = StringUtils.hasText(config.getModuleDir()) ? config.getModuleDir()
-                : (StringUtils.hasText(config.getModuleName()) ? config.getModuleName() : "");
-        String buildCommand = StringUtils.hasText(config.getBuildCommand())
-                ? config.getBuildCommand() : "mvn clean package -DskipTests";
-        String jarGlob = StringUtils.hasText(moduleDir) ? "/src/" + moduleDir + "/target/*.jar" : "/src/target/*.jar";
-        return "FROM maven:3.9-eclipse-temurin-21 AS build\n"
-                + "WORKDIR /src\n"
-                + "COPY . .\n"
-                + "RUN " + buildCommand + "\n"
-                + "FROM eclipse-temurin:21-jre\n"
-                + "WORKDIR /app\n"
-                + "COPY --from=build /src" + jarGlob + " app.jar\n"
-                + "ENTRYPOINT [\"java\", \"-jar\", \"app.jar\"]\n";
-    }
-
-    /**
-     * 把文本写到构建机指定文件（heredoc，避免大段内容逐行拼命令）。
-     */
-    private void writeRemoteFile(SshSession session, String path, String content) {
-        // 内容可能含单引号/特殊字符，用 base64 中转最稳。
-        String b64 = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
-        String cmd = "echo " + b64 + " | base64 -d > " + path;
-        SshCommandResult result = session.exec(cmd);
-        if (!result.success()) {
-            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR, "写入平台 Dockerfile 失败：" + firstLine(result.stderr()));
-        }
-    }
-
-    /**
      * 组装发布版本记录（build 成功后由 BuildService 写入并置为可发布）。
      *
      * <p>版本号与序号取调用方在克隆后定稿的那一份，不在这里重新生成——镜像 tag 与产物目录
@@ -1531,10 +1753,12 @@ public class BuildTaskHandler implements TaskHandler {
      * @param commit         提交 ID
      * @param releaseVersion 本次构建定稿的版本序号与版本号
      * @param artifacts      本次构建产出的全部产物
+     * @param composeContent DOCKER 运行时项目自带的 compose 文件原文，可为 null
      * @return 待落库的发布版本记录
      */
     private ReleaseRecord assembleRelease(Project project, RuntimeType runtimeType, String commit,
-                                          BuildService.ReleaseVersion releaseVersion, List<BuildArtifact> artifacts) {
+                                          BuildService.ReleaseVersion releaseVersion, List<BuildArtifact> artifacts,
+                                          String composeContent, String contextArtifactPath) {
         ReleaseRecord release = new ReleaseRecord();
         release.setProjectId(project.getId());
         release.setVersion(releaseVersion.version());
@@ -1542,6 +1766,9 @@ public class BuildTaskHandler implements TaskHandler {
         release.setCommitId(commit);
         release.setRuntimeType(runtimeType.getCode());
         if (runtimeType == RuntimeType.DOCKER) {
+            release.setComposeContent(composeContent);
+            // 构建上下文 tarball 路径：COMPOSE + 指定 work_dir 时下发到目标机供上机重建；无则留空。
+            release.setContextArtifactPath(contextArtifactPath);
             // 取应用镜像产物填 image_tag / image_digest。
             for (BuildArtifact a : artifacts) {
                 if (ArtifactType.APP_IMAGE.getCode().equals(a.getArtifactType())) {
@@ -1693,7 +1920,8 @@ public class BuildTaskHandler implements TaskHandler {
         if (!StringUtils.hasText(error)) {
             return;
         }
-        writeLines(task, stage, TaskLogLevel.ERROR, error, maxLines);
+        // 错误原因排在末尾，且实时流通常已经写过开头，这里保留头部只会重复一遍并挤掉真错。
+        writeLines(task, stage, TaskLogLevel.ERROR, error, maxLines, true);
     }
 
     /**
@@ -1771,13 +1999,27 @@ public class BuildTaskHandler implements TaskHandler {
      * @param maxLines 最多写入的行数
      */
     private void writeLines(Task task, String stage, TaskLogLevel level, String text, int maxLines) {
+        writeLines(task, stage, level, text, maxLines, false);
+    }
+
+    /**
+     * keepTail=true 时保留<b>末尾</b> N 行，专供错误输出使用。
+     *
+     * <p>命令失败的原因（{@code failed to solve: ...}、基础镜像拉不动、{@code COPY} 找不到文件）
+     * 一律排在输出<b>最后</b>；保留前 N 行等于把真正的错误丢掉，日志里只剩开场白与进度。
+     * 而且实时流往往已经把开头那部分写进日志了，再写一遍头部是纯重复。</p>
+     */
+    private void writeLines(Task task, String stage, TaskLogLevel level, String text, int maxLines, boolean keepTail) {
         String[] lines = text.strip().split("\\R");
-        for (int i = 0; i < lines.length && i < maxLines; i++) {
+        int from = keepTail ? Math.max(0, lines.length - maxLines) : 0;
+        int to = keepTail ? lines.length : Math.min(lines.length, maxLines);
+        for (int i = from; i < to; i++) {
             appendLog(task, stage, level, lines[i]);
         }
         if (lines.length > maxLines) {
-            appendLog(task, stage, level,
-                    "（输出共 " + lines.length + " 行，仅保留前 " + maxLines + " 行）");
+            appendLog(task, stage, level, keepTail
+                    ? "（输出共 " + lines.length + " 行，仅保留末尾 " + maxLines + " 行：失败原因通常在最后）"
+                    : "（输出共 " + lines.length + " 行，仅保留前 " + maxLines + " 行）");
         }
     }
 

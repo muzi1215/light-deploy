@@ -84,9 +84,9 @@ public class ProjectDto extends TimeRangeQuery {
     /**
      * 构建模式，取值见后端 BuildMode 枚举。
      *
-     * <p>选填，默认 PLATFORM_TEMPLATE；仅 DOCKER 运行时生效；查询时等值过滤。</p>
+     * <p>选填，默认 PROJECT_DOCKERFILE；仅 DOCKER 运行时生效；查询时等值过滤。</p>
      */
-    @Schema(description = "构建模式，默认PLATFORM_TEMPLATE")
+    @Schema(description = "构建模式，默认PROJECT_DOCKERFILE")
     private String buildMode;
 
     /**

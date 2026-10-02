@@ -374,6 +374,44 @@ public class DeploySupport {
     }
 
     /**
+     * 取命令失败摘要：优先 stderr，为空回退 stdout，保留<b>末尾若干行</b>。
+     *
+     * <p><b>为什么不能直接用 {@link #firstLine}</b>：{@code docker compose} / {@code docker pull}
+     * 这类命令把「Network xxx Creating」「Pulling from xxx」的进度行打到 stderr，
+     * 真正的失败原因排在后面。只取第一行等于把真正的报错丢掉，日志里只剩一句无害的进度，
+     * 表现为「看着像失败原因其实是噪音」——曾出现过只显示
+     * “Network auth-tool_default Creating” 而真实原因是桥接子网冲突的情况。</p>
+     *
+     * <p>因此保留末尾行（错误通常在最后），同时限制行数与总长度，避免把几百行无关输出刷进任务日志。</p>
+     *
+     * @param stdout 标准输出
+     * @param stderr 标准错误
+     * @return 摘要文本；两者皆空时返回默认文案
+     */
+    public String outputSummary(String stdout, String stderr) {
+        String text = StringUtils.hasText(stderr) ? stderr : stdout;
+        if (!StringUtils.hasText(text)) {
+            return "无详细信息";
+        }
+        String[] lines = text.strip().split("\\R");
+        int maxLines = 40;
+        int from = Math.max(0, lines.length - maxLines);
+        StringBuilder sb = new StringBuilder();
+        if (from > 0) {
+            sb.append("…（前面省略 ").append(from).append(" 行）\n");
+        }
+        for (int i = from; i < lines.length; i++) {
+            if (i > from) {
+                sb.append('\n');
+            }
+            sb.append(lines[i]);
+        }
+        String summary = sb.toString();
+        int maxChars = 4000;
+        return summary.length() > maxChars ? "…" + summary.substring(summary.length() - maxChars) : summary;
+    }
+
+    /**
      * 当前时间文本，用于把时间写进日志正文。
      *
      * @return 形如 {@code 2026-09-27 19:40:00} 的时间文本

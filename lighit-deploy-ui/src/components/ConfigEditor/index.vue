@@ -34,7 +34,7 @@
       v-model="jsonText"
       type="textarea"
       :rows="jsonRows"
-      :placeholder="example"
+      :placeholder="computedExample"
       :disabled="readonly"
       class="ce-json"
     />
@@ -118,7 +118,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
-import type { ConfigField } from '@/constants/projectConfig.ts'
+import { generateExample, isFieldVisibleByContext, type ConfigField } from '@/constants/projectConfig.ts'
 
 const props = withDefaults(
   defineProps<{
@@ -207,13 +207,18 @@ const mergedContext = computed<Record<string, string>>(() => {
   return merged
 })
 
-/** 字段是否满足联动显隐条件 */
+/**
+ * JSON 模式的占位示例：父页面显式传了 example 就用它（兼容旧用法），
+ * 否则按当前可见字段实时生成——只展示本运行时 / 构建模式相关的键，不再混合所有产物类型。
+ */
+const computedExample = computed<string>(() => {
+  if (props.example) return props.example
+  return generateExample(props.fields, mergedContext.value)
+})
+
+/** 字段是否满足联动显隐条件（复用 schema 统一的判定，避免两处逻辑漂移） */
 function isFieldVisible(field: ConfigField): boolean {
-  if (!field.showIf) return true
-  return Object.entries(field.showIf).every(([contextKey, allowed]) => {
-    const current = mergedContext.value[contextKey]
-    return current !== undefined && allowed.includes(current)
-  })
+  return isFieldVisibleByContext(field, mergedContext.value)
 }
 
 /** 当前上下文下可见字段 */
@@ -295,7 +300,8 @@ function emitValue() {
 function handleModeChange() {
   if (mode.value === 'json') {
     const obj = composeObject()
-    jsonText.value = obj ? JSON.stringify(obj, null, 2) : ''
+    // 表单无内容时把按当前可见字段生成的示例灌进文本域，用户改值即可，不必从头写 JSON 对象
+    jsonText.value = obj ? JSON.stringify(obj, null, 2) : computedExample.value || ''
     return
   }
   const text = jsonText.value.trim()

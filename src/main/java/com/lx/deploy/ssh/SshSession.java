@@ -177,7 +177,9 @@ public class SshSession implements AutoCloseable {
         try (ChannelExec channel = session.createExecChannel(command)) {
             // 需要实时回传时给 stdout 套一层分流：既按行回调，也保留全量文本供最终结果与超时快照使用。
             channel.setOut(stream == null ? out : new LineForwardingOutputStream(out, stream));
-            channel.setErr(err);
+            // 构建/推送等命令的进度与错误都走 stderr（BuildKit 行为），只回传 stdout 会看不到关键日志，
+            // 因此 stderr 也套一层分流：既保留全量文本供结果与超时快照，也逐行回传实时日志。
+            channel.setErr(stream == null ? err : new LineForwardingOutputStream(err, stream));
             if (stream != null) {
                 stream.start();
             }

@@ -105,7 +105,7 @@ export interface ProjectVo {
   gitUrl?: string
   gitBranch?: string
   gitCredentialId?: string
-  buildMode: string // PLATFORM_TEMPLATE / PROJECT_DOCKERFILE / LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY
+  buildMode: string // PROJECT_DOCKERFILE / LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY
   registryId?: string // 镜像仓库 ID，仅 DOCKER 运行时项目有值
   /**
    * 项目档案绑定的构建机（服务器 ID），选填。
@@ -361,7 +361,7 @@ export interface BuildVo {
   updateTime: string
   projectId: string
   projectName?: string
-  buildMode: string // PLATFORM_TEMPLATE / PROJECT_DOCKERFILE / LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY
+  buildMode: string // PROJECT_DOCKERFILE / LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY
   buildServerId?: string
   buildServerName?: string
   /** 实际克隆到的 Git 提交号（短哈希），构建完成时回填 */

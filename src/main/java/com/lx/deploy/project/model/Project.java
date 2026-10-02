@@ -106,13 +106,13 @@ public class Project extends BaseEntity {
     /**
      * Docker 构建模式，取值见 {@code BuildMode} 枚举。
      *
-     * <p>PLATFORM_TEMPLATE 平台模板 / PROJECT_DOCKERFILE 项目自带 Dockerfile /
+     * <p>PROJECT_DOCKERFILE 项目自带 Dockerfile /
      * LAYERED_DOCKER 分层构建（AIops 项目使用）/ SCRIPT_DEPLOY 脚本部署 /
      * ARTIFACT_ONLY 仅发布产物；
-     * 未指定时 Service 填充默认值 PLATFORM_TEMPLATE。仅 DOCKER 运行时生效。</p>
+     * 未指定时 Service 填充默认值 PROJECT_DOCKERFILE。仅 DOCKER 运行时生效。</p>
      */
     @TableField("build_mode")
-    @Schema(description = "构建模式，默认PLATFORM_TEMPLATE")
+    @Schema(description = "构建模式，默认PROJECT_DOCKERFILE")
     private String buildMode;
 
     /**

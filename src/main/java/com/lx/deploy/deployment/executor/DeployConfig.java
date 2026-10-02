@@ -52,6 +52,20 @@ public class DeployConfig {
     @JsonProperty("extra_docker_args")
     private String extraDockerArgs;
 
+    /**
+     * Docker 部署形态，取值见 {@code DeployForm} 枚举，默认 RUN。
+     *
+     * <ul>
+     *   <li>{@code RUN}：平台拼 {@code docker run} 启动单个容器，端口映射与附加参数用本配置的其它字段；</li>
+     *   <li>{@code COMPOSE}：用版本里快照的 docker-compose.yml 启动，
+     *       端口、卷、网络、依赖顺序全由项目自己的文件决定，平台只注入镜像版本号。
+     *       此时 {@code port_mappings} / {@code extra_docker_args} 不再参与——它们表达的是
+     *       {@code docker run} 的参数，硬套到 compose 上会造成「配了却没生效」的困惑。</li>
+     * </ul>
+     */
+    @JsonProperty("deploy_form")
+    private String deployForm;
+
     /** JVM 启动参数，形如 -Xms256m -Xmx512m；JAR 运行时使用。 */
     @JsonProperty("jvm_options")
     private String jvmOptions;

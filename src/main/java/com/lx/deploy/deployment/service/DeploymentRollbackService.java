@@ -3,6 +3,7 @@ package com.lx.deploy.deployment.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.lx.deploy.common.constants.DeploymentStatus;
 import com.lx.deploy.common.constants.DeploymentTargetStatus;
+import com.lx.deploy.common.constants.ReleaseStatus;
 import com.lx.deploy.common.enums.project.RuntimeType;
 import com.lx.deploy.deployment.mapper.DeploymentTargetMapper;
 import com.lx.deploy.deployment.model.Deployment;
@@ -119,16 +120,16 @@ public class DeploymentRollbackService {
         List<RollbackDecision> decisions = inspectTargets(deployment.getProjectId(), targets);
         int rollbackCount = 0;
         int skippedCount = 0;
-        String unavailableVersion = null;
+        String firstReason = null;
         for (RollbackDecision decision : decisions) {
             if (decision.rollbackable()) {
                 rollbackCount++;
                 continue;
             }
             skippedCount++;
-            if (unavailableVersion == null) {
+            if (firstReason == null && StringUtils.hasText(decision.skipReason())) {
                 // 优先报「产物已不存在」：它比「首次发布」更需要使用者去处理产物。
-                unavailableVersion = decision.missingVersion();
+                firstReason = decision.skipReason();
             }
         }
         if (rollbackCount > 0) {
@@ -137,10 +138,8 @@ public class DeploymentRollbackService {
         if (decisions.isEmpty()) {
             return new RollbackEvaluation(false, "本次发布没有变更过任何目标，没有可回滚的内容", 0, 0, decisions);
         }
-        if (unavailableVersion != null) {
-            return new RollbackEvaluation(false,
-                    "历史版本 " + unavailableVersion + " 的发布记录或构建产物已不存在，无法回滚",
-                    0, skippedCount, decisions);
+        if (StringUtils.hasText(firstReason)) {
+            return new RollbackEvaluation(false, firstReason + "，无法回滚", 0, skippedCount, decisions);
         }
         return new RollbackEvaluation(false,
                 "本次发布为首次发布，目标机上没有平台纳管的历史版本，无法回滚", 0, skippedCount, decisions);
@@ -159,7 +158,7 @@ public class DeploymentRollbackService {
      * @return 逐目标判定明细；顺序与入参一致
      */
     private List<RollbackDecision> inspectTargets(String projectId, List<DeploymentTarget> targets) {
-        Map<String, Boolean> availabilityCache = new HashMap<>();
+        Map<String, Availability> availabilityCache = new HashMap<>();
         List<RollbackDecision> decisions = new ArrayList<>();
         for (DeploymentTarget target : targets) {
             if (DeploymentTargetStatus.isUntouched(target.getStatus())) {
@@ -173,11 +172,10 @@ public class DeploymentRollbackService {
                 continue;
             }
             String version = target.getOldVersion();
-            Boolean available = availabilityCache.computeIfAbsent(version,
-                    key -> historyArtifactAvailable(projectId, key));
-            if (!Boolean.TRUE.equals(available)) {
-                decisions.add(new RollbackDecision(target, false,
-                        "历史版本 " + version + " 的产物已不存在，跳过回滚", version));
+            Availability probe = availabilityCache.computeIfAbsent(version,
+                    key -> probeRollbackArtifact(projectId, key));
+            if (!probe.available()) {
+                decisions.add(new RollbackDecision(target, false, probe.reason(), version));
                 continue;
             }
             decisions.add(new RollbackDecision(target, true, null, null));
@@ -186,38 +184,83 @@ public class DeploymentRollbackService {
     }
 
     /**
-     * 判断某个历史版本是否仍可被重新发布。
+     * 判断某个历史版本能否被重新发布，不可用时给出可读原因。
      *
      * <p>平台回滚按版本记录重新分发产物，正式来源是<b>构建机的产物持久目录</b>（见 AGENTS.md §24.10），
-     * 因此「能不能回滚」等价于「这个版本的产物还拿不拿得到」：</p>
+     * 因此「能不能回滚」等价于「这个版本的产物还拿不拿得到」。每档不可用的原因各自成文，不再笼统说
+     * 「产物已不存在」——后者对使用者没有任何行动价值，「已被保留策略回收，请重新构建」才有。</p>
+     *
+     * <p><b>为什么必须看 status（2026-09-28 补）</b>：{@code ReleaseRetentionService} 会把超出
+     * {@code project.retain_release_count} 的历史版本置为「已废弃」，并<b>删掉构建机上的产物目录</b>，
+     * 但 {@code release_record.artifact_path} 这个字段的值仍然留着。只看字段非空会得出「可以回滚」
+     * 的结论，用户点下去要等到 SFTP 下载阶段才失败，而那时部分目标可能已经被改过。
+     * <b>宁可在按钮前判不能退，也不要让人点了才知道。</b></p>
+     *
+     * <p><b>DOCKER 不受 status 约束</b>：它的产物是镜像仓库里的 tag，不在构建机磁盘上，
+     * 保留策略对它只有「置废弃标记」这一个动作——{@code ReleaseRetentionService.artifactDir}
+     * 会因为 {@code buildServerId} 为空而返回 null，只标记废弃、不删任何东西。
+     * 因此对 DOCKER 加 status 判定，等于无端砍掉一个镜像明明还在、本来能回滚的版本。</p>
      *
      * <p>目标机 exec/bak 里的备份不作为回滚来源：它在发布中途失败时由平台自动还原（应急副本），
      * 不是版本仓库。注意「因为备份名只有时间戳、无法对应平台版本才不用它」是过时理由——
      * 备份名现已内嵌平台版本号（{@code {jar名}_bak_{时间戳}_{版本号}.jar}），
      * JAR 缺少本机回滚快路径是<b>功能缺口</b>，不是不可行。</p>
-     * <ul>
-     *   <li>DOCKER：只需镜像标签，镜像仍在仓库即可重新 pull；</li>
-     *   <li>JAR / STATIC：需要构建机 ID 与产物路径，二者缺一就没法建立 SFTP 下载。</li>
-     * </ul>
      *
      * @param projectId 项目主键
      * @param version   历史版本号
-     * @return true 表示该版本仍可重新发布
+     * @return 探测结果；不可用时携带面向页面的中文原因
      */
-    private boolean historyArtifactAvailable(String projectId, String version) {
+    private Availability probeRollbackArtifact(String projectId, String version) {
         ReleaseRecord release = releaseRecordMapper.selectOne(new LambdaQueryWrapper<ReleaseRecord>()
                 .eq(ReleaseRecord::getProjectId, projectId)
                 .eq(ReleaseRecord::getVersion, version)
                 .orderByDesc(ReleaseRecord::getCreateTime)
                 .last("LIMIT 1"));
         if (release == null) {
-            return false;
+            return Availability.no("历史版本 " + version + " 的发布记录不存在，平台无法定位该版本的产物");
         }
         RuntimeType runtimeType = RuntimeType.fromCode(release.getRuntimeType());
         if (runtimeType == RuntimeType.DOCKER) {
-            return StringUtils.hasText(release.getImageTag());
+            // 镜像在仓库里，只要还记得 tag 就能重新 pull；保留策略是否标记过废弃不影响这条路径。
+            return StringUtils.hasText(release.getImageTag())
+                    ? Availability.ok()
+                    : Availability.no("历史版本 " + version + " 未记录镜像标签，无法从镜像仓库重新拉取");
         }
-        return StringUtils.hasText(release.getBuildServerId()) && StringUtils.hasText(release.getArtifactPath());
+        // JAR / STATIC：产物在构建机磁盘上，被保留策略回收后 artifact_path 指向的目录已经不存在。
+        Integer status = release.getStatus();
+        if (status == null || status != ReleaseStatus.RELEASABLE) {
+            String artifact = runtimeType == RuntimeType.STATIC ? "静态产物" : "jar 产物";
+            return Availability.no("历史版本 " + version + " 状态为「" + ReleaseStatus.describe(status)
+                    + "」，超出项目保留版本数后其" + artifact
+                    + "已从构建机回收，无法回滚：请重新构建该版本后再回滚");
+        }
+        if (!StringUtils.hasText(release.getBuildServerId()) || !StringUtils.hasText(release.getArtifactPath())) {
+            return Availability.no("历史版本 " + version + " 缺少构建机或产物路径记录，无法重新分发");
+        }
+        return Availability.ok();
+    }
+
+    /**
+     * 单个历史版本的可用性探测结果。
+     *
+     * <p>用 record 而不是 boolean：判定与文案必须同源产出。交给调用方自己拼原因的话，
+     * 「为什么不能回滚」会随着调用点增多漂移成好几种说法，而三处展示（按钮态、预览清单、
+     * 目标明细）本该是同一句话。</p>
+     *
+     * @param available true 表示该版本仍可被重新发布
+     * @param reason    不可用时的中文原因（面向页面展示）；可用时为空
+     */
+    private record Availability(boolean available, String reason) {
+
+        /** 该版本可被重新发布。 */
+        private static Availability ok() {
+            return new Availability(true, null);
+        }
+
+        /** 该版本不可被重新发布，给出原因。 */
+        private static Availability no(String reason) {
+            return new Availability(false, reason);
+        }
     }
 
     /**

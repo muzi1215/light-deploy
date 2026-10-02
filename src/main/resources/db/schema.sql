@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS project (
     git_url VARCHAR(500) NULL COMMENT 'Git仓库地址',
     git_branch VARCHAR(100) NULL COMMENT 'Git分支',
     git_credential_id VARCHAR(64) NULL COMMENT 'Git凭据ID',
-    build_mode VARCHAR(30) NOT NULL DEFAULT 'PLATFORM_TEMPLATE' COMMENT '构建模式',
+    build_mode VARCHAR(30) NOT NULL DEFAULT 'PROJECT_DOCKERFILE' COMMENT '构建模式',
     registry_id VARCHAR(64) NULL COMMENT '镜像仓库ID，仅 DOCKER 运行时使用，指向 registry 表',
     build_server_id VARCHAR(64) NULL COMMENT '构建机服务器ID，指向server表，项目连通性测试与构建的执行目标',
     build_config_json JSON NULL COMMENT '构建配置：模块名、构建命令、Dockerfile路径、产物路径、镜像坐标，见 docs/项目模块.md',
@@ -225,6 +225,10 @@ CREATE TABLE IF NOT EXISTS release_record (
     artifact_path VARCHAR(500) NULL COMMENT 'JAR或静态产物路径',
     image_tag VARCHAR(255) NULL COMMENT 'Docker镜像标签',
     image_digest VARCHAR(255) NULL COMMENT 'Docker镜像摘要',
+    compose_content TEXT NULL COMMENT 'docker-compose.yml 原文快照，构建阶段从仓库读取；'
+        'DOCKER 运行时且部署形态为 COMPOSE 时下发到目标机工作目录',
+    context_artifact_path VARCHAR(500) NULL COMMENT 'DOCKER 运行时构建上下文 tarball 在构建机上的绝对路径，'
+        'COMPOSE 形态且指定 work_dir 时下发到目标机供上机 docker build 重建',
     sha256 VARCHAR(128) NULL COMMENT '产物SHA256摘要',
     runtime_type VARCHAR(20) NOT NULL COMMENT '运行时类型',
     status TINYINT NOT NULL DEFAULT 1 COMMENT '版本状态：0构建中，1可发布，2已废弃',

@@ -15,6 +15,31 @@
 > `nginx -s reload` 无效（reload 不重新挂载），只能重建容器。代价是失去单次 rename 的原子性，
 > 换来与容器部署形态兼容。硬约束见 AGENTS.md §3.2。
 
+> **v7 修订（当前，2026-09-29）**：**ADR-03 的「平台渲染 compose」作废，改回 v1 判断——**
+> compose 与 Dockerfile **统一由项目仓库提供**，平台不生成、不改写任何内容。
+>
+> 这与 v6 里 `PLATFORM_TEMPLATE` 整体下线是同一个理由：真实项目的 compose 有 20+ 个
+> `environment`、`extra_hosts`、`external` 网络、数据卷与 depends_on 顺序，平台要渲染它
+> 就得先把这些全部建模成配置项（ADR-11 的可选段、§7 的参数面 3→11）——
+> **难的不在算法，而在建模成本**：用户每多用一个 compose 特性，都要回来求平台加一个字段；
+> 而让项目直接给文件，成本是一次性的，且天然支持全部 compose 语法。
+>
+> 平台保留的唯一介入是**版本号注入**：约定一个 `${IMAGE_TAG}` 占位符，发布时以同名变量文件传入。
+> 用变量而不是把占位符替换成具体 tag，是为了让「运维上机看到的 compose」与仓库里逐字一致——
+> 否则排障时「文件里写的到底是啥」就不再可信。
+>
+> **连带作废**：ADR-11（单模板 + 可选段 + 场景预设）、§8.5 的「全量覆盖 + 强制备份」、
+> §7 的 `ComposeRenderer` / `compose_preset` / 列表面参数（3→11 的参数扩容）、以及对应 DDL 列。
+> ADR-03 的**场景论证**（为什么必须有 compose 形态）依然成立，只有「谁来产出文件」的结论变了。
+>
+> 已实现，当前口径见 [构建模块.md](构建模块.md)（快照时机）与 [发布模块.md](发布模块.md)（下发与启动）。
+---
+> 但「**目录整体替换**」修正为「**目录内容替换**」——改为只搬目录**内**的条目，
+> `static_root` 自身的 inode 必须恒定。起因是线上事故：容器里的 nginx 通过 bind mount 挂这个目录，
+> 目录被 rename 走之后容器仍握着旧 inode，容器内目录为空 → 全站 403；
+> `nginx -s reload` 无效（reload 不重新挂载），只能重建容器。代价是失去单次 rename 的原子性，
+> 换来与容器部署形态兼容。硬约束见 AGENTS.md §3.2。
+
 ---
 
 ## 0. 结论速览
@@ -28,13 +53,13 @@
 | 5 | 推送前「仓库有没有这个镜像/版本」人工查还是平台查？ | **平台查连通性与登录；不查镜像存在性**。tag 由版本号规则天然唯一 | 推荐 |
 | 6 | tag / 版本号人工设置还是平台定稿？ | **平台定稿，不改**。`{编码}-v{序号}-{短commit}` 四处共用（§23.5） | 强约束 |
 | 7 | 平台模板只做简单单体，复杂交给项目自带文件 | **同意**，模板按「语言」分档（Java / Python），**不做 Node**（见 ADR-10） | 已定 |
-| 8 | 要不要工厂模式？ | 主链路**保持 switch**；**Dockerfile 模板生成**用策略模式。**compose 不用**（见 ADR-11） | 推荐 |
+| 8 | 要不要工厂模式？ | 主链路**保持 switch**；~~**Dockerfile 模板生成**用策略模式~~（平台模板 v6 已下线）。**compose 不用模板**（见 ADR-11，v7 已作废） | 推荐 |
 | 9 | 要不要按运行时分表？ | **不分表**。拆分落在**契约层**与 **UI 层**，存储层保持三段 JSON | ✅ 已确认 |
-| 10 | compose 是不是应该默认？平台生成难在哪？ | **应该默认。v1 判断错了**——格式与 key 固定、变化只在值，平台完全可生成 | ✅ 已确认 |
+| 10 | compose 是不是应该默认？平台生成难在哪？ | **应该有这个形态，但文件不该平台生成**（v7 修订）。难不在算法而在**建模成本**：用户每用一个 compose 特性，平台就要加一个配置项 | ✅ 已确认（v7 修订） |
 | 11 | 生成的 Dockerfile / compose 要不要投放到目标机？ | **要**。与 §3.1 JAR 链路「固定工作目录 + 原地替换 + 平台挂了运维可手工」完全同构 | ✅ 已确认 |
-| 12 | compose 覆盖策略：全量覆盖还是只改 image 行？ | **全量覆盖 + 强制备份**。compose 是声明式期望状态，平台是唯一真相来源 | ✅ 已确认 |
+| 12 | compose 覆盖策略：全量覆盖还是只改 image 行？ | ~~全量覆盖 + 强制备份~~ **v7 起不再适用**：文件由项目维护、每次发布随版本下发，平台不做「真相来源」也不必备份（§8.5 作废） | ✅ 已确认（v7 修订） |
 | 13 | 前端静态：开放上传还是构建机装 Node？ | **开放 `UPLOAD` + `ARTIFACT_ONLY`** | ✅ 已确认 |
-| 14 | compose 要不要按项目类型（Java/Python）生成不同模板？ | **不要**。一份模板 + `<#if>` 可选段；类型差异由「列表为空即不渲染」+「场景预设」承担 | ✅ 已确认 |
+| 14 | compose 要不要按项目类型（Java/Python）生成不同模板？ | **不生成模板**（v7：文件由项目提供），本条与 ADR-11 一并作废 | ✅ 已确认（v7 修订） |
 | 15 | 原 compose 里的 `build:` 块怎么处理？ | **不生成生效配置**，把 `context` / `dockerfile` 以**注释形式**保留在文件头 | ✅ 已确认 |
 | 16 | STATIC 版本化与回滚形态？ | **方案 C：`static_root` 同级 `bak/` 备份 + 目录内容替换**。不动 nginx 配置、不用软链，与 JAR 的 `exec/bak` 完全同口径；**目录自身 inode 不变**（v6，兼容容器 bind mount） | ✅ v5 定稿 / v6 修正 |
 | 17 | 静态版本化与上传是否同期做？ | **同期做**，一次交付完整静态部署能力 | ✅ 已确认 |
@@ -48,8 +73,8 @@
 | 能力 | 位置 | 现状 |
 |---|---|---|
 | DOCKER 构建主链路 | `BuildTaskHandler.buildDocker`（L663–711） | `resolveImageRepository` → 按模式选 Dockerfile → `dockerBuild` → `dockerPush` → `dockerDigest` → 落 `build_artifact` |
-| 三种 Docker 构建模式 | 同上 | `PROJECT_DOCKERFILE` 用仓库内 Dockerfile；`LAYERED_DOCKER` 先构建推送 `base-{tag}` 再构建 app；`PLATFORM_TEMPLATE` 平台生成模板 |
-| 平台模板内容 | `generatePlatformDockerfile`（L1493–1507） | **硬编码 Maven**：`maven:3.9-eclipse-temurin-21 AS build` → `eclipse-temurin:21-jre`。**这就是「只支持 Java」的真实现状** |
+| 两种 Docker 构建模式 | 同上 | `PROJECT_DOCKERFILE` 用仓库内 Dockerfile；`LAYERED_DOCKER` 先构建推送 `base-{tag}` 再构建 app。**平台不再生成 Dockerfile 模板**（2026-09-28 下线） |
+| 平台模板内容 | `DockerfileTemplateFactory` + `JavaDockerfileTemplate` / `PythonDockerfileTemplate`（已实现，2026-09-28） | 按语言分档：Java 走 Maven/Gradle 多阶段、Python 走单阶段 pip。原 `generatePlatformDockerfile`（硬编码 Maven）**已删除** |
 | 镜像仓库登录/登出 | `dockerPush` / `cleanupRegistryCredential`（L1344–1418） | 密码走临时文件 + `--password-stdin`，`finally` 里必清 |
 | DOCKER 发布 | `DeployTaskHandler.deployDocker`（L506–540） | `docker pull` → `docker rm -f` → `docker run -d --restart=always` → `docker inspect` 确认运行态 |
 | STATIC 发布 | `DeployTaskHandler.deployStatic`（L1073–1119） | **已完整实现**：`prepareStaticPackage`（目录先 `tar -czf`）→ `downloadArtifact`（构建机→平台中转 SFTP）→ 目标机 `/tmp` → `tar -xzf -C {staticRoot}` → `nginx -t && nginx -s reload`。**但无备份、无版本概念** |
@@ -67,7 +92,7 @@
 | 缺口 | 影响 |
 |---|---|
 | **compose 完全缺失** | 容器配置无持久化、不可视化；`extra_docker_args` 会越写越长且不可读 |
-| 平台模板只支持 Maven | Python（AIops/FastAPI）无法走平台模板 |
+| ~~平台模板只支持 Maven~~ ✅ 已解决（2026-09-28） | Python 模板已实现；Java 同时支持 Maven / Gradle 推导 |
 | `dependency_hash` 恒空 | 分层构建每次重跑 base，AI 依赖体积大时慢 |
 | 无「镜像已在仓库，只分发」的模式 | 外部 CI 已推好镜像的场景无法接入 |
 | 仓库无写权限预检 | namespace 不存在 / 无 push 权限要到首次 `docker push` 才暴露 |
@@ -87,7 +112,7 @@
 │  git clone（凭据注入 + 脱敏）                                │
 │    → 定稿版本号 {编码}-v{序号}-{短commit}                    │
 │    → 按 BuildMode 选 Dockerfile：                           │
-│        PLATFORM_TEMPLATE  → 语言模板工厂生成（Java/Python）  │
+│        （无此分支：Dockerfile 全部来自项目仓库）            │
 │        PROJECT_DOCKERFILE → 仓库内 Dockerfile               │
 │        LAYERED_DOCKER     → Dockerfile.base → push          │
 │                             Dockerfile.app  → push          │
@@ -143,16 +168,32 @@
 - **代价**：模板要维护 N 份；探测可能误判，因此 `language` 必须**允许显式覆盖**，探测失败时报明确错误并列出支持的文件特征，不猜。
 - **状态**：提议
 
-### ADR-03：compose 是 DOCKER 的默认发布形态，由平台渲染并投放目标机
+### ADR-03：compose 是 DOCKER 的发布形态之一，文件由项目仓库提供、平台不渲染
 
-> **v1 原判断作废**：v1 认为「平台生成 compose 最复杂、应让仓库自带文件、平台只注入 `IMAGE_TAG`」。该判断把「生成难」和「支持难」混为一谈，且遗漏了「文件留在目标机上可被运维直接维护」这个核心价值。
+> **⚠️ v7 修订**：本文原先判「v1 原判断作废」（即改由平台渲染），**该结论已于 2026-09-29 撤回，
+> v1 判断恢复有效** —— compose 由仓库自带、平台只注入 `IMAGE_TAG`。详见文首 v7 修订。
+> 下方第 2、3 条（平台渲染、image 写死具体 tag）**已作废**，保留原文仅为记录决策演进：
 
 - **场景**：AIops 这类项目的 compose 有 `container_name` / `restart` / `extra_hosts` / `env_file` / 20+ 个 `environment` / `ports` / `networks(external)` / `volumes`；`docker run` 要表达同样的东西得写一长串 `-e -v -p --network --add-host`，**既不可持久化也不可视化**。
 - **决策**：
   1. `runtime_config_json.deploy_form` 取值 `COMPOSE`（**默认**）/ `RUN`（兼容保留现有实现）；
-  2. compose 文件由**平台渲染**（Freemarker 模板，与 Dockerfile 模板同机制），**不是从仓库拷贝**；
-  3. 渲染结果**投放到目标机固定工作目录**，文件里 `image` 写**具体 tag**（不是 `${IMAGE_TAG}` 占位符）；
+  2. ~~compose 文件由**平台渲染**（Freemarker 模板，与 Dockerfile 模板同机制），**不是从仓库拷贝**~~；
+  3. ~~渲染结果**投放到目标机固定工作目录**，文件里 `image` 写**具体 tag**（不是 `${IMAGE_TAG}` 占位符）~~；
   4. `build:` 块不生成生效配置（见 §8.8）。
+
+> **v7 补记（当前实现的口径）**
+>
+> - **文件来源**：项目仓库。`docker-compose.yml` 由项目提供，Dockerfile 同理（见 v6）。
+>   平台不渲染任何一个，也不做任何一处文案改写；
+> - **版本注入**：compose 里写成 `image: 仓库地址/镜像名:${IMAGE_TAG}`，
+>   平台额外生成一行变量文件注入本次版本号，由 docker compose 自己插值。
+>   **缺了这个占位符就在构建期报错**——它能让容器永远拉同一个 tag，而发布流程全程报成功；
+> - **选型**：`runtime_config_json.deploy_form` = `RUN`（默认，存量项目行为不变）/ `COMPOSE`；
+> - **快照位置**：构建成功时把文件原文存进发布版本记录（`release_record.compose_content`）。
+>   它是几 KB 的编排描述而非可分发制品，落构建机产物目录只会多一个需要回收的目录，
+>   存库则能随版本精确回溯、回滚时省掉一次文件传输；
+> - **不再存在的成本**：无需为 environment / volumes / networks 建配置项，也无需备份与覆盖策略——
+>   文件由项目维护，「覆盖了运维的手工改动」这个问题从根上消失了。
 - **理由**：compose 的**格式与 key 是固定的**（`services.<name>` 下的 `image` / `container_name` / `restart` / `environment` / `env_file` / `ports` / `volumes` / `networks` / `extra_hosts`），**变化的只有值**。骨架几乎固定、变的只是可选段，渲染是模板填充，没有算法复杂度。
 - **代价**：
   1. 参数面变大（环境变量、卷、网络都是列表），但按 §5 结论这些进 JSON，不需要 DDL；
@@ -291,7 +332,7 @@
 
 | 运行时 | 构建模式 | 产物 | 走仓库 | 发布形态 | 构建机 |
 |---|---|---|---|---|---|
-| DOCKER | `PLATFORM_TEMPLATE` | APP_IMAGE | 是 | **COMPOSE**（默认）/ RUN | 需要（git+docker） |
+| DOCKER | `PROJECT_DOCKERFILE` | APP_IMAGE | 是 | **COMPOSE**（默认）/ RUN | 需要（git+docker） |
 | DOCKER | `PROJECT_DOCKERFILE` | APP_IMAGE | 是 | **COMPOSE**（默认）/ RUN | 需要（git+docker） |
 | DOCKER | `LAYERED_DOCKER` | BASE_IMAGE + APP_IMAGE | 是 | **COMPOSE**（默认）/ RUN | 需要（git+docker） |
 | DOCKER | `IMAGE_PULL`（新增） | 无（外部已推） | 是（只读） | **COMPOSE**（默认）/ RUN | **不需要** |
@@ -356,8 +397,7 @@ AGENTS.md 已明确：**MySQL 结构升级必须手工执行，部署链路只�
 CREATE TABLE IF NOT EXISTS project_docker_config (
     id VARCHAR(64) NOT NULL COMMENT '主键',
     project_id VARCHAR(64) NOT NULL COMMENT '项目ID，唯一，指向 project 表',
-    build_mode VARCHAR(30) NOT NULL COMMENT '构建模式：PLATFORM_TEMPLATE/PROJECT_DOCKERFILE/LAYERED_DOCKER/IMAGE_PULL',
-    language VARCHAR(20) NULL COMMENT '语言：JAVA/PYTHON，PLATFORM_TEMPLATE 时使用',
+    build_mode VARCHAR(30) NOT NULL COMMENT '构建模式：PROJECT_DOCKERFILE/LAYERED_DOCKER/IMAGE_PULL',
     registry_id VARCHAR(64) NULL COMMENT '镜像仓库ID，指向 registry 表',
     image_repository VARCHAR(255) NULL COMMENT '镜像仓库坐标（不含tag），留空由 registry 推导',
     dockerfile_path VARCHAR(255) NULL COMMENT '仓库内 Dockerfile 相对路径',
@@ -463,6 +503,11 @@ base tag  = base-{项目编码}-v{序号}-{短commit}      ← LAYERED_DOCKER �
 ---
 
 ## 8. compose 设计
+
+> **⚠️ 本节描述的是「平台渲染 compose」方案，已于 v7（2026-09-29）作废。**
+> 当前实现：**compose 文件由项目仓库提供**，构建期快照原文、发布期原样下发，
+> 版本号经 `${IMAGE_TAG}` 变量注入。§8.5 的覆盖与备份策略随之不再适用。
+> 下方原文保留仅用于追溯决策演进。
 
 ### 8.1 为什么之前判错了
 
@@ -777,13 +822,13 @@ nginx -s reload
 
 | 期 | 内容 | 依赖 | 验收 |
 |---|---|---|---|
-| **P1 打通最小闭环** | 现有 Docker 链路端到端真机跑通一次（Java `PLATFORM_TEMPLATE` → push → 目标机 pull → run）。**不新增功能，只补洞** | 无 | 一个真实 Java 项目全链路成功 |
+| **P1 打通最小闭环** | 现有 Docker 链路端到端真机跑通一次（`PROJECT_DOCKERFILE` → push → 目标机 pull → run）。**不新增功能，只补洞** | 无 | 一个真实 Java 项目全链路成功 |
 | **P2 compose 发布** | `deploy_form`；compose 参数建模（含 `compose_preset`）；`ComposeRenderer` + 单份 ftl；目标机目录 + 备份 + `VERSION`；`docker compose` 兼容回落；`build` 信息注释保留 | P1 | AIops 按 compose 发布并回滚成功；平台停掉后运维能手工改 tag 起服务 |
 | **P2.5 静态产物上传 + 版本化**（**合并交付**） | `UPLOAD` + `ARTIFACT_ONLY`；上传接口 + multipart 配置 + 转存构建机 + 版本登记；同级 `bak` 备份 + 目录整体替换 + 备份保留策略 | 无（可与 P2 并行） | 本地 dist 上传后能发布到 Nginx；**回滚用本地备份，不走构建机** |
-| **P3 语言模板 + 策略模式** | `LanguageType` + `DockerfileTemplate` + Factory；Java / Python 两套 | P1、P2 | Python（FastAPI）项目走平台模板构建成功 |
+| ~~**P3 语言模板 + 策略模式**~~ ❌ **已取消（2026-09-28）** | 曾实现过 `LanguageType` + `DockerfileTemplate` + Factory 与 Java/Python 两套模板，**随后整体删除** | — | 不再做：让项目自己写 Dockerfile 比平台猜语言更省事也更可靠，详见「取消说明」 |
 | **P4 镜像直发 + 仓库预检** | `IMAGE_PULL` 模式；`PROJECT_TEST` 可写性探测（默认关） | P1 | 外部 CI 推好的镜像能被分发与回滚 |
 
-> P2 排在 P3 之前：compose 是发布侧的**形态问题**，影响所有 DOCKER 项目；语言模板只影响走 `PLATFORM_TEMPLATE` 的项目。且 AIops 是 compose + 自带 Dockerfile，不依赖平台模板——**先做 compose 能让 AIops 直接上线**。
+> ~~P2 排在 P3 之前：compose 是发布侧的形态问题……语言模板只影响走 `PLATFORM_TEMPLATE` 的项目。~~ **P3 已取消**（平台模板整体下线），现在 DOCKER 侧的排序是 P1 → P2 ∥ P2.5 → P4。
 > P2.5 与 P2 无依赖，可并行；复用的都是现成链路，工作量主要在上传接口、multipart 配置与备份替换逻辑。
 
 **不建议同期做**：物理分表（§5）、依赖指纹复用（ADR-06）、多架构镜像、Node 模板。
@@ -824,17 +869,48 @@ nginx -s reload
 | 项 | 结论 |
 |---|---|
 | 分表 | **不分表**（§5） |
-| compose 形态 | **平台渲染 + 投放目标机 + 全量覆盖 + 强制备份**（ADR-03 / ADR-09 / §8.5） |
-| compose 模板 | **单模板 + 可选段 + 场景预设**（ADR-11） |
+| compose 形态 | **文件由项目仓库提供 + 构建期快照 + 发布期下发 + `${IMAGE_TAG}` 变量注入**（v7 修订，ADR-03） |
+| compose 模板 | **不提供**（v7 连 ADR-11 一并作废） |
 | `build:` 块 | **不生效，注释保留**（§8.8） |
 | 前端静态 | **开放 `UPLOAD` + `ARTIFACT_ONLY`**（ADR-10） |
 | STATIC 版本化与回滚 | **方案 C：`static_root` 同级 `bak` 备份 + 目录内容替换**（目录 inode 不变），不动 nginx、不用软链（ADR-12 / §9.4） |
 | 静态版本化排期 | **与上传同期交付**（§10 P2.5） |
 | 分层构建顺序 | **先 base 后 app，保持不变**（ADR-06） |
 
-### 12.2 下一步（按 P1 → P2 ∥ P2.5 → P3 → P4）
+### 12.2 下一步（按 P1 → P2 ∥ P2.5 → P4）
 
-1. **P1 先做，别跳**：现有 Docker 链路写完到现在**没有端到端真机验证过**。先用 `PLATFORM_TEMPLATE` 跑通一个 Java 项目全流程，把暴露的洞补掉，再动新功能。
+> **2026-09-28 重大调整：P3（语言模板）取消，平台模板模式 `PLATFORM_TEMPLATE` 整体下线。**
+> 曾按 ADR-02 / ADR-08 实现过 Java / Python 两套 Dockerfile 模板 + 工厂 + 9 个单测，随后连同
+> `LanguageType`、`build/template/` 包、`build_config_json` 里的 `language` / `app_port` / `start_command`
+> 三个字段一并删除。理由见下。
+
+**取消说明（为什么会走这段弯路）**
+
+| 维度 | 做平台模板 | 项目自带 Dockerfile |
+| --- | --- | --- |
+| 适配成本 | 平台要猜语言、猜构建工具、猜启动命令；猜错产出「能构建成功、运行即崩」的镜像 | 项目自己写，天然正确 |
+| 维护面 | 每加一门语言 = 一套模板 + 一套推导逻辑，永远追不上语言生态 | 平台只维护「指定哪个文件」 |
+| 灵活性 | JVM 参数、多 worker、非标准入口要么加字段、要么只能放弃用平台模板 | 想怎么写怎么写 |
+| 失败定位 | 容器起不来时，用户要判断是模板推导错还是自己代码错 | 责任边界清清楚楚 |
+
+结论：**Dockerfile 与 `docker-compose.yml` 这类「只有项目自己最清楚」的东西不要平台代劳**，
+平台退回它真正擅长的部分——编排构建、管 VERSION 与保留策略、把产物送到目标机。
+约束已写进 AGENTS.md §23.8。
+
+> ⚠️ **存量数据处理**：已删业务的库若有 `build_mode='PLATFORM_TEMPLATE'` 的项目记录，
+> 改用新版本后这些项目无法再发起构建（会提示明确的改法）。升级时需在库里一次性订正，MySQL 变更一律手工执行：
+>
+> ```sql
+> -- 先查受影响的记录
+> SELECT id, code, name, build_mode FROM project WHERE build_mode = 'PLATFORM_TEMPLATE' AND is_deleted = 0;
+>
+> -- 确认为「仓库里有 Dockerfile」的项目后改过去（多数场景）
+> UPDATE project SET build_mode = 'PROJECT_DOCKERFILE' WHERE build_mode = 'PLATFORM_TEMPLATE' AND is_deleted = 0;
+> ```
+>
+> 同时 `build_config_json` 里的 `language` / `app_port` / `start_command` 字段已无消费方，可留可清（留着不报错）。
+
+1. **P1 先做，别跳**：现有 Docker 链路写完到现在**没有端到端真机验证过**。先用 `PROJECT_DOCKERFILE`（项目自带 Dockerfile）跑通一个真实项目全流程，把暴露的洞补掉，再动新功能。
 2. **P2 与 P2.5 可并行**：两条链路互不依赖，Docker 侧改 `DeployTaskHandler`，静态侧改 `BuildTaskHandler` + `deployStatic`。
 3. **P2.5 没有 nginx 改造前置动作了**（方案 C 取消了这项），唯一要提前确认的是 `static_backup_dir` 放哪——建议直接配到 web 根之外。
 4. **实施时同步更新**：AGENTS.md（STATIC 备份与替换形态、compose 覆盖口径、`restart` 默认值）、`docs/发布模块.md`、`docs/构建模块.md`、前端 `deployTypes.ts` 与项目编辑页。

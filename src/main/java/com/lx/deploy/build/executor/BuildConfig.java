@@ -41,6 +41,17 @@ public class BuildConfig {
     @JsonProperty("base_dockerfile_path")
     private String baseDockerfilePath;
 
+    /**
+     * docker-compose.yml 相对仓库根目录的路径，DOCKER 运行时选填，默认 {@code docker-compose.yml}。
+     *
+     * <p>配置了就会在构建成功后把文件<b>原文</b>快照进发布版本（见 {@code release_record.compose_content}），
+     * 发布时直接下发到目标机，不必回仓库重新取，因此版本可精确回溯。
+     * 代价是改了这份文件<b>必须重新构建</b>才会生效——它描述的是「这个版本怎么跑」，
+     * 不属于运行时可以随便覆盖的参数。</p>
+     */
+    @JsonProperty("compose_file_path")
+    private String composeFilePath;
+
     /** 构建产物相对路径，支持 * 通配，JAR / STATIC 运行时必填。 */
     @JsonProperty("artifact_path")
     private String artifactPath;
@@ -68,4 +79,26 @@ public class BuildConfig {
      */
     @JsonProperty("command_timeout_seconds")
     private Integer commandTimeoutSeconds;
+
+    /**
+     * 构建机启动级验证开关，DOCKER 运行时选填，默认 true。
+     *
+     * <p>方案 C 的核心闸门：镜像构建完成后、推送仓库前，先在构建机本地把它跑起来，
+     * 确认"构建成功但一启动就崩"的缺陷镜像不会上推。只验证<b>启动级</b>（窗口内持续存活），
+     * 需要连数据库/外部接口的<b>业务级</b>验证仍交给目标机。</p>
+     *
+     * <p>若应用启动就必须连外部依赖、而构建机网络不通，验证会误判失败；
+     * 这类项目显式设 false 跳过，完全依赖目标机业务级验证。</p>
+     */
+    @JsonProperty("docker_verify_on_build")
+    private Boolean dockerVerifyOnBuild;
+
+    /**
+     * 启动级验证窗口秒数，DOCKER 运行时选填，默认 30。
+     *
+     * <p>镜像以<b>前台</b>方式运行，由 {@code timeout} 在该秒数后终止；窗口内容器持续存活
+     * 即视为通过（退出码 124）。过短会误杀启动慢的应用，过长则拖慢构建；按应用冷启动耗时调整。</p>
+     */
+    @JsonProperty("docker_verify_timeout_seconds")
+    private Integer dockerVerifyTimeoutSeconds;
 }

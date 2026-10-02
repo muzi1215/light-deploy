@@ -33,7 +33,6 @@ export const RUNTIME_TYPE_OPTIONS: { value: string; label: string }[] = [
  * 产出镜像、只配 DOCKER，脚本 / 仅发布产物产出文件、只配 JAR 与 STATIC（AGENTS.md §23.4）。
  */
 export const BUILD_MODE_OPTIONS: { value: string; label: string; shortLabel: string; runtimes: string[] }[] = [
-  { value: 'PLATFORM_TEMPLATE', label: '平台 Dockerfile 模板', shortLabel: '平台模板', runtimes: ['DOCKER'] },
   { value: 'PROJECT_DOCKERFILE', label: '项目自带 Dockerfile', shortLabel: '项目Dockerfile', runtimes: ['DOCKER'] },
   { value: 'LAYERED_DOCKER', label: '分层构建（base + app）', shortLabel: '分层构建', runtimes: ['DOCKER'] },
   { value: 'SCRIPT_DEPLOY', label: '脚本部署', shortLabel: '脚本部署', runtimes: ['JAR', 'STATIC'] },
@@ -213,6 +212,29 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     showIf: { buildMode: ['PROJECT_DOCKERFILE'] }
   },
   {
+    key: 'compose_file_path',
+    label: 'compose 文件路径',
+    type: 'input',
+    group: 'Docker 构建',
+    span: 12,
+    placeholder: '相对仓库根，默认 docker-compose.yml',
+    tip: '需要在目标机上用 docker compose 启动时填写。填写后构建成功会把文件原文快照进发布版本，'
+      + '发布时原样下发，因此改了这份文件必须重新构建才会生效。'
+      + '文件里随版本变化的那个镜像要写成「image: 仓库地址/镜像名:${IMAGE_TAG}」，'
+      + '平台会把本次版本号作为同名变量注入；redis、mysql 这类不随版本变的中间件保持原样即可',
+    examples: [
+      {
+        label: '最小可用：平台注入 IMAGE_TAG',
+        text: 'services:\n  app:\n    image: registry.cn-hangzhou.aliyuncs.com/ns/app:${IMAGE_TAG}\n    container_name: app\n    ports:\n      - \"8080:8080\"\n    restart: always'
+      },
+      {
+        label: '带中间件与数据卷（中间件不写占位符）',
+        text: 'services:\n  app:\n    image: registry.cn-hangzhou.aliyuncs.com/ns/app:${IMAGE_TAG}\n    volumes:\n      - ./logs:/app/logs\n    depends_on:\n      - redis\n  redis:\n    image: redis:7-alpine'
+      }
+    ],
+    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER'] }
+  },
+  {
     key: 'base_dockerfile_path',
     label: '基础层 Dockerfile',
     type: 'input',
@@ -230,7 +252,7 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     span: 12,
     placeholder: '不含 tag，如 registry.cn-hangzhou.aliyuncs.com/ns/app',
     tip: '留空时回落到项目绑定的镜像仓库（仅 Docker 构建模式消费）',
-    showIf: { buildMode: ['PLATFORM_TEMPLATE', 'PROJECT_DOCKERFILE', 'LAYERED_DOCKER'] }
+    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER'] }
   }
 ]
 
@@ -240,7 +262,7 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
     key: 'work_dir',
     label: '固定工作目录',
     type: 'input',
-    group: 'JAR 运行时',
+    group: 'JAR / Docker 运行时',
     span: 12,
     placeholder: '绝对路径，如 /lx/jarapps/auth-tool-7888',
     tip: '填了即完全覆盖服务器档案里的部署根目录；目录固定不变，发版原地替换 jar',
@@ -271,7 +293,7 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
         message: '固定工作目录必须写绝对路径（以 / 开头）：相对路径会相对 SSH 登录用户的家目录解析，跟填的时候想的位置不一样'
       }
     ],
-    showIf: { runtimeType: ['JAR'] }
+    showIf: { runtimeType: ['JAR', 'DOCKER'] }
   },
   {
     key: 'deploy_base',
@@ -363,12 +385,30 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
     showIf: { runtimeType: ['JAR'] }
   },
   {
+    key: 'deploy_form',
+    label: '部署形态',
+    type: 'select',
+    group: 'Docker 运行时',
+    span: 8,
+    options: [
+      { value: 'RUN', label: 'docker run（单容器）' },
+      { value: 'COMPOSE', label: 'docker compose（用项目的 compose 文件）' }
+    ],
+    placeholder: '默认 RUN',
+    tip: 'RUN：由平台拼 docker run 命令，端口映射与容器名用本页配置。'
+      + 'COMPOSE：用构建配置里快照的 compose 文件启动，端口、卷、网络、服务依赖完全由项目文件决定，'
+      + '平台只注入镜像版本号 —— 多容器或编排较复杂的项目应该选它。'
+      + '选 COMPOSE 后「端口映射」「附加 docker 参数」「容器名」不再生效，这些是 docker run 的参数',
+    showIf: { runtimeType: ['DOCKER'] }
+  },
+  {
     key: 'container_name',
     label: '容器名',
     type: 'input',
     group: 'Docker 运行时',
     span: 8,
     placeholder: '默认取项目编码',
+    tip: '仅 RUN 形态生效：COMPOSE 形态下容器名由项目自己的 compose 文件决定',
     showIf: { runtimeType: ['DOCKER'] }
   },
   {
@@ -378,7 +418,7 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
     group: 'Docker 运行时',
     span: 8,
     placeholder: '如 8080:8080，多个用英文逗号分隔',
-    tip: '留空表示不映射端口',
+    tip: '留空表示不映射端口；仅 RUN 形态生效，COMPOSE 形态请在 compose 文件里写 ports',
     showIf: { runtimeType: ['DOCKER'] }
   },
   {
@@ -388,7 +428,7 @@ export const RUNTIME_CONFIG_FIELDS: ConfigField[] = [
     group: 'Docker 运行时',
     span: 8,
     placeholder: '如 -e KEY=VALUE --network xxx',
-    tip: '原样拼到 docker run 命令行',
+    tip: '原样拼到 docker run 命令行；仅 RUN 形态生效',
     showIf: { runtimeType: ['DOCKER'] }
   },
   {
@@ -526,55 +566,72 @@ export const HEALTH_CONFIG_FIELDS: ConfigField[] = [
   }
 ]
 
-// ==================== 三段配置示例（JSON 模式的占位提示） ====================
+// ==================== JSON 模式示例（按当前运行时 / 构建模式动态生成） ====================
 
 /**
- * 构建配置示例（多模块仓库只构建 auth-tool）。
+ * 字段在当前联动上下文下是否可见（与 ConfigEditor 的 isFieldVisible 同一份 showIf 语义）。
  *
- * 这里演示「module_dir + 模块内命令」这一种写法：平台会先 cd 到 auth-tool 再执行命令，
- * 所以命令里**不带** -pl（带上会与 module_dir 冲突，表单模式提交时会被拦截）。
- * 若偏好从仓库根构建，则清空 module_dir、命令改成 `mvn -B clean package -pl auth-tool -am -DskipTests`。
+ * @param field 字段 schema
+ * @param context 联动上下文（runtimeType / buildMode / type 等）
  */
-export const BUILD_CONFIG_EXAMPLE = `{
-  "module_name": "auth-tool",
-  "module_dir": "auth-tool",
-  "build_command": "mvn -B clean package -DskipTests",
-  "artifact_path": "auth-tool/linux/auth-tool-7888/auth-tool.jar",
-  "config_paths": "auth-tool/linux/auth-tool-7888/application.yml"
-}`
+export function isFieldVisibleByContext(field: ConfigField, context: Record<string, string> = {}): boolean {
+  if (!field.showIf) return true
+  return Object.entries(field.showIf).every(([ctxKey, allowed]) => {
+    const current = context[ctxKey]
+    return current !== undefined && allowed.includes(current)
+  })
+}
+
+/** 从文本里取第一个整数（用于 number 字段的默认值示例） */
+function extractFirstNumber(text?: string): number | null {
+  if (!text) return null
+  const m = text.match(/-?\d+/)
+  return m ? Number(m[0]) : null
+}
 
 /**
- * 运行配置示例（JAR：固定工作目录 + 原地替换，jar 与配置分离）
+ * 为单个字段挑一个「可直接抄」的示例值。
  *
- * 注意：deploy_dir / ports 这类写法不被消费，JAR 用 work_dir，DOCKER 用 container_name 与 port_mappings。
+ * 优先级：select 取首个选项；input 优先取 placeholder 里的「如 …」片段，其次取「默认 …」片段
+ * （去掉大括号与「取 / 留空 / 等于」这类非值措辞）；number 取 placeholder 里的首个整数。
+ * 拿不到干净值的字段返回 skip，由调用方排除——这类字段服务端有默认值，不要求用户抄写。
  */
-export const RUNTIME_CONFIG_EXAMPLE = `{
-  "work_dir": "/lx/jarapps/auth-tool-7888",
-  "service_name": "auth-tool-7888",
-  "java_bin": "/usr/lib/jdk1.8.0_121/bin/java",
-  "jvm_options": "-Xmx512m",
-  "spring_profiles_active": "prod",
-  "config_dir": "config",
-  "config_file": "application.yml"
-}`
+function sampleValue(field: ConfigField): { skip?: boolean; value?: unknown } {
+  if (field.type === 'select') {
+    return field.options?.length ? { value: field.options[0].value } : { skip: true }
+  }
+  if (field.type === 'number') {
+    const n = extractFirstNumber(field.placeholder)
+    return n !== null ? { value: n } : { skip: true }
+  }
+  const ph = field.placeholder || ''
+  const ru = ph.match(/如\s*([^，。\n]+)/)
+  if (ru) return { value: ru[1].trim() }
+  const mr = ph.match(/默认\s+([^{，。\n]+)/)
+  if (mr) {
+    const v = mr[1].trim()
+    if (!v.includes('{') && !/[取留空等于]/.test(v)) return { value: v }
+  }
+  return { skip: true }
+}
 
 /**
- * 健康检查配置示例（整段留空则跳过健康检查）
+ * 按当前联动上下文，为 JSON 模式生成「只有本运行时 / 构建模式相关字段」的示例。
  *
- * 探测位置默认 TARGET：平台 SSH 登录目标机检查端口是否在监听，不受云防火墙/安全组影响，
- * 业务端口不需要对平台放行。只有要验证「外部客户端能否访问」时才写 "probe_from": "PLATFORM"，
- * 那时平台必须能直达目标机 host:port，否则应用正常也会被防火墙拦成假失败。
- * 这里演示 HTTP 探测：path 必须是免鉴权、直接返回 200 的接口，平台不跟随重定向，
- * 填 / 这类会跳登录页的路径会被判成不健康。
- * retry_count 给到 20 是给 Spring Boot 冷启动留观察窗（默认 3 次只有约 9 秒，往往不够）。
- * 只想探端口连通性时改用："type": "TCP" 并去掉 path。
+ * 不再写死一份混合所有运行时的 blob（那样 DOCKER 项目切到 JSON 会看到 JAR / STATIC 的键，
+ * 误导填写）。字段可见性判定与 ConfigEditor 完全一致，示例值随 visibleFields 取 sampleValue。
+ * 无可见字段时返回空串，文本域不塞模板。
+ *
+ * @param fields 字段 schema
+ * @param context 联动上下文（runtimeType / buildMode / type 等），由父页面传入或表单内已填
+ * @returns 格式化的 JSON 字符串
  */
-export const HEALTH_CONFIG_EXAMPLE = `{
-  "type": "HTTP",
-  "probe_from": "TARGET",
-  "port": 7888,
-  "path": "/health",
-  "timeout_seconds": 3,
-  "retry_count": 20,
-  "interval_seconds": 5
-}`
+export function generateExample(fields: ConfigField[], context: Record<string, string> = {}): string {
+  const sample: Record<string, unknown> = {}
+  for (const field of fields) {
+    if (!isFieldVisibleByContext(field, context)) continue
+    const v = sampleValue(field)
+    if (!v.skip) sample[field.key] = v.value
+  }
+  return Object.keys(sample).length > 0 ? JSON.stringify(sample, null, 2) : ''
+}

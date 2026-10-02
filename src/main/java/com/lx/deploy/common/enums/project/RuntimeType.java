@@ -28,11 +28,11 @@ public enum RuntimeType {
     /**
      * Docker 容器运行时，Dockerfile 或 Docker Compose 部署。
      *
-     * <p>产物是镜像，必须经过镜像仓库；因此只接受三种 Docker 构建模式，
-     * 不接受脚本 / 仅发布产物（它们不产出镜像）。</p>
+     * <p>产物是镜像，必须经过镜像仓库；因此只接受两种 Docker 构建模式，
+     * 不接受脚本 / 仅发布产物（它们不产出镜像）。Dockerfile 与 Compose 文件
+     * 一律由项目仓库提供，平台不再提供语言模板。</p>
      */
     DOCKER("DOCKER", "Docker容器", Set.of(
-            BuildMode.PLATFORM_TEMPLATE,
             BuildMode.PROJECT_DOCKERFILE,
             BuildMode.LAYERED_DOCKER)),
 

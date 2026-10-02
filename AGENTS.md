@@ -49,7 +49,6 @@ Light Deploy 是面向中小企业的轻量化部署发布平台，采用 Spring
 
 Docker 构建模式预留：
 
-- `PLATFORM_TEMPLATE`：平台 Dockerfile 模板；
 - `PROJECT_DOCKERFILE`：项目自带 Dockerfile；
 - `LAYERED_DOCKER`：`Dockerfile.base + Dockerfile.app` 分层构建；
 - `SCRIPT_DEPLOY`：脚本部署，执行项目自带的部署脚本，不走 Docker 构建；
@@ -945,12 +944,12 @@ docs/代码生成器使用说明.md
       <span>构建配置</span>
       <el-tooltip placement="top" effect="dark" :show-after="100">
         <template #content>
-          <pre class="tooltip-json">{{ BUILD_CONFIG_EXAMPLE }}</pre>
+          <pre class="tooltip-json">{{ generateExample(BUILD_CONFIG_FIELDS, editorContext) }}</pre>
         </template>
         <el-icon class="form-label-tip"><QuestionFilled /></el-icon>
       </el-tooltip>
     </template>
-    <el-input v-model="formData.buildConfigJson" type="textarea" :rows="4" :placeholder="BUILD_CONFIG_EXAMPLE" />
+    <el-input v-model="formData.buildConfigJson" type="textarea" :rows="4" :placeholder="generateExample(BUILD_CONFIG_FIELDS, editorContext)" />
   </el-form-item>
   ```
 
@@ -1213,7 +1212,7 @@ com.lx.deploy.common.constants
 ### 22.2 枚举编写规范
 
 - 枚举类必须有类级 JavaDoc，并按 §13 模板标注 `@author` / `@since`；每个常量必须有注释说明业务含义；
-- 枚举常量名即数据库与接口使用的字符串编码（如 `PLATFORM_TEMPLATE`），禁止额外维护数字编码到字符串的映射表；
+- 枚举常量名即数据库与接口使用的字符串编码（如 `PROJECT_DOCKERFILE`），禁止额外维护数字编码到字符串的映射表；
 - 每个枚举提供 `fromCode(String code)` 静态解析方法：编码为空或不受支持时返回 `null`，由 Service 统一转成 `ValidationError`，不允许在枚举内抛业务异常；
 - 需要面向页面的中文说明时在枚举内提供 `message` 字段，页面文案与枚举保持一致；
 - 枚举字段的实体 / DTO / VO 注释必须写明「取值见 XxxEnum 枚举」及合法取值。
@@ -1276,7 +1275,7 @@ com.lx.deploy.common.constants
 
 | 类别 | BuildMode 取值 | 产物 | 是否经过 registry |
 | --- | --- | --- | --- |
-| Docker 镜像类 | `PLATFORM_TEMPLATE` / `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` | 容器镜像（含 base 镜像） | **是**，构建后推仓库、发布时拉仓库 |
+| Docker 镜像类 | `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` | 容器镜像（含 base 镜像） | **是**，构建后推仓库、发布时拉仓库 |
 | 脚本 / 产物类 | `SCRIPT_DEPLOY` / `ARTIFACT_ONLY` | JAR、静态产物、部署脚本 | **否**，产物直接送达目标机，没有镜像 tag / digest 概念 |
 
 - `registry` 与 `registry.credential_id` 只对 `project.runtime_type = DOCKER` 有意义：绑定镜像仓库的表单、校验和构建分支都必须落在 DOCKER 这一支，**禁止**要求脚本部署（JAR / STATIC 运行时 + `SCRIPT_DEPLOY`）的项目配置镜像仓库；
@@ -1288,7 +1287,7 @@ com.lx.deploy.common.constants
 
 | 运行时 | 允许的构建模式 | 理由 |
 | --- | --- | --- |
-| `DOCKER` | `PLATFORM_TEMPLATE` / `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` | 产物是镜像，必须经过 registry |
+| `DOCKER` | `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` | 产物是镜像，必须经过 registry |
 | `JAR` | `SCRIPT_DEPLOY` / `ARTIFACT_ONLY` | 产物是 JAR 文件，脚本产出或直接发布 |
 | `STATIC` | `SCRIPT_DEPLOY` / `ARTIFACT_ONLY` | 产物是静态目录（dist） |
 
@@ -1332,6 +1331,12 @@ com.lx.deploy.common.constants
 5. **回收失败不影响构建结论**：算不出清单、连不上构建机、`rm` 失败只记日志（未预期异常 ERROR 带堆栈）。把「磁盘清理不顺」报成「构建失败」是错的；
 6. **保留数为 null 或 ≤ 0 时不做任何回收**，没有明确配额就删东西风险太高；
 7. **置「已废弃」而非物理删除**，废弃版本不再出现在新建部署的版本下拉里（下拉只列「可发布」），避免出现「看得到却发不了」。早期约定「历史版本永不置已废弃」在保留策略接入后不再无条件成立——超出保留数且不在保护窗口内的版本会被废弃，「手工换包后补一次新建部署重发对应版本」要趁那个版本还在窗口内做。
+8. **镜像类版本（DOCKER）不占配额、不参与回收**，由 `ReleaseRetentionService.occupiesBuildDisk` 在**配额计数之前**过滤：
+   - 理由：DOCKER 的产物是镜像仓库里的 tag，构建不往产物持久目录落任何文件，`artifactDir()` 恒返回 null，走完回收流程也只是「置废弃、删了个空气」。省不下一字节磁盘，却让一个镜像仍在仓库、随时可再次发布的版本从下拉里消失；
+   - 更隐蔽的危害是**挤占名额**：名额池固定，不占磁盘的 DOCKER 版本每多占一个，就有一个真正占磁盘的文件类版本被提前清掉。因此过滤必须在 `plan` 计算 `all.size() <= retain` 之前完成，**事后过滤等于没修**；
+   - 判据写在 Java 侧而非 SQL：`runtime_type <> 'DOCKER'` 对该列为 NULL 的行求值是 NULL（不成立），会把运行时为空的历史记录整批漏掉；
+   - `runtime_type` 为 NULL 的记录按「占磁盘」处理：它们基本是早期文件类版本，放行会让构建机上的产物目录永远失去回收机会；
+   - 本条与回滚入口对 DOCKER 的 status 豁免（§24.5）是两处**独立**防护：已被误废弃的存量 DOCKER 版本仍能回滚。若要恢复其下拉可见性，手工把记录改回可发布即可——`DEPRECATED` 全项目只有 `markDeprecated` 一个写入点，不存在「本就该废弃」的歧义。
 
 ### 23.7 健康检查默认在目标机本地探测
 
@@ -1350,6 +1355,61 @@ com.lx.deploy.common.constants
 4. **不要因为「目标机可能没装 curl / nc」就退回平台侧**：目标机必然有 python3（JAR 部署脚本本身就是 python 的，初始化阶段还会显式探测），bash 的 `/dev/tcp` 也零依赖；
 5. **`PLATFORM` 保留给「确实要验证外部可达性」的场景**，它的结论受平台所在网络出口影响——在笔记本上跑平台与在服务器上跑平台，对同一个端口可能得到相反结论。用 `PLATFORM` 排查失败时，必须在**平台那台机器**上复测，开发机的结果不作数；
 6. **JAR 运行时健康检查失败时补 systemd 诊断**（`DeploySupport.appendServiceDiagnosis`）：`systemctl is-active = active` 只说明进程活着，不代表端口在监听。不把 `systemctl status` 的尾部输出写进任务日志，运维就只能登机器翻 journalctl，而发布日志本身会显示「服务启动成功」紧接「健康检查失败」这种无从解释的矛盾。
+
+### 23.8 Dockerfile 一律由项目仓库提供（平台不生成模板）
+
+构建镜像的 Dockerfile **只能来自项目仓库**，平台不渲染、不生成任何 Dockerfile。必须遵守：
+
+1. **只保留两种 Docker 构建模式**：`PROJECT_DOCKERFILE`（仓库自带单个 Dockerfile）与
+   `LAYERED_DOCKER`（`Dockerfile.base` + `Dockerfile.app` 分层）。已下线的 `PLATFORM_TEMPLATE`
+   （平台按语言渲染模板）连同与之配套的代码与配置字段**一并删除，不得加回**——
+   语言探测、模板泛化这套机制的维护成本远高于「让项目自己写 Dockerfile」；
+2. **不要重新引入语言探测**：JVM 参数、依赖安装方式、启动命令这类信息只有项目自己最清楚，
+   平台猜错会产出「能构建成功、运行即崩」的镜像，失败点离原因极远；
+3. **容器怎么跑也由项目说了算**：端口、启动命令写在项目自己的 Dockerfile / `docker-compose.yml` 里，
+   平台只负责构建与分发，不推导默认值。不要再往 `build_config_json` 加 `app_port` / `start_command`
+   这类字段去做二次推导；
+4. **遇到不受支持的构建模式必须指名该怎么改**：`BuildTaskHandler` 解析 `build_mode` 失败时，
+   错误文案要明确点出改用「项目Dockerfile」或「分层构建」，而不是笼统的「构建模式非法」。
+   存量库若仍有 `build_mode='PLATFORM_TEMPLATE'` 的记录，需要在库里一次性订正（MySQL 变更一律手工执行）。
+
+### 23.9 compose 由项目提供，平台只做版本注入
+
+Docker 的 Dockerfile 与 docker-compose.yml **统一来自项目仓库**（与 §23.8 同一个立场：平台不生成部署文件）。
+载体与判据：`ComposeInjection`（常量与校验）、`DeployForm`（形态枚举）、`DockerDeployService`（下发与启动）、
+`ShellQuote.heredocWrite`（写文件）。必须遵守：
+
+1. **平台不渲染、不改写 compose 的任何内容**。需要随版本变动的镜像由项目写成
+   `image: 仓库地址/镜像名:${IMAGE_TAG}`，平台把本次标签放进变量文件注入。**占位符与变量名只有一份定义**
+   （`ComposeInjection.PLACEHOLDER` / `VARIABLE`），构建侧校验与发布侧注入必须共用它，
+   分头写迟早漂移成「构建认 A、发布注入 B」；
+2. **构建期与发布期各校验一次占位符**。缺了它容器会永远拉同一个 tag——发布报成功、
+   线上没变化，是极难发现的一类故障。**禁止静默放行**（发布侧还要再校验一次，
+   因为存在「校验上线之前」构建出来的存量版本）；
+3. **compose 内容快照到 `release_record.compose_content`，不放构建机产物目录**。
+   它是几 KB 的编排描述而非可分发制品：落盘要多付配额、回收与两跳传输的全部代价，
+   存库则随版本精确回溯、发布时省掉一次传输。这条也保证了 §23.6 第 8 条
+   「DOCKER 不占构建机磁盘」的配额判据继续成立。**代价必须写进文档告诉用户：改了 compose 要重新构建**；
+4. **下发文件一律走 `ShellQuote.heredocWrite`（quoted heredoc），禁止手工拼 `cat >`**。
+   少一层单引号 shell 就会把 `${IMAGE_TAG}` 提前吃掉，症状是 compose 里出现一串空值、
+   容器起不来，而报错指向完全无关的地方；分隔符必须循环加后缀直到不出现在内容中
+   （写死某个名字会让文件被静默截断）。该行为由 `ShellQuoteTests` 用真实 `sh -c` 执行来钉住；
+5. **`compose_file_path` 显式配置却读不到 → 构建失败**；未配置且默认 `docker-compose.yml` 不存在 → 静默跳过。
+   两种情形语义不同：前者是用户明确声明有这个文件，拦下是因为错误推迟到发布阶段更难排查；
+   后者是绝大多数 `docker run` 项目的常态；
+6. **`deploy_form` 默认 `RUN`**，形态切换会改变发布链路，默认值必须保证「不动配置 = 行为不变」。
+   COMPOSE 形态下 `container_name` / `port_mappings` / `extra_docker_args` 不参与——
+   它们表达的是 `docker run` 的参数，套到 compose 上只会造成「配了却没生效」；
+7. **不做 compose 的全量覆盖与备份**：`exec/bak`、`static-bak` 那套针对的是「平台产出、可能被运维改乱」的文件，
+   而 compose 由项目维护、每次随版本下发，平台也不充当它的真相来源。这条与 §24.12 是不同口径，不要套用。
+
+**存量库升级**（MySQL 一律手工执行，平台不自动跑）：
+
+```sql
+ALTER TABLE release_record
+    ADD COLUMN compose_content TEXT NULL COMMENT 'docker-compose.yml 原文快照，构建阶段从仓库读取'
+    AFTER image_digest;
+```
 
 ## 24. 任务执行与远程执行层约定
 
@@ -1585,8 +1645,9 @@ com.lx.deploy.common.constants
   判定反了会出现「按钮可点、执行到一半才失败，机器已经动了半截」；
 - **本机快路径只能用 `cp -a`，禁止 `mv`**：备份必须保留，否则回滚一次后再回滚同一版本就得重新走构建机；
 - 备份命名**必须内嵌平台版本号**（`{名}_bak_{时间戳}_{版本}`），取不到版本时退化为不带版本段——不猜版本；
-- 本机备份**多版本累积且无保留策略**：每次发布新增一份、从不清理，只涨不减。静态 dist 体积大、
-  文件多，涨得比 JAR 快，需人工关注磁盘；
+- 本机备份的产生是**每次发布新增一份**（回滚还会再新增一份，见 §24.12）。静态 dist 体积大、
+  文件多，涨得比 JAR 快。清理策略与 `retain_release_count` 解耦，统一由 `scripts/cleanup-bak.sh`
+  承担，规则见 §24.12，**不得**顺手把 `retain_release_count` 套到本机备份上；
 - **改构建机的 `build_artifact_dir` 是高危操作**：历史 `release_record.artifact_path` 存的是绝对路径，
   改完会让所有历史版本指向不存在的路径，须先确认没有仍在使用的历史版本；
 - **JAR 不查本机备份回滚是「未实现」而非「不可行」**。该类曾以「exec/bak 命名只有时间戳、
@@ -1616,6 +1677,42 @@ com.lx.deploy.common.constants
   跟着变，事后无法从平台确认「当时发到了哪个 IP」——换 IP 前先摘除该绑定。
 - **不要给每台服务器各建一个环境**：版本链按「项目 + 环境」推断 `old_version`，拆成两个环境会让
   两条链路互不可见（永远判首次发布、无法回滚），且防重失效（进行中部署的判定同样按项目 + 环境）。
+
+
+### 24.12 本机备份的清理：独立双上限，不与版本保留策略联动
+
+目标机上的 `exec/bak`（JAR）与 `static-bak`（STATIC）**不由 `project.retain_release_count` 管理**。
+两者裁的是不同维度，且必须避免共因失效：
+
+| | `retain_release_count`（构建机产物） | 本机备份（`exec/bak`、`static-bak`） |
+| --- | --- | --- |
+| 裁的是什么 | **版本号维度**：保留最近 N 个可发布版本 | **份数 / 时间维度**：最近多少个包、多少天内的包 |
+| 组织形式 | 一版本一目录，可按版本号精确取回 | 「某次发布时被换下去的那个包」，同一版本可重复出现 |
+| 回收执行者 | `ReleaseRetentionService.plan` + 构建机删目录 | `scripts/cleanup-bak.sh`（默认 dry-run） |
+
+- **禁止把 `retain_release_count` 套到本机备份上**：两者联动清理会在「构建机产物被回收」的同时
+  清掉「本机兜底」，两条恢复路径同时失效——而本机备份存在的意义恰恰是构建机那条路断了。
+- **清理不影响回滚的可行性，只影响回滚的速度**。JAR 回滚 100% 走构建机（§24.10），
+  本机备份被清到 0 份回滚照样成功；STATIC 被清空只是不再命中快路径，回落构建机后照样成功。
+  因此保留数应按「能接受多慢」来定，不必按「怕不能回滚」来定。
+- 清理统一走 `scripts/cleanup-bak.sh`，两条硬规则：
+  - **份数上限 + 天数上限，任一超限即清最旧的**（默认 `-n 10 -t 30`）；
+  - **最近 1 份永不删除**（`-k`，默认 1）——它是发布失败时手工回滚的唯一救命稻草。
+- 执行时机必须放在**发布成功之后**，不能放在发布之前（发布前清理可能删掉紧接着要用的那一份）。
+  **清理失败只记日志，绝不阻断发布**。
+- 脚本只处理名字匹配 `*_bak_[0-9]*` 的一级条目，**绝不递归、绝不触碰同目录的其他文件**，且默认 dry-run。
+
+> ⚠️ 该脚本带 `rm -rf`，属高危操作：新目录首次运行必须先不带 `--apply` 预演，
+> 确认候选清单无误后再执行。
+
+**回滚入口判定必须看版本状态**（2026-09-28 起由 `probeRollbackArtifact` 保证）：
+JAR / STATIC 只有 `release_record.status = 可发布` 才判可回滚 —— 被 `ReleaseRetentionService`
+置「已废弃」时构建机产物目录已被删除，而 `artifact_path` 字段的值仍留着，
+只判字段非空会出现「按钮可点、执行到一半才失败」。两类不可用的原因文案必须各自成文，
+不要笼统说「产物已不存在」。**DOCKER 不看 status**：它的产物是镜像仓库里的 tag，
+置废弃时不删任何东西（其 `buildServerId` 为空，`artifactDir()` 返回 null），
+对它加 status 判定会无端砍掉一个镜像还在、本来能回滚的版本。
+详见 `docs/产物分发链路.md` §8.7。
 
 
 ## 25. 内置脚本约定

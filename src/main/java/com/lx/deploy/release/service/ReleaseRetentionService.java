@@ -3,6 +3,7 @@ package com.lx.deploy.release.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.lx.deploy.common.constants.ReleaseStatus;
+import com.lx.deploy.common.enums.project.RuntimeType;
 import com.lx.deploy.deployment.mapper.DeploymentMapper;
 import com.lx.deploy.deployment.model.Deployment;
 import com.lx.deploy.project.model.Project;
@@ -80,6 +81,18 @@ public class ReleaseRetentionService {
      * <p>排序口径：先按版本序号倒序、再按创建时间倒序。序号为空的历史版本在 MySQL 倒序下排最后，
      * 正好落在「最先被回收」的位置，与「越旧越先清」的直觉一致。</p>
      *
+     * <p><b>配额只对「占用构建机磁盘」的版本计数</b>：镜像类运行时（DOCKER）的产物是镜像仓库里的 tag，
+     * 既不落在构建机的产物持久目录、平台也没有删除它的能力，却始终能被再次发布。把它算进配额的结果是，
+     * 这类版本被置为「已废弃」从而从新建部署的版本下拉里消失，而它的镜像在仓库里好好的 ——
+     * 白白损失一个可用版本，还没省下一字节磁盘。</p>
+     *
+     * <p>过滤必须发生在配额计算<b>之前</b>（判据见 {@link #occupiesBuildDisk}）：否则不占磁盘的版本会挤占名额，
+     * 把本该保留的文件类版本提前挤进「超额」区间而被误删。</p>
+     *
+     * <p>选择在 Java 侧过滤而不是写进 SQL：SQL 里 {@code runtime_type <> 'DOCKER'} 对 runtime_type 为 NULL 的
+     * 行求值是 NULL（不成立），会把运行时为空的历史记录整批漏掉；此处要的是一条明确可调的判据，
+     * 而不是依赖三值逻辑的隐式行为。</p>
+     *
      * <p>保留数未配置（空或小于等于 0）时<b>不做任何回收</b>——没有明确配额就删东西风险太高。</p>
      *
      * @param project 项目，提供主键、编码与保留版本数
@@ -94,7 +107,10 @@ public class ReleaseRetentionService {
                 .eq(ReleaseRecord::getProjectId, project.getId())
                 .eq(ReleaseRecord::getStatus, ReleaseStatus.RELEASABLE)
                 .orderByDesc(ReleaseRecord::getVersionSeq)
-                .orderByDesc(ReleaseRecord::getCreateTime));
+                .orderByDesc(ReleaseRecord::getCreateTime))
+                .stream()
+                .filter(this::occupiesBuildDisk)
+                .toList();
         if (all.size() <= retain) {
             return List.of();
         }
@@ -108,6 +124,33 @@ public class ReleaseRetentionService {
                     record.getBuildServerId(), artifactDir(project, record)));
         }
         return items;
+    }
+
+    /**
+     * 判断该版本是否占用构建机磁盘——只有占磁盘的版本才计入配额、才有资格被回收。
+     *
+     * <p>镜像类运行时（DOCKER）的产出是镜像，构建时不会往产物持久目录落任何文件
+     * （登记版本时对 DOCKER 只写 image_tag / image_digest，从不写 artifact_path），
+     * 因此 {@link #artifactDir} 对它恒返回 null，回收阶段本来也无目录可删 ——
+     * 它从未消耗过这份配额，就不该被配额清出榜单。</p>
+     *
+     * <p><b>运行时为空的历史记录按「占磁盘」处理</b>：这类记录基本都是早期文件类版本，
+     * 若按「不占磁盘」放行，它们在构建机上的产物目录就再没有回收机会，等于留成永久垃圾。
+     * 形态无法确定时选择保守回收，与本服务「宁可少删、不可错删」的整体取向一致。</p>
+     *
+     * @param record 待判断的发布版本记录
+     * @return true 表示该版本占用构建机磁盘，计入配额并可被回收
+     */
+    private boolean occupiesBuildDisk(ReleaseRecord record) {
+        RuntimeType runtimeType = RuntimeType.fromCode(record.getRuntimeType());
+        // 非 DOCKER 运行时（文件类与历史空形态）一律占磁盘，计入配额。
+        if (runtimeType != RuntimeType.DOCKER) {
+            return true;
+        }
+        // DOCKER 默认不占配额（产物是镜像仓库 tag，平台无法也无需清理）；但 COMPOSE + 指定 work_dir 形态
+        // 会往构建机产物目录落一份构建上下文 tarball，这类版本确实占用磁盘，应计入配额并被回收，
+        // 否则历史 tarball 永不清理会悄悄吃满构建机磁盘。
+        return StringUtils.hasText(record.getContextArtifactPath());
     }
 
     /**

@@ -1,8 +1,18 @@
 package com.lx.deploy.deployment.executor;
 
+import com.lx.deploy.common.crypto.CredentialCrypto;
+import com.lx.deploy.common.enums.project.DeployForm;
 import com.lx.deploy.common.enums.task.TaskLogLevel;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.response.ResponseCode;
+import com.lx.deploy.common.util.ComposeInjection;
+import com.lx.deploy.common.util.RegistryAuthSupport;
+import com.lx.deploy.common.util.ShellQuote;
+import com.lx.deploy.credential.mapper.CredentialMapper;
+import com.lx.deploy.credential.model.Credential;
+import com.lx.deploy.project.model.Project;
+import com.lx.deploy.registry.mapper.RegistryMapper;
+import com.lx.deploy.registry.model.Registry;
 import com.lx.deploy.ssh.SshCommandResult;
 import com.lx.deploy.ssh.SshSession;
 import com.lx.deploy.ssh.SshSessionFactory;
@@ -10,20 +20,36 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.Base64;
+
 /**
- * DOCKER 运行时发布服务：拉取镜像并以新容器启动。
+ * DOCKER 运行时发布服务：拉取镜像并把容器按配置形态拉起来。
  *
  * <p>只负责「把某个版本的镜像在某一台机器上跑起来」这一件事：
- * 镜像已在构建阶段推送到仓库，本服务不参与构建，也不接触产物文件。
- * 目标级的状态回调、健康检查与批次编排由 {@code DeployTaskHandler} 负责。</p>
+ * 镜像已在构建阶段推送到仓库，本服务不参与构建，也不接触 jar / 静态包这类文件产物。</p>
  *
- * <p>发布动作固定为三步：{@code docker pull} → 删除同名旧容器 → {@code docker run -d}。
- * 删除同名容器不是可选项：容器名是发布幂等的关键，不删会让 run 直接失败。
- * 启动后必须再确认一次运行态——{@code docker run} 成功只代表容器被创建，
+ * <p>两种部署形态（由运行配置 {@code deploy_form} 选择，默认 RUN）：</p>
+ * <ul>
+ *   <li><b>RUN</b>：平台拼 {@code docker run}，端口映射与容器名来自运行配置，适合单容器应用；</li>
+ *   <li><b>COMPOSE</b>：把版本里快照的 docker-compose.yml 下发到目标机工作目录，
+ *       由 {@code docker compose up -d} 启动。<b>编排完全由项目自己的文件决定</b>——
+ *       端口、数据卷、网络、服务间依赖平台一概不管，唯一介入的是把镜像版本号做成变量注入。</li>
+ * </ul>
+ *
+ * <p><b>目标机必须先用仓库凭据登录</b>：镜像仓库是私有的（如阿里云 ACR），目标机本地
+ * 默认没有凭据。构建机推送后出于安全会登出，目标机若不复用构建机（绝大多数生产部署都如此）
+ * 必然落在「未登录」状态，直接 {@code docker pull} 会被仓库拒绝。因此发布路径在 pull 之前
+ * 必须按项目绑定的 REGISTRY 凭据在目标机 {@code docker login}，pull 完成后登出并清理密码文件。
+ * 登录逻辑与构建路径共用 {@link RegistryAuthSupport} 的解析与命令拼装，避免两处分叉。</p>
+ *
+ * <p>启动后必须再确认一次运行态：无论哪种形态，命令返回成功只代表「容器被创建」，
  * 「启动即退出」的应用会被误报成发布成功。</p>
  *
- * <p>回滚与本服务无关的特殊性：镜像是不可变制品，回滚就是拉另一个 tag 重跑一遍同样流程，
- * 不需要在目标机上保留任何历史副本，因此本服务比 JAR / STATIC 少一整套备份逻辑。</p>
+ * <p>回滚与本服务无关的特殊性：镜像是不可变制品，回滚就是拿另一个版本的 tag 重跑同样流程，
+ * 不需要在目标机保留历史副本，因此比 JAR / STATIC 少一整套备份逻辑。
+ * compose 形态下还多一步：连同 compose 文件一起按目标版本重写，服务编排也随之回到旧版本。</p>
  *
  * @author lx
  * @since 2026-09-27 19:40:00
@@ -38,22 +64,39 @@ public class DockerDeployService {
     /** SSH 会话工厂：建立到目标机的已认证会话。 */
     private final SshSessionFactory sshSessionFactory;
 
+    /** 镜像仓库 Mapper：按项目 registry_id 读取仓库（取其地址与绑定凭据）。 */
+    private final RegistryMapper registryMapper;
+
+    /** 凭据 Mapper：读取 REGISTRY 类型凭据实体。 */
+    private final CredentialMapper credentialMapper;
+
+    /** 凭据加解密组件：解密凭据密文得到明文。 */
+    private final CredentialCrypto credentialCrypto;
+
     /**
      * 创建 DOCKER 发布服务。
      *
      * @param support           部署支撑组件
      * @param sshSessionFactory SSH 会话工厂
+     * @param registryMapper    镜像仓库 Mapper
+     * @param credentialMapper  凭据 Mapper
+     * @param credentialCrypto  凭据加解密组件
      */
-    public DockerDeployService(DeploySupport support, SshSessionFactory sshSessionFactory) {
+    public DockerDeployService(DeploySupport support, SshSessionFactory sshSessionFactory,
+                               RegistryMapper registryMapper, CredentialMapper credentialMapper,
+                               CredentialCrypto credentialCrypto) {
         this.support = support;
         this.sshSessionFactory = sshSessionFactory;
+        this.registryMapper = registryMapper;
+        this.credentialMapper = credentialMapper;
+        this.credentialCrypto = credentialCrypto;
     }
 
     /**
-     * 在目标机上拉取指定版本镜像并启动容器。
+     * 在目标机上拉取指定版本镜像并按配置形态启动。
      *
      * @param ctx 目标级发布上下文，使用其中的 server / config / release / task
-     * @throws DeployException 镜像标签缺失、拉取失败、启动失败或启动后未处于运行态时抛出
+     * @throws DeployException 镜像标签缺失、形态所需内容缺失、登录失败、拉取失败、启动失败或未处于运行态时抛出
      */
     public void deploy(DeployContext ctx) {
         String image = ctx.release().getImageTag();
@@ -61,9 +104,24 @@ public class DockerDeployService {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
                     "版本 " + ctx.targetVersion() + " 没有镜像标签，无法按 DOCKER 运行时发布");
         }
+        if (DeployForm.fromCode(ctx.config().getDeployForm()) == DeployForm.COMPOSE) {
+            deployCompose(ctx, image);
+        } else {
+            deployRun(ctx, image);
+        }
+    }
+
+    /**
+     * RUN 形态：单个容器，参数由平台按运行配置拼装。
+     */
+    private void deployRun(DeployContext ctx, String image) {
         String containerName = StringUtils.hasText(ctx.config().getContainerName())
                 ? ctx.config().getContainerName() : ctx.project().getCode();
-        try (SshSession session = sshSessionFactory.open(ctx.server())) {
+        SshSession session = sshSessionFactory.open(ctx.server());
+        RegistryLogin login = null;
+        try {
+            // 私有仓库必须先登录：目标机默认无凭据，构建机的登录态也不会外溢到目标机。
+            login = dockerLoginOnTarget(session, ctx);
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO, "拉取镜像 " + image);
             // 拉取镜像可能上千 MB，按长命令超时等待，不能用秒级超时。
             SshCommandResult pull = session.execLong("docker pull " + image);
@@ -83,13 +141,261 @@ public class DockerDeployService {
                 throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
                         "docker run 失败：" + support.firstLine(run.stderr()));
             }
-            // 容器启动成功不代表进程还在：立刻确认一次运行状态，避免把「启动即退出」报成成功。
-            SshCommandResult inspect = session.exec(
-                    "docker inspect -f '{{.State.Running}}' " + containerName + " 2>/dev/null");
-            if (!inspect.success() || !"true".equalsIgnoreCase(inspect.stdout().strip())) {
-                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
-                        "容器启动后未处于运行态，请检查应用启动日志（docker logs " + containerName + "）");
+            requireRunningContainer(session, containerName);
+        } finally {
+            dockerLogoutOnTarget(session, login);
+            session.close();
+        }
+    }
+
+    /**
+     * COMPOSE 形态：下发项目自带的 compose 文件，用变量注入版本号后交给 docker compose 启动。
+     *
+     * <p>顺序固定为「登录 → 准备目录 → 写 compose → 写版本变量 → pull → up -d → 校验运行态」。
+     * 先 pull 再 up 是为了让镜像下载单独出日志：混在 up 里一旦失败，
+     * 很难分清是拉不到镜像还是编排有问题。登录放在最前，保证 pull 之前目标机已具备仓库凭据。</p>
+     */
+    private void deployCompose(DeployContext ctx, String image) {
+        String content = requireComposeContent(ctx);
+        String dir = workDir(ctx);
+        String composeFile = dir + "/" + ComposeInjection.COMPOSE_FILE;
+        String envFile = dir + "/" + ComposeInjection.ENV_FILE;
+        // 显式指定 project name：默认取目录名，而目录可能因运维习惯改过，
+        // 名字一变 compose 就认不出上一次的容器，会在同一台机器上叠出两套。
+        String base = "docker compose -p " + ctx.project().getCode()
+                + " -f " + ShellQuote.quote(composeFile) + " --env-file " + ShellQuote.quote(envFile);
+        SshSession session = sshSessionFactory.open(ctx.server());
+        RegistryLogin login = null;
+        try {
+            login = dockerLoginOnTarget(session, ctx);
+            support.appendLog(ctx.task(), DeploySupport.STAGE_PREPARE, TaskLogLevel.INFO, "准备部署目录 " + dir);
+            run(session, "mkdir -p " + ShellQuote.quote(dir), "创建目录失败");
+
+            support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
+                    "下发 compose 文件到 " + composeFile);
+            run(session, ShellQuote.heredocWrite(composeFile, content), "写入 compose 文件失败");
+
+            // 版本号通过独立变量文件注入，平台不改 compose 原文：
+            // 运维上机看到的文件必须与仓库里的一致，否则「文件里写的是啥」就不再可信。
+            support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
+                    "注入镜像版本 " + ComposeInjection.VARIABLE + "=" + image);
+            run(session, ShellQuote.heredocWrite(envFile, ComposeInjection.envContent(image)), "写入版本变量文件失败");
+
+            // 指定了固定工作目录时，把构建上下文 tarball 一并下发到目标机，方便运维上机 docker build 再次构建。
+            if (StringUtils.hasText(ctx.config().getWorkDir())) {
+                deliverBuildContext(ctx, session, dir);
             }
+
+            support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO, "拉取镜像 " + image);
+            SshCommandResult pull = session.execLong(base + " pull");
+            if (!pull.success()) {
+                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                        "docker compose pull 失败：\n" + support.outputSummary(pull.stdout(), pull.stderr()));
+            }
+            support.writeOutput(ctx.task(), DeploySupport.STAGE_DELIVER, pull.stdout());
+
+            support.appendLog(ctx.task(), DeploySupport.STAGE_START, TaskLogLevel.INFO, "启动服务编排（up -d）");
+            SshCommandResult up = session.execLong(base + " up -d");
+            if (!up.success()) {
+                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                        "docker compose up 失败：\n" + support.outputSummary(up.stdout(), up.stderr()));
+            }
+            support.writeOutput(ctx.task(), DeploySupport.STAGE_START, up.stdout());
+            requireRunningServices(session, base);
+        } finally {
+            dockerLogoutOnTarget(session, login);
+            session.close();
+        }
+    }
+
+    /**
+     * 把构建上下文 tarball 下发并解包到目标机工作目录，供运维上机 {@code docker build} 再次构建。
+     *
+     * <p>仅当目标机指定了固定工作目录（{@code work_dir}）且版本记录里打包过上下文时调用。
+     * 走与 JAR / STATIC 一致的「构建机 → 平台 → 目标机」两跳中转：先经 {@link DeploySupport#downloadArtifact}
+     * 从构建机拉到平台本地临时文件，再 {@code sftpUpload} 到目标机，最后在目标机解包到
+     * {@code <工作目录>/build-context/}（Dockerfile 随源码一起落位），解包后删 tar 省空间。</p>
+     *
+     * <p>这是「应急上机重建」的辅助材料，下发失败只记 WARN 不阻断正常的镜像发布流程——
+     * 即便它没到位，已发布的镜像仍可正常回滚，不应因为一个可选材料把一次成功发布判成失败。</p>
+     *
+     * @param ctx     部署上下文
+     * @param session 已认证的目标机会话
+     * @param dir     目标机工作目录绝对路径
+     */
+    private void deliverBuildContext(DeployContext ctx, SshSession session, String dir) {
+        String remoteTar = ctx.release().getContextArtifactPath();
+        if (!StringUtils.hasText(remoteTar)) {
+            return;
+        }
+        support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
+                "下发构建上下文到 " + dir + "/build-context（含 Dockerfile 与源码，供上机 docker build 重建）");
+        Path local = null;
+        try {
+            local = support.downloadArtifact(ctx.task(), ctx.release(), remoteTar, "build-context.tar.gz", ctx.deployment());
+            String remoteFile = dir + "/build-context.tar.gz";
+            session.sftpUpload(local, remoteFile);
+            // 解包到 build-context/ 子目录，Dockerfile 随源码一起落位；解包后删 tar 省空间。
+            String extract = "mkdir -p " + ShellQuote.quote(dir + "/build-context")
+                    + " && tar xzf " + ShellQuote.quote(remoteFile)
+                    + " -C " + ShellQuote.quote(dir + "/build-context")
+                    + " && rm -f " + ShellQuote.quote(remoteFile);
+            run(session, extract, "解包构建上下文失败");
+            support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
+                    "构建上下文已就绪：" + dir + "/build-context（可 cd 进该目录执行 docker build -f <dockerfile> . 再次构建）");
+        } catch (Exception e) {
+            support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
+                    "构建上下文下发失败（不影响镜像发布，仍可回滚）：" + e.getMessage());
+        } finally {
+            if (local != null) {
+                support.deleteQuietly(local);
+            }
+        }
+    }
+
+    /**
+     * 取本次要下发的 compose 内容，缺失时给出可操作的排查方向。
+     *
+     * <p>发布期还要再校验一次占位符（{@link ComposeInjection#requireUsable}）：构建期已校验过，
+     * 但存量版本可能是加校验之前构建的，那段窗口期里产生的脏数据只在这里才拦得住。</p>
+     */
+    private String requireComposeContent(DeployContext ctx) {
+        if (!StringUtils.hasText(ctx.release().getComposeContent())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "版本 " + ctx.targetVersion() + " 没有记录 compose 文件内容，无法按 COMPOSE 形态发布。"
+                            + "请确认仓库中存在 docker-compose.yml 并提交后重新构建"
+                            + "（文件不在仓库根目录时，用 build_config_json.compose_file_path 指定路径）。"
+                            + "若只是想临时发出去，可把运行配置的 deploy_form 改成 RUN，"
+                            + "但 compose 里编排的端口、卷与服务依赖都不会生效");
+        }
+        return ComposeInjection.requireUsable(ctx.release().getComposeContent());
+    }
+
+    /**
+     * 在目标机登录镜像仓库：解析 REGISTRY 凭据 → 写密码文件 → docker login。
+     *
+     * <p>与构建路径共用 {@link RegistryAuthSupport}：凭据有两种存储形态（密码在密文 +
+     * 用户名在 metadata，或用户名:密码整体在密文），由 {@code resolveRegistryCredentials}
+     * 统一兼容。公共仓库（未绑定 registry_id）直接返回 null，调用方跳过登录。</p>
+     *
+     * @return 登录态（含登出用的仓库地址与密码文件路径）；无需登录时返回 null
+     * @throws DeployException 凭据缺失、解密失败或登录失败时抛出
+     */
+    private RegistryLogin dockerLoginOnTarget(SshSession session, DeployContext ctx) {
+        Project project = ctx.project();
+        if (!StringUtils.hasText(project.getRegistryId())) {
+            return null;
+        }
+        Registry registry = registryMapper.selectById(project.getRegistryId());
+        if (registry == null || !StringUtils.hasText(registry.getCredentialId())) {
+            return null;
+        }
+        Credential credential = credentialMapper.selectById(registry.getCredentialId());
+        if (credential == null) {
+            throw new DeployException(ResponseCode.DATA_NOT_FOUND, "镜像仓库绑定的凭据不存在");
+        }
+        String plaintext = credentialCrypto.decrypt(credential.getEncryptedValue());
+        String[] up = RegistryAuthSupport.resolveRegistryCredentials(plaintext, credential.getMetadataJson());
+        String loginHost = registry.getRegistryUrl();
+        String passwordFile = "/tmp/ld_registry_pwd_deploy_" + ctx.task().getId();
+        writeSecretFile(session, passwordFile, up[1]);
+        support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
+                "目标机登录镜像仓库 " + loginHost + "（密码经 stdin 传入，不落日志与命令行）");
+        SshCommandResult loginResult = session.exec(
+                RegistryAuthSupport.dockerLoginCommand(loginHost, up[0], passwordFile));
+        if (!loginResult.success()) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "目标机镜像仓库登录失败：" + support.firstLine(loginResult.stderr()));
+        }
+        return new RegistryLogin(loginHost, passwordFile);
+    }
+
+    /**
+     * 在目标机登出镜像仓库并清理密码临时文件（成功失败都要清，绝不能把明文密码留在目标机磁盘）。
+     *
+     * @param session 已认证会话
+     * @param login   登录态；为 null 时直接返回
+     */
+    private void dockerLogoutOnTarget(SshSession session, RegistryLogin login) {
+        if (login == null) {
+            return;
+        }
+        if (login.passwordFile() != null) {
+            session.exec("rm -f " + login.passwordFile());
+        }
+        if (login.host() != null) {
+            session.exec(RegistryAuthSupport.dockerLogoutCommand(login.host()));
+        }
+    }
+
+    /**
+     * 把敏感内容经 base64 写入目标机临时文件（权限 600）；明文不进命令行、不进日志。
+     *
+     * <p>与构建路径 {@code BuildTaskHandler#writeSecretFile} 同一实现，避免两处对
+     * 「密码怎么安全落到目标机」的处理分叉。</p>
+     */
+    private void writeSecretFile(SshSession session, String path, String content) {
+        String b64 = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
+        String cmd = "echo " + b64 + " | base64 -d > " + path + " && chmod 600 " + path;
+        SshCommandResult result = session.exec(cmd);
+        if (!result.success()) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "写入镜像仓库密码到目标机临时文件失败：" + support.firstLine(result.stderr()));
+        }
+    }
+
+    /**
+     * 目标机部署目录：优先用运行配置的 work_dir，回落「部署根目录 / 项目编码」。
+     *
+     * <p>部署根目录按机器配在服务器档案里，因此这里不写死任何绝对路径。</p>
+     */
+    private String workDir(DeployContext ctx) {
+        if (StringUtils.hasText(ctx.config().getWorkDir())) {
+            return ctx.config().getWorkDir().strip();
+        }
+        return support.deployBase(ctx.server()) + "/" + ctx.project().getCode();
+    }
+
+    /**
+     * 执行远程命令并检查成功，失败时抛出带错误首行的异常。
+     */
+    private void run(SshSession session, String command, String message) {
+        SshCommandResult result = session.exec(command);
+        if (!result.success()) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    message + "：" + support.firstLine(result.stderr()));
+        }
+    }
+
+    /**
+     * 确认单个容器处于运行态。
+     */
+    private void requireRunningContainer(SshSession session, String containerName) {
+        // 容器启动成功不代表进程还在：立刻确认一次运行状态，避免把「启动即退出」报成成功。
+        SshCommandResult inspect = session.exec(
+                "docker inspect -f '{{.State.Running}}' " + containerName + " 2>/dev/null");
+        if (!inspect.success() || !"true".equalsIgnoreCase(inspect.stdout().strip())) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "容器启动后未处于运行态，请检查应用启动日志（docker logs " + containerName + "）");
+        }
+    }
+
+    /**
+     * 确认编排中至少有一个服务处于运行态。
+     *
+     * <p>只判「至少一个」而不是「全部」：compose 里允许存在一次性任务容器（退出码 0 即完成），
+     * 逐个苛求会让这类编排永远发布失败。</p>
+     */
+    private void requireRunningServices(SshSession session, String base) {
+        SshCommandResult result = session.exec(base + " ps --status running --services 2>/dev/null");
+        if (!result.success()) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "查询编排运行状态失败：" + support.firstLine(result.stderr()));
+        }
+        long running = result.stdout().lines().map(String::strip).filter(s -> !s.isEmpty()).count();
+        if (running == 0) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "编排启动后没有任何服务处于运行态，请在目标机执行 docker compose ps 与 docker compose logs 排查");
         }
     }
 
@@ -121,5 +427,9 @@ public class DockerDeployService {
      */
     private String extraArgs(DeployConfig config) {
         return StringUtils.hasText(config.getExtraDockerArgs()) ? " " + config.getExtraDockerArgs().trim() : "";
+    }
+
+    /** 登录态载体：登出与清理密码文件时复用。 */
+    private record RegistryLogin(String host, String passwordFile) {
     }
 }

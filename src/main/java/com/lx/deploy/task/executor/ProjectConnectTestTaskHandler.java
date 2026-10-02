@@ -513,7 +513,7 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
                     throw new DeployException(ResponseCode.DATA_NOT_FOUND, "镜像仓库绑定的凭据不存在");
                 }
                 String plaintext = credentialCrypto.decrypt(credential.getEncryptedValue());
-                String[] up = RegistryAuthSupport.parseUserPassword(plaintext);
+                String[] up = RegistryAuthSupport.resolveRegistryCredentials(plaintext, credential.getMetadataJson());
                 passwordFile = "/tmp/ld_registry_pwd_probe_" + task.getBizId();
                 writeSecretFile(task, session, passwordFile, up[1], STAGE_REGISTRY);
                 appendLog(task, STAGE_REGISTRY, TaskLogLevel.INFO,

@@ -135,7 +135,7 @@ public class ProjectVo {
     /**
      * 构建模式。
      *
-     * <p>取值与后端 BuildMode 枚举一致：PLATFORM_TEMPLATE / PROJECT_DOCKERFILE /
+     * <p>取值与后端 BuildMode 枚举一致：PROJECT_DOCKERFILE /
      * LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY。</p>
      */
     @Schema(description = "构建模式")

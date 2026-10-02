@@ -284,7 +284,7 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         // 构建模式可选，传入时必须是受支持的枚举值。
         if (dto.getBuildMode() != null && BuildMode.fromCode(dto.getBuildMode()) == null) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
-                    "构建模式必须为 PLATFORM_TEMPLATE、PROJECT_DOCKERFILE、LAYERED_DOCKER、SCRIPT_DEPLOY 或 ARTIFACT_ONLY");
+                    "构建模式必须为 PROJECT_DOCKERFILE、LAYERED_DOCKER、SCRIPT_DEPLOY 或 ARTIFACT_ONLY");
         }
         // 运行时与构建模式必须匹配：Docker 镜像类构建模式只能配 DOCKER 运行时，
         // 脚本 / 仅发布产物只能配 JAR 或 STATIC 运行时（AGENTS.md §23.4）。
@@ -346,9 +346,11 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         if (!StringUtils.hasText(entity.getSourceType())) {
             entity.setSourceType(SourceType.GIT.getCode());
         }
-        // 未指定构建模式时默认使用平台 Dockerfile 模板。
+        // 未指定构建模式时默认使用项目仓库自带的 Dockerfile。
+        // Docker 镜像类默认改成 PROJECT_DOCKERFILE：平台不再提供 Dockerfile 模板，
+        // 把「必须项目提供 Dockerfile」作为默认值，比默认一个已下线的模式更不容易走弯路。
         if (!StringUtils.hasText(entity.getBuildMode())) {
-            entity.setBuildMode(BuildMode.PLATFORM_TEMPLATE.getCode());
+            entity.setBuildMode(BuildMode.PROJECT_DOCKERFILE.getCode());
         }
         // 未指定状态时默认启用（1）。
         if (entity.getStatus() == null) {

@@ -43,7 +43,6 @@
           :fields="BUILD_CONFIG_FIELDS"
           :model-value="project.buildConfigJson || ''"
           :context="editorContext"
-          :example="BUILD_CONFIG_EXAMPLE"
           readonly
         />
         <ConfigEditor
@@ -51,7 +50,6 @@
           :fields="RUNTIME_CONFIG_FIELDS"
           :model-value="project.runtimeConfigJson || ''"
           :context="editorContext"
-          :example="RUNTIME_CONFIG_EXAMPLE"
           readonly
         />
         <ConfigEditor
@@ -59,7 +57,6 @@
           :fields="HEALTH_CONFIG_FIELDS"
           :model-value="project.healthConfigJson || ''"
           :context="editorContext"
-          :example="HEALTH_CONFIG_EXAMPLE"
           readonly
         />
 
@@ -100,10 +97,7 @@ import {
   BUILD_MODE_MAP,
   BUILD_CONFIG_FIELDS,
   RUNTIME_CONFIG_FIELDS,
-  HEALTH_CONFIG_FIELDS,
-  BUILD_CONFIG_EXAMPLE,
-  RUNTIME_CONFIG_EXAMPLE,
-  HEALTH_CONFIG_EXAMPLE
+  HEALTH_CONFIG_FIELDS
 } from '@/constants/projectConfig.ts'
 import ConfigEditor from '@/components/ConfigEditor/index.vue'
 

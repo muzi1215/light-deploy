@@ -108,6 +108,34 @@ public class ReleaseRecord extends BaseEntity {
     private String imageDigest;
 
     /**
+     * docker-compose.yml 原文快照。
+     *
+     * <p>仅 DOCKER 运行时且部署形态为 COMPOSE 时填写：构建阶段从仓库按
+     * {@code build_config_json.compose_file_path} 读出来原文存盘，发布时原样下发到目标机工作目录。</p>
+     *
+     * <p>为什么不把它当产物走构建机持久目录：它是几 KB 的编排描述而不是可分发制品，
+     * 落盘只会多一个需要回收的目录；留在版本记录里既能随版本精确回溯，
+     * 回滚时也省掉一次文件传输。**平台不对这份内容做任何改写**——
+     * 版本号通过独立的变量文件注入，见 {@code DockerDeployService}。</p>
+     */
+    @TableField("compose_content")
+    @Schema(description = "docker-compose.yml 原文快照，DOCKER+COMPOSE 形态使用")
+    private String composeContent;
+
+    /**
+     * DOCKER 运行时构建上下文 tarball 在构建机上的绝对路径。
+     *
+     * <p>仅 DOCKER 运行时且部署形态为 COMPOSE、且目标机指定了 work_dir 时填写：构建阶段把构建上下文
+     * （仓库源码快照，排除 .git 与构建产物目录）打成 tarball 持久化到构建机产物目录，发布阶段随 compose
+     * 一起下发到目标机工作目录并解包，方便运维上机 {@code docker build} 再次构建。</p>
+     *
+     * <p>存量版本（本列为后加能力）恒为空，发布阶段据此跳过上下文下发；镜像仍从仓库拉取，回滚不受影响。</p>
+     */
+    @TableField("context_artifact_path")
+    @Schema(description = "DOCKER 构建上下文tarball路径，COMPOSE+work_dir时下发供上机重建")
+    private String contextArtifactPath;
+
+    /**
      * 产物 SHA256 摘要。
      *
      * <p>JAR / STATIC 运行时填写，由构建机 sha256sum 计算，部署前校验文件一致性。</p>

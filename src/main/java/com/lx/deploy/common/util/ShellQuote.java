@@ -35,4 +35,38 @@ public final class ShellQuote {
         }
         return "'" + value.replace("'", "'\\''") + "'";
     }
+
+    /**
+     * 拼一条把多行文本<b>原样</b>写入远程文件的命令。
+     *
+     * <p>用 quoted heredoc（{@code <<'MARKER'}）：shell 对其中内容不做任何替换，
+     * 因此 {@code ${VAR}}、反引号、双引号都不必额外转义。这一点对下发项目自带的
+     * docker-compose.yml 是硬要求——平台必须把文件交给 docker 时保持逐字节一致，
+     * 中途做一次替换就可能悄悄改掉用户的意图。</p>
+     *
+     * <p>分隔符要<b>保证</b>不出现在内容里，否则文件被提前截断且不报错，
+     * 表现为「compose 文件少了一截、容器起不来」，排查方向完全跑偏。
+     * 这里循环加后缀直到唯一，而不是假定某个名字够特别：内容来自用户仓库，任何假定都可能被现实打脸。</p>
+     *
+     * @param path    目标机上的文件绝对路径
+     * @param content 文件正文；内部遗留 CR 由调用方负责，这里只保证结尾有换行
+     * @return 可直接执行的 shell 命令
+     */
+    public static String heredocWrite(String path, String content) {
+        String body = content == null ? "" : content;
+        String marker = "LD_EOF";
+        for (int i = 1; containsMarkerLine(body, marker); i++) {
+            marker = "LD_EOF_" + i;
+        }
+        String ensured = body.endsWith("\n") ? body : body + "\n";
+        return "cat > " + quote(path) + " <<'" + marker + "'\n" + ensured + marker + "\n";
+    }
+
+    /**
+     * 判断文本中是否存在与分隔符相同的整行（允许前后空白——heredoc 只在行首完全匹配时才结束，
+     * 缩进写法 {@code <<-} 更是只看行首，因此这里的宽松判定是故意保守的）。
+     */
+    private static boolean containsMarkerLine(String content, String marker) {
+        return content.lines().anyMatch(line -> line.strip().equals(marker));
+    }
 }
