@@ -52,4 +52,23 @@ public class BuildDto extends TimeRangeQuery {
     @Min(value = 1, message = "版本序号必须大于 0")
     @Schema(description = "版本序号，可选；留空由平台自动递增取号")
     private Integer versionSeq;
+
+    /**
+     * 构建模式筛选条件（可选）。
+     *
+     * <p>取值对应 {@code BuildMode} 枚举 code（如 PROJECT_DOCKERFILE / LAYERED_DOCKER /
+     * SCRIPT_DEPLOY / ARTIFACT_ONLY / JAR_PREBUILD）。列表页「构建模式」下拉筛选时由前端传入，
+     * 为空表示不过滤；后端 {@code buildQueryWrapper} 仅在非空时拼接等值条件。</p>
+     */
+    @Schema(description = "构建模式筛选（BuildMode 枚举 code），可选")
+    private String buildMode;
+
+    /**
+     * 构建状态筛选条件（可选）。
+     *
+     * <p>取值见 {@code BuildStatus} 常量类：0 排队中 / 1 构建中 / 2 成功 / 3 失败。
+     * 列表页「状态」下拉筛选时由前端传入，为 null 表示不过滤。</p>
+     */
+    @Schema(description = "构建状态筛选（BuildStatus 编码），可选")
+    private Integer status;
 }

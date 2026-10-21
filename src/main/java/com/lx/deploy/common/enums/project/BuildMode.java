@@ -28,7 +28,10 @@ public enum BuildMode {
     SCRIPT_DEPLOY("SCRIPT_DEPLOY", "脚本部署"),
 
     /** 直接发布已有 JAR 或静态产物，不做构建。 */
-    ARTIFACT_ONLY("ARTIFACT_ONLY", "仅发布产物");
+    ARTIFACT_ONLY("ARTIFACT_ONLY", "仅发布产物"),
+
+    /** B1：平台先 Maven 打出 jar，再用极简 Dockerfile 包成镜像（目标机只纯 run）。 */
+    JAR_PREBUILD("JAR_PREBUILD", "JAR预构建镜像");
 
     private final String code;
     private final String message;

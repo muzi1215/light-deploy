@@ -569,6 +569,12 @@ public class BuildService extends ServiceImpl<BuildMapper, Build> {
                 Build::getBuildServerId, condition.getBuildServerId());
         // 创建时间区间：闭区间，开始晚于截止由 TimeRangeSupport 直接判参数错误。
         TimeRangeSupport.apply(wrapper, Build::getCreateTime, condition);
+        // 构建模式与状态：对应列表页「构建模式」「状态」下拉筛选，非空才拼接等值条件，
+        // 否则会误把整列当成过滤条件导致查不到数据。
+        wrapper.eq(StringUtils.hasText(condition.getBuildMode()),
+                Build::getBuildMode, condition.getBuildMode());
+        wrapper.eq(condition.getStatus() != null,
+                Build::getStatus, condition.getStatus());
         wrapper.orderByDesc(Build::getCreateTime);
         return wrapper;
     }

@@ -34,7 +34,8 @@ public enum RuntimeType {
      */
     DOCKER("DOCKER", "Docker容器", Set.of(
             BuildMode.PROJECT_DOCKERFILE,
-            BuildMode.LAYERED_DOCKER)),
+            BuildMode.LAYERED_DOCKER,
+            BuildMode.JAR_PREBUILD)),
 
     /**
      * Java JAR 运行时，配合 systemd 服务部署。

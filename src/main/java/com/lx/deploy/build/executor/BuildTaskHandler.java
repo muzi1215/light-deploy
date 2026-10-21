@@ -164,6 +164,12 @@ public class BuildTaskHandler implements TaskHandler {
     /** 构建机启动级验证默认窗口（秒）：镜像前台运行，由 timeout 在该秒数后终止，窗口内持续存活即视为通过。 */
     private static final int DEFAULT_DOCKER_VERIFY_TIMEOUT_SECONDS = 30;
 
+    /** JAR 预构建模式的 Maven 构建镜像（与项目 Dockerfile 的 builder 阶段同版本，复用已拉取的镜像）。 */
+    private static final String MAVEN_BUILDER_IMAGE = "maven:3.9.9-eclipse-temurin-8";
+
+    /** JAR 预构建模式挂载到构建机的 Maven 本地仓库缓存目录，加速增量构建（首次全量下载，之后复用）。 */
+    private static final String M2_CACHE_HOST_DIR = "/lx/light-deploy/.m2";
+
     /**
      * 构建进程组 PID 文件的路径前缀。
      *
@@ -391,11 +397,18 @@ public class BuildTaskHandler implements TaskHandler {
             String composeContent = null;
             String contextArtifactPath = null;
             if (runtimeType == RuntimeType.DOCKER) {
-                composeContent = buildDocker(task, session, project, config, runtimeType, buildMode,
-                        workspacePath, commit, releaseVersion.version(), artifacts);
-                // COMPOSE + 指定 work_dir 形态要往目标机下发构建上下文，先把它打成 tarball 落构建机产物目录。
-                contextArtifactPath = captureBuildContext(task, session, buildServer, workspacePath,
-                        artifactBase, project, config, releaseVersion.version());
+                if (buildMode == BuildMode.JAR_PREBUILD) {
+                    // B1：平台先出 jar，再用极简镜像打包，目标机只纯 run。
+                    composeContent = buildJarPrebuild(task, session, project, config, runtimeType,
+                            workspacePath, commit, releaseVersion.version(), artifacts);
+                    // 不产出构建上下文 tarball：目标机无源码也无 maven，应急上机重建无意义；RUN 形态本就不下发。
+                } else {
+                    composeContent = buildDocker(task, session, project, config, runtimeType, buildMode,
+                            workspacePath, commit, releaseVersion.version(), artifacts);
+                    // COMPOSE + 指定 work_dir 形态要往目标机下发构建上下文，先把它打成 tarball 落构建机产物目录。
+                    contextArtifactPath = captureBuildContext(task, session, buildServer, workspacePath,
+                            artifactBase, project, config, releaseVersion.version());
+                }
             } else {
                 buildFileArtifact(task, session, buildServer, project, config, runtimeType, workspacePath,
                         artifactBase, commit, releaseVersion.version(), artifacts);
@@ -736,6 +749,107 @@ public class BuildTaskHandler implements TaskHandler {
                 + (StringUtils.hasText(digest) ? "，摘要 " + digest : ""));
         return readComposeFile(task, session, config, workspacePath);
     }
+
+    /**
+     * 执行 B1（JAR 预构建）模式的 DOCKER 构建：先由平台用 Maven 打出 jar，再用极简 Dockerfile 包成镜像推送。
+     *
+     * <p>与 {@link #buildDocker}（PROJECT_DOCKERFILE / LAYERED_DOCKER 由项目 Dockerfile 在 docker build 内完成编译）
+     * 的区别：本模式把「编译出 jar」这一步从镜像构建里剥离，用 Maven 构建镜像在构建机跑（挂载持久化 ~/.m2 缓存），
+     * 先在宿主工作区产出 jar，再用项目提供的极简 Dockerfile（FROM jre + COPY jar + COPY yml）打最终镜像。</p>
+     *
+     * <p>收益：① 增量构建复用依赖缓存，不必每次全量下载；② jar 成为可见的一等产物，可单独审计/分发；
+     * ③ 最终镜像与多阶段 Dockerfile 体积持平（均只含 jre），但「编译」与「打包镜像」职责清晰分离。
+     * 代价：多一次 Maven 构建镜像的拉取/启动开销。</p>
+     *
+     * <p>极简 Dockerfile 一律由项目仓库提供（build_config_json.dockerfile_path 指向），平台不生成模板——
+     * 与「Dockerfile 由项目自带」的硬约束一致。</p>
+     *
+     * @param task         当前任务
+     * @param session      已认证会话
+     * @param project      项目
+     * @param config       构建配置
+     * @param runtimeType  运行时（固定 DOCKER）
+     * @param workspacePath 工作区路径
+     * @param commit       提交 ID，仅用于日志与溯源
+     * @param releaseVersion 发布版本号，作为镜像 tag
+     * @param artifacts    构建产物收集列表
+     * @return 项目自带的 docker-compose.yml 原文；未使用返回 null
+     * @throws DeployException 构建/推送失败或必要配置缺失时抛出
+     */
+    private String buildJarPrebuild(Task task, SshSession session, Project project, BuildConfig config,
+                                    RuntimeType runtimeType, String workspacePath, String commit,
+                                    String releaseVersion, List<BuildArtifact> artifacts) {
+        if (!reportProgress(task, STAGE_BUILD, PROGRESS_BUILDING)) {
+            return null;
+        }
+        String imageRepo = resolveImageRepository(project, config);
+        String tag = releaseVersion;
+        String fullImage = imageRepo + ":" + tag;
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "构建镜像 " + fullImage + "（模式 JAR_PREBUILD：先出 jar 再极简镜像）");
+
+        // 1) Maven 构建出 jar：用 Maven 构建镜像在构建机跑，避免要求构建机裸装 maven/JDK（与现有 Dockerfile 的 builder 阶段同源）。
+        //    挂载持久化 ~/.m2 缓存目录，增量构建不必每次全量下载依赖；挂载整个工作区为 /workspace 并设为工作目录。
+        //    timeout 包裹：超时时杀掉 docker run，--rm 保证容器被一并清理，不留僵尸。
+        String moduleDir = resolveModuleDir(config);
+        String mavenSettings = StringUtils.hasText(config.getMavenSettingsPath())
+                ? " -s /workspace/" + config.getMavenSettingsPath().strip() : "";
+        String mavenModule = StringUtils.hasText(moduleDir) ? " -f " + moduleDir + "/pom.xml" : "";
+        int timeoutSeconds = resolveBuildTimeout(config, session);
+        String mavenCmd = "timeout -k 5 " + timeoutSeconds + "s docker run --rm"
+                + " -v " + shellQuote(workspacePath) + ":/workspace -w /workspace"
+                + " -v " + shellQuote(M2_CACHE_HOST_DIR) + ":/root/.m2"
+                + " " + MAVEN_BUILDER_IMAGE
+                + " mvn -B" + mavenSettings + mavenModule + " package -DskipTests";
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "Maven 构建 jar（输出实时回传）：" + mavenCmd);
+        SshCommandResult mavenResult;
+        try {
+            mavenResult = session.exec(mavenCmd, timeoutSeconds + 60, streamingLogConsumer(task, STAGE_BUILD));
+        } catch (SshCommandTimeoutException e) {
+            writeTimeoutOutput(task, STAGE_BUILD, e.getPartialResult());
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "Maven 构建 jar 超时（" + e.getTimeoutSeconds()
+                            + " 秒，可在 build_config_json.command_timeout_seconds 放宽上限）");
+        }
+        if (!mavenResult.success()) {
+            String hint = tailLines(StringUtils.hasText(mavenResult.stderr()) ? mavenResult.stderr() : mavenResult.stdout(), MAX_ERROR_HINT_LINES);
+            writeError(task, STAGE_BUILD, StringUtils.hasText(mavenResult.stderr()) ? mavenResult.stderr() : mavenResult.stdout(), MAX_BUILD_OUTPUT_LINES);
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR, "Maven 构建 jar 失败：" + hint);
+        }
+        fillTailIfTruncated(task, STAGE_BUILD, mavenResult);
+
+        // 2) 定位 jar 产物：相对仓库根优先，找不到再按模块目录回落。
+        if (!StringUtils.hasText(config.getArtifactPath())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "JAR_PREBUILD 模式必须在 build_config_json.artifact_path 给出 jar 相对路径");
+        }
+        String jarFile = locateFile(session, workspacePath, config.getArtifactPath());
+        if (!StringUtils.hasText(jarFile) && StringUtils.hasText(moduleDir)) {
+            jarFile = locateFile(session, workspacePath + "/" + moduleDir, config.getArtifactPath());
+        }
+        if (!StringUtils.hasText(jarFile)) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "未找到 jar 产物，请检查 artifact_path：" + config.getArtifactPath());
+        }
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "已产出 jar：" + jarFile);
+
+        // 3) 极简镜像：用项目提供的 Dockerfile（FROM jre + COPY jar + COPY yml），构建上下文为工作区根。
+        if (!StringUtils.hasText(config.getDockerfilePath())) {
+            throw new DeployException(ResponseCode.VALIDATION_ERROR,
+                    "JAR_PREBUILD 模式需要 build_config_json.dockerfile_path（指向项目提供的极简 Dockerfile）");
+        }
+        dockerBuild(task, session, workspacePath, "-f " + config.getDockerfilePath(), fullImage);
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "镜像构建完成");
+
+        // 4) 启动级验证 + 推送（与 buildDocker 同闸门）。
+        dockerRunVerify(task, session, fullImage, config);
+        dockerPush(task, session, project, fullImage);
+        String digest = dockerDigest(session, fullImage);
+        artifacts.add(imageArtifact(ArtifactType.APP_IMAGE, fullImage, tag, digest));
+        appendLog(task, STAGE_PUSH, TaskLogLevel.INFO, "镜像已推送：" + fullImage
+                + (StringUtils.hasText(digest) ? "，摘要 " + digest : ""));
+        return readComposeFile(task, session, config, workspacePath);
+    }
+
 
     /**
      * 解析本次构建对应的模块目录：module_dir → module_name → 空（仓库根）。

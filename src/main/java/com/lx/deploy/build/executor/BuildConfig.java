@@ -101,4 +101,13 @@ public class BuildConfig {
      */
     @JsonProperty("docker_verify_timeout_seconds")
     private Integer dockerVerifyTimeoutSeconds;
+
+    /**
+     * Maven settings.xml 相对仓库根路径，JAR_PREBUILD 模式选填。
+     *
+     * <p>填了则在 Maven 构建命令加 {@code -s} 指向它（典型用途：切到阿里云镜像加速依赖下载）。
+     * 不填则走 Maven 默认配置（公网 Maven Central，构建机在内网时极慢）。</p>
+     */
+    @JsonProperty("maven_settings_path")
+    private String mavenSettingsPath;
 }

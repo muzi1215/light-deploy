@@ -3,8 +3,10 @@
     <!-- 搜索区域 -->
     <div class="search-div">
       <el-form :model="searchForm" inline>
-        <el-form-item label="项目名称">
-          <el-input v-model="searchForm.projectName" placeholder="请输入项目名称" clearable style="width: 180px" @keyup.enter="handleSearch" />
+        <el-form-item label="项目">
+          <el-select v-model="searchForm.projectId" placeholder="请选择项目" clearable filterable style="width: 180px">
+            <el-option v-for="item in projectOptions" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
         </el-form-item>
         <el-form-item label="构建模式">
           <el-select v-model="searchForm.buildMode" placeholder="请选择" clearable style="width: 160px">
@@ -240,7 +242,8 @@ const BUILD_MODE_MAP: Record<string, string> = {
   PROJECT_DOCKERFILE: '项目Dockerfile',
   LAYERED_DOCKER: '分层构建',
   SCRIPT_DEPLOY: '脚本部署',
-  ARTIFACT_ONLY: '仅发布产物'
+  ARTIFACT_ONLY: '仅发布产物',
+  JAR_PREBUILD: 'JAR预构建'
 }
 
 const BUILD_MODE_OPTIONS = Object.entries(BUILD_MODE_MAP).map(([value, label]) => ({ value, label }))
@@ -251,7 +254,16 @@ import { splitTimeRange } from '@/utils/index.ts'
 defineOptions({ name: 'BuildList' })
 
 // ==================== 搜索 ====================
-const searchForm = reactive({ projectName: '', buildMode: '', status: undefined as number | undefined })
+const searchForm = reactive({ projectId: '', buildMode: '', status: undefined as number | undefined })
+
+/** 项目下拉选项：搜索区「项目」筛选用，加载全部项目即可（禁用项对筛选无意义）。 */
+const projectOptions = ref<ProjectVo[]>([])
+function loadProjectOptions() {
+  listProjects()
+    .then((res) => { projectOptions.value = res.data || [] })
+    .catch(() => { projectOptions.value = [] })
+}
+loadProjectOptions()
 
 /** 创建时间区间：与后端 createTimeBegin / createTimeEnd 对应，未选择时两个参数都不传 */
 const timeRange = ref<string[]>([])
@@ -262,7 +274,7 @@ function handleSearch() {
 }
 
 function handleReset() {
-  searchForm.projectName = ''
+  searchForm.projectId = ''
   searchForm.buildMode = ''
   searchForm.status = undefined
   timeRange.value = []
@@ -280,7 +292,7 @@ async function fetchData() {
     const res = await pageBuild({
       pageNum: pagination.pageNum,
       pageSize: pagination.pageSize,
-      projectName: searchForm.projectName || undefined,
+      projectId: searchForm.projectId || undefined,
       buildMode: searchForm.buildMode || undefined,
       status: searchForm.status,
       ...splitTimeRange(timeRange.value),
