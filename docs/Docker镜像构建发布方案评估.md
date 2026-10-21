@@ -158,7 +158,9 @@
 - **决策**：`BuildMode` 新增 `IMAGE_PULL`（镜像直发）。不拉代码、不构建、不推镜像，直接按「仓库坐标 + 人工填写的 tag」生成 `release_record`。
 - **理由**：它是方式一的合法落地形态，成本极低（不需要构建机、不需要 git 凭据）；与 `ARTIFACT_ONLY`（产物直发）对称。
 - **代价**：版本号无 commit 短码，退化为 `{编码}-v{序号}-{时间戳}`（§23.5 已定义该退化）；`image_digest` 需 `docker manifest inspect` 补取，**允许为空**。
-- **状态**：提议
+- **状态**：未实施（被 `JAR_PREBUILD` 取代）
+
+> **实施结果（2026-10）**：该 ADR 提出的 `IMAGE_PULL` 未落地。实际新增的 DOCKER 构建模式是 `JAR_PREBUILD`——平台先用 Maven 容器打出 jar，再用项目提供的极简 Dockerfile 包成镜像推送（目标机只纯 run）。`IMAGE_PULL`（外部已推镜像直发）暂未实现，如需要应作为独立 ADR 重新评估。当前 `BuildMode` 枚举为 `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` / `SCRIPT_DEPLOY` / `ARTIFACT_ONLY` / `JAR_PREBUILD`（权威定义见 AGENTS.md §3 / §23.4）。
 
 ### ADR-02：平台模板（Dockerfile）按语言分档
 
@@ -335,14 +337,15 @@
 | DOCKER | `PROJECT_DOCKERFILE` | APP_IMAGE | 是 | **COMPOSE**（默认）/ RUN | 需要（git+docker） |
 | DOCKER | `PROJECT_DOCKERFILE` | APP_IMAGE | 是 | **COMPOSE**（默认）/ RUN | 需要（git+docker） |
 | DOCKER | `LAYERED_DOCKER` | BASE_IMAGE + APP_IMAGE | 是 | **COMPOSE**（默认）/ RUN | 需要（git+docker） |
-| DOCKER | `IMAGE_PULL`（新增） | 无（外部已推） | 是（只读） | **COMPOSE**（默认）/ RUN | **不需要** |
+| DOCKER | `JAR_PREBUILD`（2026-10 新增） | APP_IMAGE | 是 | **COMPOSE**（默认）/ RUN | 需要（git+maven 容器打 jar，再 docker build） |
+| DOCKER | `IMAGE_PULL`（评估提议，**未实施**，被 `JAR_PREBUILD` 取代） | 无（外部已推） | 是（只读） | **COMPOSE**（默认）/ RUN | **不需要** |
 | JAR | `SCRIPT_DEPLOY` | JAR | 否 | systemd | 需要（git+maven） |
 | JAR | `ARTIFACT_ONLY` | JAR（已有） | 否 | systemd | 需要（暂存产物） |
 | STATIC | `SCRIPT_DEPLOY` | STATIC | 否 | **Nginx + 同级 bak 备份** | 需要（git+node） |
 | STATIC | `ARTIFACT_ONLY` + `UPLOAD` | STATIC（上传） | 否 | **Nginx + 同级 bak 备份** | 需要（暂存产物） |
 
-> 组合校验的唯一来源仍是 `RuntimeType.supportedBuildModes`（AGENTS.md §23.4）。新增 `IMAGE_PULL` 时**必须同时改两处**：`RuntimeType` 枚举 + 前端 `BUILD_MODE_OPTIONS`。
-> `ARTIFACT_ONLY` 已存在于枚举与 `supportedBuildModes`，**不需要改枚举**，只需实现执行器。
+> 组合校验的唯一来源仍是 `RuntimeType.supportedBuildModes`（AGENTS.md §23.4）。当前实际枚举为 `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` / `SCRIPT_DEPLOY` / `ARTIFACT_ONLY` / `JAR_PREBUILD`；新增构建模式时**必须同时改两处**：`RuntimeType` 枚举 + 前端 `BUILD_MODE_OPTIONS`。
+> `JAR_PREBUILD`（2026-10 新增，平台打 jar + 项目极简 Dockerfile 包镜像）已落入 `RuntimeType.DOCKER.supportedBuildModes`；`IMAGE_PULL` 仅为评估提议、未实施。
 
 ---
 

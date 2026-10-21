@@ -115,7 +115,7 @@ public enum RuntimeType {
      * 按 {@link BuildMode} 的声明顺序输出（而不是 Set 的遍历顺序），
      * 保证同一份规则每次拼出的提示文案稳定、便于比对。</p>
      *
-     * @return 形如 "PLATFORM_TEMPLATE,PROJECT_DOCKERFILE,LAYERED_DOCKER" 的编码列表
+     * @return 形如 "PROJECT_DOCKERFILE、LAYERED_DOCKER、JAR_PREBUILD" 的编码列表
      */
     public String supportedBuildModeCodes() {
         return Arrays.stream(BuildMode.values())

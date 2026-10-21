@@ -53,6 +53,7 @@ Docker 构建模式预留：
 - `LAYERED_DOCKER`：`Dockerfile.base + Dockerfile.app` 分层构建；
 - `SCRIPT_DEPLOY`：脚本部署，执行项目自带的部署脚本，不走 Docker 构建；
 - `ARTIFACT_ONLY`：直接发布已有 JAR 或静态产物。
+- `JAR_PREBUILD`：平台先用 Maven 容器打出 jar，再用项目提供的极简 Dockerfile 包成镜像（目标机只做纯 `docker run`，无需在目标机装构建工具链）。
 
 上述取值与 `BuildMode` 枚举一一对应，枚举类是唯一权威定义，数据库、接口、前端与文档必须与枚举保持一致（见 §22）。
 
@@ -1275,7 +1276,7 @@ com.lx.deploy.common.constants
 
 | 类别 | BuildMode 取值 | 产物 | 是否经过 registry |
 | --- | --- | --- | --- |
-| Docker 镜像类 | `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` | 容器镜像（含 base 镜像） | **是**，构建后推仓库、发布时拉仓库 |
+| Docker 镜像类 | `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` / `JAR_PREBUILD` | 容器镜像（含 base 镜像；JAR_PREBUILD 先打 jar 再包） | **是**，构建后推仓库、发布时拉仓库 |
 | 脚本 / 产物类 | `SCRIPT_DEPLOY` / `ARTIFACT_ONLY` | JAR、静态产物、部署脚本 | **否**，产物直接送达目标机，没有镜像 tag / digest 概念 |
 
 - `registry` 与 `registry.credential_id` 只对 `project.runtime_type = DOCKER` 有意义：绑定镜像仓库的表单、校验和构建分支都必须落在 DOCKER 这一支，**禁止**要求脚本部署（JAR / STATIC 运行时 + `SCRIPT_DEPLOY`）的项目配置镜像仓库；
@@ -1287,7 +1288,7 @@ com.lx.deploy.common.constants
 
 | 运行时 | 允许的构建模式 | 理由 |
 | --- | --- | --- |
-| `DOCKER` | `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` | 产物是镜像，必须经过 registry |
+| `DOCKER` | `PROJECT_DOCKERFILE` / `LAYERED_DOCKER` / `JAR_PREBUILD` | 产物是镜像，必须经过 registry（JAR_PREBUILD 虽先打 jar，终态仍是镜像） |
 | `JAR` | `SCRIPT_DEPLOY` / `ARTIFACT_ONLY` | 产物是 JAR 文件，脚本产出或直接发布 |
 | `STATIC` | `SCRIPT_DEPLOY` / `ARTIFACT_ONLY` | 产物是静态目录（dist） |
 
@@ -1305,7 +1306,7 @@ com.lx.deploy.common.constants
 
 | 落点 | 具体形式 |
 | --- | --- |
-| Docker 镜像 tag | `imageRepo:tag`；`LAYERED_DOCKER` 另有基础镜像 `base-{tag}` |
+| Docker 镜像 tag | `imageRepo:tag`；`LAYERED_DOCKER` 另有基础镜像 `base-{tag}`；`JAR_PREBUILD` 同样使用 `imageRepo:tag`（无基础镜像） |
 | 构建机产物持久目录 | `{build_artifact_dir}/{项目编码}/{版本号}` |
 | 产物目录下的 `VERSION` 标识文件 | `{build_artifact_dir}/{项目编码}/{版本号}/VERSION`，含 `version=` 行（见 §24.7） |
 | `release_record.version` | 版本记录本体的版本号 |
@@ -1360,9 +1361,10 @@ com.lx.deploy.common.constants
 
 构建镜像的 Dockerfile **只能来自项目仓库**，平台不渲染、不生成任何 Dockerfile。必须遵守：
 
-1. **只保留两种 Docker 构建模式**：`PROJECT_DOCKERFILE`（仓库自带单个 Dockerfile）与
-   `LAYERED_DOCKER`（`Dockerfile.base` + `Dockerfile.app` 分层）。已下线的 `PLATFORM_TEMPLATE`
-   （平台按语言渲染模板）连同与之配套的代码与配置字段**一并删除，不得加回**——
+1. **Docker 构建模式共三种**：`PROJECT_DOCKERFILE`（仓库自带单个 Dockerfile）、
+   `LAYERED_DOCKER`（`Dockerfile.base` + `Dockerfile.app` 分层）、
+   `JAR_PREBUILD`（项目提供极简 Dockerfile，平台先用 Maven 容器打出 jar 再包成镜像）。
+   已下线的 `PLATFORM_TEMPLATE`（平台按语言渲染模板）连同与之配套的代码与配置字段**一并删除，不得加回**——
    语言探测、模板泛化这套机制的维护成本远高于「让项目自己写 Dockerfile」；
 2. **不要重新引入语言探测**：JVM 参数、依赖安装方式、启动命令这类信息只有项目自己最清楚，
    平台猜错会产出「能构建成功、运行即崩」的镜像，失败点离原因极远；
@@ -1370,7 +1372,7 @@ com.lx.deploy.common.constants
    平台只负责构建与分发，不推导默认值。不要再往 `build_config_json` 加 `app_port` / `start_command`
    这类字段去做二次推导；
 4. **遇到不受支持的构建模式必须指名该怎么改**：`BuildTaskHandler` 解析 `build_mode` 失败时，
-   错误文案要明确点出改用「项目Dockerfile」或「分层构建」，而不是笼统的「构建模式非法」。
+   错误文案要明确点出改用「项目Dockerfile」「分层构建」或「JAR预构建镜像」，而不是笼统的「构建模式非法」。
    存量库若仍有 `build_mode='PLATFORM_TEMPLATE'` 的记录，需要在库里一次性订正（MySQL 变更一律手工执行）。
 
 ### 23.9 compose 由项目提供，平台只做版本注入
