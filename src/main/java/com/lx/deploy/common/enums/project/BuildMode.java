@@ -10,12 +10,13 @@ import java.util.Arrays;
  * <p>仅 DOCKER 运行时使用这些构建模式。AIops 项目使用分层构建：
  * 基础依赖镜像推送到阿里云镜像仓库，业务镜像基于基础镜像构建。</p>
  *
- * <p><b>这个枚举回答的是「平台做不做预先构建」</b>，不是「产物从哪来」。Docker 类模式
- * （{@code PROJECT_DOCKERFILE} / {@code LAYERED_DOCKER}）平台<b>一步构建都不做</b>，
- * 直接把项目 Dockerfile 交给 docker，产物由 Dockerfile 自己产出；
- * {@code JAR_PREBUILD} 才是「平台先跑 Maven 打出 jar，再用极简 Dockerfile 包镜像」。
- * 因此同一份「只 COPY jar、自己不会构建」的 Dockerfile 只能配 {@code JAR_PREBUILD}——
- * 配成 {@code PROJECT_DOCKERFILE} 会在 {@code docker build} 阶段报 jar not found，
+ * <p><b>这个枚举回答的是「平台做不做预先构建」</b>，不是「产物从哪来」、也不是「语言是什么」。
+ * Docker 类模式（{@code PROJECT_DOCKERFILE} / {@code LAYERED_DOCKER}）平台<b>一步构建都不做</b>，
+ * 直接把项目 Dockerfile 交给 docker，产物由 Dockerfile 自己<b>自包含</b>产出；
+ * {@code JAR_PREBUILD} 则是「平台先跑构建产出<b>单一预构建产物</b>（Java 即 Maven 打出的 jar），
+ * 再用只 {@code COPY} 该产物的极简 Dockerfile 包镜像」。因此同一份「只 COPY 预构建产物、
+ * 自己不会构建」的 Dockerfile 只能配 {@code JAR_PREBUILD}——配成 {@code PROJECT_DOCKERFILE}
+ * 会在 {@code docker build} 阶段报找不到构建产物（Java 下即 jar not found），
  * 这是本项目真实踩过的坑（见 docs/构建模式与执行链路.md）。</p>
  *
  * <p>与运行时的合法组合由 {@code RuntimeType.supportedBuildModes()} 唯一决定，
@@ -35,8 +36,9 @@ public enum BuildMode {
      * 产物完全由这份 Dockerfile 自己产出（典型是带 builder 阶段的多阶段构建）。
      * 走 {@code BuildTaskHandler.buildDocker}。</p>
      *
-     * <p>反例：若 dockerfile_path 指向「只 COPY 预构建 jar」的极简 Dockerfile，
-     * 本模式下必定失败（jar 是构建产物、不在 Git 里），那种 Dockerfile 应配 {@link #JAR_PREBUILD}。</p>
+     * <p>反例：若 dockerfile_path 指向「只 COPY 预构建产物（如 jar）」的极简 Dockerfile，
+     * 本模式下必定失败（预构建产物是构建结果、不在 Git 里），那种 Dockerfile 应配
+     * {@link #JAR_PREBUILD}（Java 即 jar，其他语言对应其各自的预构建产物）。</p>
      */
     PROJECT_DOCKERFILE("PROJECT_DOCKERFILE", "项目Dockerfile"),
 
@@ -74,8 +76,11 @@ public enum BuildMode {
      * ③ 构建机上启动级验证通过后推送仓库。额外产出「平铺热修包」下发目标机，
      * 供平台不可用时就地重建。走 {@code BuildTaskHandler.buildJarPrebuild}。</p>
      *
-     * <p><b>与 {@link #PROJECT_DOCKERFILE} 的分界线</b>：Dockerfile 自己能不能产出 jar。
-     * 能（多阶段）就选前者，不能（只 COPY）就必须选本模式。</p>
+     * <p><b>与 {@link #PROJECT_DOCKERFILE} 的分界线（语言中性表述）</b>：Dockerfile 是否<b>自包含构建</b>、
+     * 自己能从源码产出可运行镜像。能（多阶段构建，如 Java 的 builder 阶段 {@code mvn package}、
+     * Python 的 {@code pip install}）就选前者；不能（Dockerfile 只 {@code COPY} 平台预先构建出的
+     * 单一产物）就必须选本模式。本模式当前仅实现了 Java（Maven）这一支；其他语言不需要本模式——
+     * 其 Dockerfile 多为自包含构建，直接选 {@link #PROJECT_DOCKERFILE} 即可，平台代码零改动。</p>
      */
     JAR_PREBUILD("JAR_PREBUILD", "JAR预构建镜像");
 

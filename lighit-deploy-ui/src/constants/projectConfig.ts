@@ -100,8 +100,8 @@ export interface ConfigField {
   key: string
   /** 页面展示名 */
   label: string
-  /** 控件类型 */
-  type: 'input' | 'number' | 'select'
+  /** 控件类型；switch 用于布尔键（输出真布尔值，不是 "true" 字符串） */
+  type: 'input' | 'number' | 'select' | 'switch'
   /** 分组标题，表单模式按分组分区渲染 */
   group: string
   /** 占位提示 */
@@ -110,6 +110,14 @@ export interface ConfigField {
   options?: { value: string; label: string }[]
   /** 字段下方的小字说明 */
   tip?: string
+  /**
+   * switch 类型的默认展示值。
+   *
+   * <p>只影响表单初始状态，不写进配置：用户不动它时该键不会出现在 JSON 里，
+   * 后端按自己的默认值处理。填这里是为了让开关位置与「不配置时实际会怎样」一致，
+   * 避免默认开启的能力在页面上显示成关闭。必须与后端默认值保持一致。</p>
+   */
+  defaultValue?: boolean
   /**
    * 字段值示例（label 后「?」图标悬浮展示）。
    * 用于不容易凭空写出正确格式的字段，如构建命令：按构建模式给出可直接抄的完整命令。
@@ -148,7 +156,7 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     type: 'input',
     group: '模块定位',
     span: 8,
-    placeholder: '多模块仓库名，如 auth-tool（单模块可留空）',
+    placeholder: '单模块可留空；多模块仓库填子模块名，如 auth-tool',
     tip: '默认 -pl 参数、默认模块目录名与默认镜像名的来源'
   },
   {
@@ -187,9 +195,11 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     group: '构建执行',
     span: 24,
     placeholder: '如 mvn -B clean package -pl auth-tool -am -DskipTests',
-    tip: '脚本部署必填；Docker 模板构建时填写可覆盖平台推导的构建命令。'
+    tip: '仅「脚本部署」消费该键（该模式必填）。项目自带 Dockerfile / 分层构建 / JAR 预构建的构建命令'
+      + '由平台内置（docker build / Maven 容器），填了也不会执行。'
       + '命令在仓库根或模块目录下执行（见「模块目录」），因此 -pl 只在「模块目录留空」时使用；'
       + '工具不在 PATH 里时优先在服务器档案的「构建环境初始化脚本」补 PATH，其次写绝对路径',
+    showIf: { buildMode: ['SCRIPT_DEPLOY'] },
     examples: [
       {
         label: '脚本部署 · 多模块从仓库根构建（配合「模块目录」留空）',
@@ -210,14 +220,6 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
       {
         label: '脚本部署 · 前端静态产物（STATIC 运行时）',
         text: 'npm run build'
-      },
-      {
-        label: '平台 Dockerfile 模板 · 覆盖平台推导的构建命令（留空则平台自动执行 mvn package）',
-        text: 'mvn -B clean package -DskipTests'
-      },
-      {
-        label: '项目自带 Dockerfile / 分层构建 · 通常留空（平台直接 docker build）',
-        text: '（留空）'
       }
     ]
   },
@@ -229,7 +231,8 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     span: 8,
     placeholder: '默认 1800（30 分钟）',
     tip: '构建命令的等待上限，超时后平台会终止远端构建进程组并把已收到的输出留在日志里。'
-      + '首次构建要从仓库下载全部依赖（分钟级），增量构建通常几十秒，差一个数量级；留空用平台默认值'
+      + '首次构建要从仓库下载全部依赖（分钟级），增量构建通常几十秒，差一个数量级；留空用平台默认值',
+    showIf: { buildMode: ['SCRIPT_DEPLOY', 'JAR_PREBUILD'] }
   },
   {
     key: 'artifact_path',
@@ -238,7 +241,9 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     group: '构建产物',
     span: 12,
     placeholder: '相对仓库根，支持 * 通配，如 target/app.jar',
-    tip: '脚本部署 / 仅发布产物必填；先按仓库根查找，再按模块目录回落'
+    tip: '脚本部署 / JAR 预构建必填；先按仓库根查找，再按模块目录回落。'
+      + '项目自带 Dockerfile / 分层构建不需要（镜像由 Dockerfile 产出，不取现成产物）',
+    showIf: { buildMode: ['SCRIPT_DEPLOY', 'JAR_PREBUILD'] }
   },
   {
     key: 'config_paths',
@@ -257,8 +262,11 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     group: 'Docker 构建',
     span: 12,
     placeholder: '相对仓库根，如 Dockerfile',
-    tip: '项目自带 Dockerfile 构建模式必填',
-    showIf: { buildMode: ['PROJECT_DOCKERFILE'] }
+    tip: '必填，相对仓库根（构建上下文就是仓库根，COPY 不能写 ../）。'
+      + '项目自带 / 分层构建填「自己会构建产物」的 Dockerfile；'
+      + 'JAR 预构建填「只 COPY jar、自己不构建」的极简 Dockerfile（如 Dockerfile.jre）。'
+      + '分层构建下它与基础层 Dockerfile 配套使用',
+    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER', 'JAR_PREBUILD'] }
   },
   {
     key: 'compose_file_path',
@@ -281,7 +289,7 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
         text: 'services:\n  app:\n    image: registry.cn-hangzhou.aliyuncs.com/ns/app:${IMAGE_TAG}\n    volumes:\n      - ./logs:/app/logs\n    depends_on:\n      - redis\n  redis:\n    image: redis:7-alpine'
       }
     ],
-    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER'] }
+    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER', 'JAR_PREBUILD'] }
   },
   {
     key: 'base_dockerfile_path',
@@ -300,8 +308,41 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     group: 'Docker 构建',
     span: 12,
     placeholder: '不含 tag，如 registry.cn-hangzhou.aliyuncs.com/ns/app',
-    tip: '留空时回落到项目绑定的镜像仓库（仅 Docker 构建模式消费）',
-    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER'] }
+    tip: '留空时回落到项目绑定的镜像仓库（DOCKER 运行时消费：项目自带 / 分层 / JAR 预构建都要推镜像）',
+    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER', 'JAR_PREBUILD'] }
+  },
+  {
+    key: 'maven_settings_path',
+    label: 'Maven settings 路径',
+    type: 'input',
+    group: 'Docker 构建',
+    span: 12,
+    placeholder: '相对仓库根，如 Docker/settings.xml，可不填',
+    tip: '仅「JAR 预构建」使用：平台打 jar 时把该文件作为 mvn -s 参数，典型用途是切阿里云 Maven 镜像加速。'
+      + '留空走 Maven 默认配置（公网 Maven Central，构建机在内网时极慢）',
+    showIf: { buildMode: ['JAR_PREBUILD'] }
+  },
+  {
+    key: 'docker_verify_on_build',
+    label: '构建机启动级验证',
+    type: 'switch',
+    group: 'Docker 构建',
+    span: 8,
+    defaultValue: true,
+    tip: '构建完成后、推送仓库前，先在构建机把镜像跑起来，确认「构建成功但一启动就崩」的缺陷镜像不会上推'
+      + '（后台启动 + 逐秒 inspect 判活，不看退出码）。'
+      + '只有「应用启动就必须连外部依赖、而构建机网络不通」的项目才关掉，改由目标机业务级验证兜底',
+    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER', 'JAR_PREBUILD'] }
+  },
+  {
+    key: 'docker_verify_timeout_seconds',
+    label: '验证观察窗口（秒）',
+    type: 'number',
+    group: 'Docker 构建',
+    span: 8,
+    placeholder: '默认 30',
+    tip: '窗口内容器持续运行即视为启动成功。太短会误判启动慢的应用，太长会拖慢每次构建；按应用冷启动耗时调整',
+    showIf: { buildMode: ['PROJECT_DOCKERFILE', 'LAYERED_DOCKER', 'JAR_PREBUILD'] }
   }
 ]
 
@@ -646,6 +687,10 @@ function extractFirstNumber(text?: string): number | null {
  * 拿不到干净值的字段返回 skip，由调用方排除——这类字段服务端有默认值，不要求用户抄写。
  */
 function sampleValue(field: ConfigField): { skip?: boolean; value?: unknown } {
+  if (field.type === 'switch') {
+    // 开关类字段输出真布尔值；没有声明默认值的开关不进示例，避免给出「看不出该填什么」的示例
+    return field.defaultValue === undefined ? { skip: true } : { value: field.defaultValue }
+  }
   if (field.type === 'select') {
     return field.options?.length ? { value: field.options[0].value } : { skip: true }
   }

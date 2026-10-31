@@ -57,8 +57,17 @@
                   <el-icon class="form-label-tip"><QuestionFilled /></el-icon>
                 </el-tooltip>
               </div>
+              <el-switch
+                v-if="field.type === 'switch'"
+                :model-value="switchValue(field)"
+                :disabled="readonly"
+                inline-prompt
+                active-text="开"
+                inactive-text="关"
+                @update:model-value="(value: any) => (formModel[field.key] = value)"
+              />
               <el-select
-                v-if="field.type === 'select'"
+                v-else-if="field.type === 'select'"
                 v-model="formModel[field.key]"
                 :placeholder="field.placeholder || '请选择'"
                 clearable
@@ -219,6 +228,24 @@ const computedExample = computed<string>(() => {
 /** 字段是否满足联动显隐条件（复用 schema 统一的判定，避免两处逻辑漂移） */
 function isFieldVisible(field: ConfigField): boolean {
   return isFieldVisibleByContext(field, mergedContext.value)
+}
+
+/**
+ * 开关字段的展示值。
+ *
+ * <p>未配置时按 schema 的 `defaultValue` 展示：该值就是后端在「键缺失」时采用的值，
+ * 不这样兜底，默认开启的能力会在页面上显示成关闭，运维会以为需要手动打开。</p>
+ *
+ * <p>只在展示层兜底、<b>不写回 formModel</b>：用户没动开关时该键不会出现在提交的 JSON 里，
+ * 保持「没配就是没配」的语义，也避免新建项目时凭空多出一串键。</p>
+ *
+ * @param field 字段 schema
+ * @returns 开关当前应展示的布尔值
+ */
+function switchValue(field: ConfigField): boolean {
+  const current = formModel[field.key]
+  if (typeof current === 'boolean') return current
+  return field.defaultValue === true
 }
 
 /** 当前上下文下可见字段 */

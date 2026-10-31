@@ -94,10 +94,11 @@ public class BuildConfig {
     private Boolean dockerVerifyOnBuild;
 
     /**
-     * 启动级验证窗口秒数，DOCKER 运行时选填，默认 30。
+     * 启动级验证观察窗口秒数，DOCKER 运行时选填，默认 30。
      *
-     * <p>镜像以<b>前台</b>方式运行，由 {@code timeout} 在该秒数后终止；窗口内容器持续存活
-     * 即视为通过（退出码 124）。过短会误杀启动慢的应用，过长则拖慢构建；按应用冷启动耗时调整。</p>
+     * <p>镜像以 {@code docker run -d} 后台启动，窗口内<b>逐秒 inspect</b> 的 {@code .State.Running}
+     * 持续为 true 即视为通过。不依赖进程退出码——被信号终止时 SSH 拿不到退出码（返回 -1），
+     * 靠退出码判定会误杀正常镜像。过短会误判启动慢的应用，过长则拖慢构建；按应用冷启动耗时调整。
      */
     @JsonProperty("docker_verify_timeout_seconds")
     private Integer dockerVerifyTimeoutSeconds;
