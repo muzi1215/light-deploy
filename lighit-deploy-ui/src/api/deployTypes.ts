@@ -385,6 +385,12 @@ export interface BuildDto {
   buildServerId?: string
   /** 版本序号（可选）：留空由后端自动递增取号；填写则生成 {项目编码}-v{序号}-{提交短码}，需该项目内未被占用 */
   versionSeq?: number
+  /**
+   * 分层构建是否重新构建基础镜像（可选）。
+   * 仅 LAYERED_DOCKER 模式生效：true 重新构建并推送稳定基础镜像，false 或不传跳过、复用已有稳定 base。
+   * 不传时后端按默认 false 处理。
+   */
+  rebuildBaseImage?: boolean
 }
 
 /** 构建产物 VO（对应后端 BuildArtifactVo） */

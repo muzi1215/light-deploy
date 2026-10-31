@@ -72,8 +72,9 @@ public final class ComposeInjection {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
                     "项目的 compose 文件中找不到版本占位符 " + PLACEHOLDER
                             + "，平台无法指定本次要发布的镜像版本。"
-                            + "请把需要随版本更新的服务的 image 写成『image: 仓库地址/镜像名:" + PLACEHOLDER
-                            + "』（允许带默认值，如 image: 仓库地址/镜像名:" + PLACEHOLDER + ":-auth-tool:dev）；"
+                            + "请把需要随版本更新的服务的 image 写成『image: " + PLACEHOLDER
+                            + "』（平台把 " + VARIABLE + " 注入为「完整镜像引用」含仓库地址与 tag；"
+                            + "切勿在 compose 里再写仓库前缀，否则会变成 前缀:完整引用 的双重叠加）；"
                             + "不随版本变化的中间件（redis、mysql 等）保持原样即可");
         }
         return trimmed;

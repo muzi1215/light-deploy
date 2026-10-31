@@ -64,6 +64,16 @@ public class BuildDto extends TimeRangeQuery {
     private String buildMode;
 
     /**
+     * 分层构建是否重新构建基础镜像（可选覆盖）。
+     *
+     * <p>仅 {@code LAYERED_DOCKER} 模式生效：true 重新构建并推送稳定基础镜像，false（或不传）跳过、
+     * 复用仓库中已有稳定基础镜像（{镜像仓库}:base）。为空时由后端按默认值处理（默认 false）。</p>
+     * <p>基础层极少变化，绝大多数构建保持默认跳过即可；base 内容变更时显式传 true。</p>
+     */
+    @Schema(description = "分层构建是否重新构建基础镜像，可选；为空取默认值false")
+    private Boolean rebuildBaseImage;
+
+    /**
      * 构建状态筛选条件（可选）。
      *
      * <p>取值见 {@code BuildStatus} 常量类：0 排队中 / 1 构建中 / 2 成功 / 3 失败。

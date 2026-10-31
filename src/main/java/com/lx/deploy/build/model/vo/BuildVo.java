@@ -71,6 +71,10 @@ public class BuildVo {
     @Schema(description = "构建失败原因")
     private String errorMessage;
 
+    /** 分层构建是否重新构建基础镜像（仅 LAYERED_DOCKER 生效）：true 重建，false 复用已有稳定 base。 */
+    @Schema(description = "分层构建是否重新构建基础镜像")
+    private Boolean rebuildBaseImage;
+
     /** 关联的异步任务 ID，前端据此拉取构建日志。 */
     @Schema(description = "关联任务ID，用于拉取日志")
     private String taskId;

@@ -919,33 +919,9 @@ public class BuildSupport {
         if (!reportProgress(task, STAGE_PUSH, PROGRESS_PUSHING)) {
             return;
         }
-        String loginHost = null;
-        String passwordFile = null;
+        // 登录（如配置了仓库凭据）；成功后推送，最后无论如何登出并清理密码文件。
+        RegistryLogin login = loginRegistry(task, session, project);
         try {
-            if (StringUtils.hasText(project.getRegistryId())) {
-                Registry registry = registryMapper.selectById(project.getRegistryId());
-                if (registry != null && StringUtils.hasText(registry.getCredentialId())) {
-                    Credential credential = credentialMapper.selectById(registry.getCredentialId());
-                    if (credential == null) {
-                        throw new DeployException(ResponseCode.DATA_NOT_FOUND, "镜像仓库绑定的凭据不存在");
-                    }
-                    String plaintext = credentialCrypto.decrypt(credential.getEncryptedValue());
-                    String[] up = RegistryAuthSupport.resolveRegistryCredentials(plaintext, credential.getMetadataJson());
-                    loginHost = registry.getRegistryUrl();
-                    // 密码经文件 + stdin 传给 docker，**不走命令行**：`docker login -p <密码>` 会把明文
-                    // 留在构建机的进程列表（ps -ef）里，同机其他用户可直接看到。
-                    passwordFile = "/tmp/ld_registry_pwd_" + task.getBizId();
-                    writeSecretFile(task, session, passwordFile, up[1], "镜像仓库密码", STAGE_PUSH);
-                    appendLog(task, STAGE_PUSH, TaskLogLevel.INFO,
-                            "docker login " + loginHost + "（密码经 stdin 传入，不落命令行与日志）");
-                    SshCommandResult loginResult = session.exec(
-                            RegistryAuthSupport.dockerLoginCommand(loginHost, up[0], passwordFile));
-                    if (!loginResult.success()) {
-                        throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
-                                "镜像仓库登录失败：" + firstLine(loginResult.stderr()));
-                    }
-                }
-            }
             appendLog(task, STAGE_PUSH, TaskLogLevel.INFO, "推送镜像 " + fullImage);
             // 实时回传逐行输出：分层镜像逐层推送，进度能看着走，而不是干等后一次性看到结果。
             SshCommandResult pushResult = session.execLong("docker push " + fullImage, streamingLogConsumer(task, STAGE_PUSH));
@@ -958,8 +934,99 @@ public class BuildSupport {
             fillTailIfTruncated(task, STAGE_PUSH, pushResult);
         } finally {
             // 密码文件与登录态**成功失败都要清**：推送失败时更不能把明文密码留在构建机磁盘上。
-            cleanupRegistryCredential(task, session, passwordFile, loginHost);
+            logoutRegistry(task, session, login);
         }
+    }
+
+    /**
+     * 分层构建「跳过基础重建」时，确认仓库中已有稳定基础镜像，否则 app 构建的 FROM $BASE_IMAGE 会失败。
+     *
+     * <p>私有仓库需要先登录再拉取（拉取失败也可能是网络/权限，不只「不存在」），因此统一走登录 + pull，
+     * pull 失败即 fail-fast 给出「请先勾选重新构建基础镜像」的可操作提示，而不是让 app 构建跑到一半
+     * 才因 FROM 找不到基础镜像而失败。</p>
+     *
+     * @param task        当前任务
+     * @param session     已认证会话
+     * @param project     项目（取 registry_id 解析仓库与凭据）
+     * @param stableBase  稳定基础镜像全名（如 registry.../app:base）
+     */
+    void requireStableBaseImage(Task task, SshSession session, Project project, String stableBase) {
+        RegistryLogin login = loginRegistry(task, session, project);
+        try {
+            appendLog(task, BuildSupport.STAGE_BUILD, TaskLogLevel.INFO,
+                    "跳过基础重建：先拉取稳定基础镜像确认存在 " + stableBase);
+            SshCommandResult pull = session.execLong("docker pull " + stableBase, streamingLogConsumer(task, STAGE_BUILD));
+            if (!pull.success()) {
+                String hint = StringUtils.hasText(pull.stderr()) ? firstLine(pull.stderr()) : firstLine(pull.stdout());
+                writeError(task, STAGE_BUILD, StringUtils.hasText(pull.stderr()) ? pull.stderr() : pull.stdout(),
+                        MAX_BUILD_OUTPUT_LINES);
+                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                        "复用基础镜像失败：仓库中不存在稳定基础镜像 " + stableBase
+                                + "，请先勾选「重新构建基础镜像」执行一次构建以创建它。原始错误：" + hint);
+            }
+            fillTailIfTruncated(task, STAGE_BUILD, pull);
+        } finally {
+            logoutRegistry(task, session, login);
+        }
+    }
+
+    /**
+     * 登录镜像仓库（如配置了凭据）。无仓库 / 无凭据时返回 null（无需登录）。
+     *
+     * <p>登录用于私有仓库：推送与「跳过基础重建时确认稳定 base 存在」都需要先登录。
+     * 返回登录上下文（host + 密码临时文件路径），调用方必须在 finally 中 {@link #logoutRegistry} 释放。</p>
+     *
+     * @param task    当前任务
+     * @param session 已认证会话
+     * @param project 项目（取 registry_id 解析仓库与凭据）
+     * @return 登录上下文；无需登录时返回 null
+     */
+    private RegistryLogin loginRegistry(Task task, SshSession session, Project project) {
+        if (!StringUtils.hasText(project.getRegistryId())) {
+            return null;
+        }
+        Registry registry = registryMapper.selectById(project.getRegistryId());
+        if (registry == null || !StringUtils.hasText(registry.getCredentialId())) {
+            return null;
+        }
+        Credential credential = credentialMapper.selectById(registry.getCredentialId());
+        if (credential == null) {
+            throw new DeployException(ResponseCode.DATA_NOT_FOUND, "镜像仓库绑定的凭据不存在");
+        }
+        String plaintext = credentialCrypto.decrypt(credential.getEncryptedValue());
+        String[] up = RegistryAuthSupport.resolveRegistryCredentials(plaintext, credential.getMetadataJson());
+        String loginHost = registry.getRegistryUrl();
+        // 密码经文件 + stdin 传给 docker，**不走命令行**：`docker login -p <密码>` 会把明文
+        // 留在构建机的进程列表（ps -ef）里，同机其他用户可直接看到。
+        String passwordFile = "/tmp/ld_registry_pwd_" + task.getBizId();
+        writeSecretFile(task, session, passwordFile, up[1], "镜像仓库密码", STAGE_PUSH);
+        appendLog(task, STAGE_PUSH, TaskLogLevel.INFO,
+                "docker login " + loginHost + "（密码经 stdin 传入，不落命令行与日志）");
+        SshCommandResult loginResult = session.exec(
+                RegistryAuthSupport.dockerLoginCommand(loginHost, up[0], passwordFile));
+        if (!loginResult.success()) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "镜像仓库登录失败：" + firstLine(loginResult.stderr()));
+        }
+        return new RegistryLogin(loginHost, passwordFile);
+    }
+
+    /**
+     * 登出镜像仓库并清理密码临时文件，绝不抛异常（失败只告警，不覆盖原始失败原因）。
+     *
+     * @param task   当前任务
+     * @param session 已认证会话
+     * @param login  登录上下文；为 null（无需登录）时直接返回
+     */
+    private void logoutRegistry(Task task, SshSession session, RegistryLogin login) {
+        if (login == null) {
+            return;
+        }
+        cleanupRegistryCredential(task, session, login.passwordFile(), login.host());
+    }
+
+    /** 镜像仓库登录上下文：host 与密码临时文件路径，供 {@link #logoutRegistry} 释放。 */
+    private record RegistryLogin(String host, String passwordFile) {
     }
 
     /**

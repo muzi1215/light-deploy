@@ -85,13 +85,23 @@ public class DockerBuilder {
                 throw new DeployException(ResponseCode.VALIDATION_ERROR,
                         "LAYERED_DOCKER 模式需要 build_config_json.base_dockerfile_path 与 dockerfile_path");
             }
-            // 先构建并推送基础镜像，应用镜像基于它构建。
-            String baseImage = imageRepo + ":base-" + tag;
-            support.dockerBuild(task, session, workspacePath, "-f " + config.getBaseDockerfilePath(), baseImage);
-            support.dockerPush(task, session, project, baseImage);
-            artifacts.add(support.imageArtifact(ArtifactType.BASE_IMAGE, baseImage, tag, support.dockerDigest(session, baseImage)));
-            // 应用镜像引用基础镜像。
-            dockerfileOption = "-f " + config.getDockerfilePath() + " --build-arg BASE_IMAGE=" + baseImage;
+            // 稳定基础镜像 tag：不随版本号变化（如 registry.../app:base），一旦构建并推送后长期复用，
+            // 绝大多数构建只需重建 app 层，避免每次重复构建 OS + 运行时 + 依赖（体积大、耗时长、占带宽）。
+            String stableBase = imageRepo + ":base";
+            if (Boolean.TRUE.equals(ctx.rebuildBaseImage())) {
+                // 勾选重建：重新构建并推送稳定基础镜像（覆盖仓库中同名 tag）。
+                support.dockerBuild(task, session, workspacePath, "-f " + config.getBaseDockerfilePath(), stableBase);
+                support.dockerPush(task, session, project, stableBase);
+                artifacts.add(support.imageArtifact(ArtifactType.BASE_IMAGE, stableBase, "base", support.dockerDigest(session, stableBase)));
+                support.appendLog(task, BuildSupport.STAGE_BUILD, TaskLogLevel.INFO, "基础镜像已重建并推送：" + stableBase);
+            } else {
+                // 跳过重建：必须先确认仓库中已有稳定基础镜像，否则 app 构建的 FROM $BASE_IMAGE 会失败。
+                support.requireStableBaseImage(task, session, project, stableBase);
+                artifacts.add(support.imageArtifact(ArtifactType.BASE_IMAGE, stableBase, "base", support.dockerDigest(session, stableBase)));
+                support.appendLog(task, BuildSupport.STAGE_BUILD, TaskLogLevel.INFO, "复用已有稳定基础镜像（跳过重建）：" + stableBase);
+            }
+            // 应用镜像引用稳定基础镜像。
+            dockerfileOption = "-f " + config.getDockerfilePath() + " --build-arg BASE_IMAGE=" + stableBase;
         } else {
             // Dockerfile 全部由项目仓库提供，平台不生成任何模板；
             // 能走到这里说明组合校验被绕过，宁可明确失败也不要猜一份模板去构建。

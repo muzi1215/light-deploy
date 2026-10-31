@@ -235,6 +235,9 @@ public class BuildService extends ServiceImpl<BuildMapper, Build> {
         build.setProjectId(project.getId());
         build.setBuildServerId(buildServerId);
         build.setBuildMode(project.getBuildMode());
+        // 分层构建「是否重建基础镜像」在创建时固化：为空按默认 false（跳过、复用已有稳定 base），
+        // 与部署的 force_overwrite_config 同样的固化思路，避免任务排队期间语义漂移。
+        build.setRebuildBaseImage(dto.getRebuildBaseImage() != null ? dto.getRebuildBaseImage() : Boolean.FALSE);
         build.setStatus(BuildStatus.QUEUED);
         // 人工指定的版本序号：在创建阶段就校验占用情况。若拖到构建成功、镜像已推送、
         // 产物已转存才在版本落库阶段撞唯一键，这条构建会以「成功」结束却拿不到版本记录，

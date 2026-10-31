@@ -229,7 +229,8 @@ public class BuildTaskHandler implements TaskHandler {
             String contextArtifactPath = null;
             // 不可变上下文：把本次构建的所有运行时输入打包，在编排器与各构建 Service 之间传递。
             BuildContext ctx = new BuildContext(task, session, project, config, workspacePath, commit,
-                    releaseVersion.version(), artifacts, buildServer, artifactBase, runtimeType, buildMode);
+                    releaseVersion.version(), artifacts, buildServer, artifactBase, runtimeType, buildMode,
+                    build.getRebuildBaseImage());
             if (runtimeType == RuntimeType.DOCKER) {
                 if (buildMode == BuildMode.JAR_PREBUILD) {
                     // B1：平台先出 jar，再用极简镜像打包，目标机只纯 run。

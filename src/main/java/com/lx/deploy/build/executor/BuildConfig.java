@@ -42,6 +42,17 @@ public class BuildConfig {
     private String baseDockerfilePath;
 
     /**
+     * 分层构建是否重新构建基础镜像，项目级默认值（仅 LAYERED_DOCKER 生效）。
+     *
+     * <p>false（默认）：每次构建跳过基础镜像重建，复用仓库中已存在的稳定基础镜像（{镜像仓库}:base）；
+     * true：每次都重新构建并推送稳定基础镜像。基础层极少变化，绝大多数项目应保持默认 false 以省时，
+     * base 内容变更时再临时在构建触发处勾选「重新构建基础镜像」覆盖本默认值。</p>
+     * <p>该默认值只决定构建触发弹窗里勾选框的初始状态，最终以触发时传入的值为准。</p>
+     */
+    @JsonProperty("rebuild_base_image")
+    private Boolean rebuildBaseImage;
+
+    /**
      * docker-compose.yml 相对仓库根目录的路径，DOCKER 运行时选填，默认 {@code docker-compose.yml}。
      *
      * <p>配置了就会在构建成功后把文件<b>原文</b>快照进发布版本（见 {@code release_record.compose_content}），

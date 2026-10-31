@@ -302,6 +302,18 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     showIf: { buildMode: ['LAYERED_DOCKER'] }
   },
   {
+    key: 'rebuild_base_image',
+    label: '默认重建基础镜像',
+    type: 'switch',
+    group: 'Docker 构建',
+    span: 8,
+    defaultValue: false,
+    tip: '分层构建专属：默认关闭（跳过基础镜像重建，复用仓库中已存在的稳定基础镜像 {镜像仓库}:base，省时省带宽）。'
+      + '基础层内容变更时，在「触发构建」弹窗里临时勾选「重新构建基础镜像」覆盖本默认值。'
+      + '首次使用稳定 base 前必须勾选一次以创建它，否则复用会因仓库里没有该 tag 而失败',
+    showIf: { buildMode: ['LAYERED_DOCKER'] }
+  },
+  {
     key: 'image_repository',
     label: '镜像仓库地址',
     type: 'input',

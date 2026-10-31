@@ -96,6 +96,21 @@ public class Build extends BaseEntity {
     private String dependencyHash;
 
     /**
+     * 分层构建是否重新构建基础镜像。
+     *
+     * <p>仅 {@code LAYERED_DOCKER} 模式生效：基础层通常是 OS + 运行时 + 依赖，体积大且极少变化，
+     * 绝大多数构建只需重建 app 层，默认跳过可大幅节省构建机与仓库带宽。</p>
+     * <p>false（默认）：跳过基础镜像的构建与推送，直接复用仓库中已存在的稳定基础镜像
+     * （{镜像仓库}:base）；若仓库中尚无该稳定 base，执行器会 fail-fast 提示先重建一次。</p>
+     * <p>true：重新构建并推送稳定基础镜像（覆盖仓库中同名 tag），base 内容变更时必须勾选。</p>
+     * <p>开关在创建构建时固化进本记录、由异步执行任务读取，避免任务排队期间语义漂移；与部署的
+     * {@code force_overwrite_config} 思路一致（默认跳过/保护，需要时显式勾选覆盖）。</p>
+     */
+    @TableField("rebuild_base_image")
+    @Schema(description = "分层构建是否重新构建基础镜像，默认false（复用已有稳定base）")
+    private Boolean rebuildBaseImage;
+
+    /**
      * 构建状态数字编码，取值见 {@code BuildStatus} 常量。
      *
      * <p>0 排队中 / 1 构建中 / 2 成功 / 3 失败；由构建执行链路通过状态方法维护，调用方不可直接修改。</p>

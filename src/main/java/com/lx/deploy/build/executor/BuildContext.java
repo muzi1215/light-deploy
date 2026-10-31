@@ -29,6 +29,7 @@ import java.util.List;
  * @param artifactBase  构建机产物持久目录，已校验非空
  * @param runtimeType   运行时类型
  * @param buildMode     构建模式
+ * @param rebuildBaseImage 分层构建是否重新构建基础镜像（仅 LAYERED_DOCKER 生效；null 视为 false）
  */
 public record BuildContext(
         Task task,
@@ -42,5 +43,6 @@ public record BuildContext(
         Server buildServer,
         String artifactBase,
         RuntimeType runtimeType,
-        BuildMode buildMode) {
+        BuildMode buildMode,
+        Boolean rebuildBaseImage) {
 }

@@ -138,6 +138,11 @@
             </el-select>
             <span class="form-tip">指定专用构建机；留空由后端解析项目默认构建机</span>
           </el-form-item>
+          <el-form-item v-if="buildProject?.buildMode === 'LAYERED_DOCKER'" label="重构基础镜像">
+            <el-switch v-model="rebuildBaseImage" active-text="重建" inactive-text="复用" />
+            <span class="form-tip">分层构建专属：默认「复用」仓库中已有的稳定基础镜像（{镜像仓库}:base），省时省带宽；
+              基础层内容变更、或首次使用稳定 base 前，切到「重建」以创建/更新它</span>
+          </el-form-item>
         </el-form>
       </div>
 
@@ -410,6 +415,13 @@ const buildServerId = ref('')
  * 填写则生成 {项目编码}-v{序号}-{提交短码}，后端在创建构建时即校验该项目内未被占用。
  */
 const versionSeq = ref<number | undefined>(undefined)
+/**
+ * 分层构建是否重新构建基础镜像（仅 LAYERED_DOCKER 生效）。
+ *
+ * 默认取项目 build_config_json.rebuild_base_image（项目级默认值，false = 复用已有稳定 base）；
+ * 打开对话框时按当前项目解析，用户可临时切到「重建」覆盖。
+ */
+const rebuildBaseImage = ref(false)
 /** 启用中的服务器列表，供构建机下拉选择 */
 const buildServers = ref<ServerVo[]>([])
 
@@ -427,6 +439,16 @@ function handleBuild(row: ProjectVo) {
   // 默认带出项目档案绑定的构建机：多数项目固定在一台机器上构建，每次手选是纯负担。
   // 仍可清空或改选，后端解析顺序是「请求 > 项目档案 > 系统默认」。
   buildServerId.value = row.buildServerId || ''
+  // 分层构建「是否重建基础镜像」：取项目 build_config_json.rebuild_base_image 作为默认值（缺省 false）。
+  // 仅在该项目是 LAYERED_DOCKER 时有意义；其余模式对话框里也不会显示该开关。
+  let defaultRebuild = false
+  if (row.buildMode === 'LAYERED_DOCKER' && row.buildConfigJson) {
+    try {
+      const cfg = JSON.parse(row.buildConfigJson)
+      if (typeof cfg.rebuild_base_image === 'boolean') defaultRebuild = cfg.rebuild_base_image
+    } catch { /* 配置不是合法 JSON 时按默认 false 处理 */ }
+  }
+  rebuildBaseImage.value = defaultRebuild
   buildStarted.value = false
   buildSubmitting.value = false
   // 清掉上一次触发的日志与任务状态，避免两次构建的日志混在同一个控制台里
@@ -446,7 +468,12 @@ async function submitBuild() {
   if (!buildProject.value) return
   buildSubmitting.value = true
   try {
-    const res = await createBuild({ projectId: buildProject.value.id, buildServerId: buildServerId.value || undefined })
+    const res = await createBuild({
+    projectId: buildProject.value.id,
+    buildServerId: buildServerId.value || undefined,
+    // 分层构建：把「是否重建基础镜像」一并带上；非 LAYERED_DOCKER 时后端忽略该字段。
+    rebuildBaseImage: buildProject.value.buildMode === 'LAYERED_DOCKER' ? rebuildBaseImage.value : undefined,
+  })
     buildStarted.value = true
     const build: BuildVo = res.data
     // 任务由本次请求刚创建：状态、进度一律以首次拉取为准，不拿构建状态当任务状态。
