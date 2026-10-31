@@ -13,6 +13,8 @@ import com.lx.deploy.credential.model.Credential;
 import com.lx.deploy.project.model.Project;
 import com.lx.deploy.registry.mapper.RegistryMapper;
 import com.lx.deploy.registry.model.Registry;
+import com.lx.deploy.server.mapper.ServerMapper;
+import com.lx.deploy.server.model.Server;
 import com.lx.deploy.ssh.SshCommandResult;
 import com.lx.deploy.ssh.SshSession;
 import com.lx.deploy.ssh.SshSessionFactory;
@@ -23,6 +25,7 @@ import org.springframework.util.StringUtils;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.Map;
 
 /**
  * DOCKER 运行时发布服务：拉取镜像并把容器按配置形态拉起来。
@@ -58,6 +61,9 @@ import java.util.Base64;
 @Service
 public class DockerDeployService {
 
+    /** B1 热修包文件名后缀：发布端据此判定「必须始终下发」，与源码构建上下文区分。 */
+    private static final String HOTFIX_KIT_SUFFIX = "hotfix-kit.tar.gz";
+
     /** 部署支撑组件：任务日志与通用工具。 */
     private final DeploySupport support;
 
@@ -73,6 +79,9 @@ public class DockerDeployService {
     /** 凭据加解密组件：解密凭据密文得到明文。 */
     private final CredentialCrypto credentialCrypto;
 
+    /** 服务器 Mapper：按 {@code release_record.build_server_id} 取构建机（读取版本配置目录用）。 */
+    private final ServerMapper serverMapper;
+
     /**
      * 创建 DOCKER 发布服务。
      *
@@ -81,15 +90,17 @@ public class DockerDeployService {
      * @param registryMapper    镜像仓库 Mapper
      * @param credentialMapper  凭据 Mapper
      * @param credentialCrypto  凭据加解密组件
+     * @param serverMapper      服务器 Mapper
      */
     public DockerDeployService(DeploySupport support, SshSessionFactory sshSessionFactory,
                                RegistryMapper registryMapper, CredentialMapper credentialMapper,
-                               CredentialCrypto credentialCrypto) {
+                               CredentialCrypto credentialCrypto, ServerMapper serverMapper) {
         this.support = support;
         this.sshSessionFactory = sshSessionFactory;
         this.registryMapper = registryMapper;
         this.credentialMapper = credentialMapper;
         this.credentialCrypto = credentialCrypto;
+        this.serverMapper = serverMapper;
     }
 
     /**
@@ -122,6 +133,19 @@ public class DockerDeployService {
         try {
             // 私有仓库必须先登录：目标机默认无凭据，构建机的登录态也不会外溢到目标机。
             login = dockerLoginOnTarget(session, ctx);
+            // RUN 形态原本完全不在目标机落盘；B1 的热修包必须落下来，
+            // 否则平台一旦不可用，这台机器上除了镜像什么都没有，无法就地重建。
+            if (shouldDeliverKit(ctx)) {
+                String dir = workDir(ctx);
+                support.appendLog(ctx.task(), DeploySupport.STAGE_PREPARE, TaskLogLevel.INFO,
+                        "准备应急重建目录 " + dir);
+                run(session, "mkdir -p " + ShellQuote.quote(dir), "创建目录失败");
+                deliverBuildContext(ctx, session, dir);
+            }
+            // 配置分发：把版本目录里的配置初稿投放到 <工作目录>/config（目标机已存在则不覆盖）。
+            // RUN 形态是否真用得上取决于 extra_docker_args 里有没有 -v 挂这个目录；
+            // 没有配置文件时这里不创建任何目录，保持「RUN 形态默认不在目标机落盘」的原状。
+            deliverConfigFiles(ctx, session, workDir(ctx));
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO, "拉取镜像 " + image);
             // 拉取镜像可能上千 MB，按长命令超时等待，不能用秒级超时。
             SshCommandResult pull = session.execLong("docker pull " + image);
@@ -171,6 +195,12 @@ public class DockerDeployService {
             support.appendLog(ctx.task(), DeploySupport.STAGE_PREPARE, TaskLogLevel.INFO, "准备部署目录 " + dir);
             run(session, "mkdir -p " + ShellQuote.quote(dir), "创建目录失败");
 
+            // 配置分发必须在 up -d 之前：compose 里形如 ./config:/app/config 的绑定挂载
+            // 在容器创建那一刻就把宿主目录挂进去了，之后才往里放文件，容器已经按「空目录」起来了
+            //（表现为「宿主机有配置、容器里读不到」，且 docker inspect 看不出任何异常）。
+            int delivered = deliverConfigFiles(ctx, session, dir);
+            warnIfConfigMountEmpty(ctx, session, dir, content, delivered);
+
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
                     "下发 compose 文件到 " + composeFile);
             run(session, ShellQuote.heredocWrite(composeFile, content), "写入 compose 文件失败");
@@ -181,8 +211,9 @@ public class DockerDeployService {
                     "注入镜像版本 " + ComposeInjection.VARIABLE + "=" + image);
             run(session, ShellQuote.heredocWrite(envFile, ComposeInjection.envContent(image)), "写入版本变量文件失败");
 
-            // 指定了固定工作目录时，把构建上下文 tarball 一并下发到目标机，方便运维上机 docker build 再次构建。
-            if (StringUtils.hasText(ctx.config().getWorkDir())) {
+            // 应急重建素材：B1 热修包必须始终下发（目标机无源码，平台挂了只能靠它自救）；
+            // 标准源码上下文沿用既有语义，仅在显式配置 work_dir 时下发。
+            if (shouldDeliverKit(ctx)) {
                 deliverBuildContext(ctx, session, dir);
             }
 
@@ -209,14 +240,39 @@ public class DockerDeployService {
     }
 
     /**
-     * 把构建上下文 tarball 下发并解包到目标机工作目录，供运维上机 {@code docker build} 再次构建。
+     * 判断本次发布是否要下发应急重建素材（构建上下文 / B1 热修包）。
      *
-     * <p>仅当目标机指定了固定工作目录（{@code work_dir}）且版本记录里打包过上下文时调用。
-     * 走与 JAR / STATIC 一致的「构建机 → 平台 → 目标机」两跳中转：先经 {@link DeploySupport#downloadArtifact}
-     * 从构建机拉到平台本地临时文件，再 {@code sftpUpload} 到目标机，最后在目标机解包到
-     * {@code <工作目录>/build-context/}（Dockerfile 随源码一起落位），解包后删 tar 省空间。</p>
+     * <p>两条来源的语义不同，不能一刀切：</p>
+     * <ul>
+     *   <li><b>B1 热修包</b>（{@code hotfix-kit.tar.gz}）：目标机既无源码也无 maven，
+     *       它是平台不可用时唯一能就地重建的素材，因此<b>无论是否配置 work_dir 都必须下发</b>；</li>
+     *   <li><b>标准源码上下文</b>（{@code build-context.tar.gz}）：体积是整仓源码，
+     *       沿用既有语义，只在显式配置 {@code work_dir} 时下发，避免给不需要的机器平白多传几十 MB。</li>
+     * </ul>
      *
-     * <p>这是「应急上机重建」的辅助材料，下发失败只记 WARN 不阻断正常的镜像发布流程——
+     * @param ctx 部署上下文
+     * @return 需要下发时返回 true
+     */
+    private boolean shouldDeliverKit(DeployContext ctx) {
+        String path = ctx.release().getContextArtifactPath();
+        if (!StringUtils.hasText(path)) {
+            return false;
+        }
+        if (path.endsWith(HOTFIX_KIT_SUFFIX)) {
+            return true;
+        }
+        return StringUtils.hasText(ctx.config().getWorkDir());
+    }
+
+    /**
+     * 把应急重建素材下发并解包到目标机工作目录，供运维上机 {@code docker build} 再次构建。
+     *
+     * <p>素材有两种：B1 的平铺热修包（jar + Dockerfile + compose）与标准源码构建上下文。
+     * 走与 JAR / STATIC 一致的「构建机 → 平台 → 目标机」两跳中转：先经
+     * {@link DeploySupport#downloadArtifact} 从构建机拉到平台本地临时文件，再 {@code sftpUpload}
+     * 到目标机，最后解包到 {@code <工作目录>/build-context/}，解包后删 tar 省空间。</p>
+     *
+     * <p>这是「应急上机重建」的辅助材料，下发失败只记日志不阻断正常的镜像发布流程——
      * 即便它没到位，已发布的镜像仍可正常回滚，不应因为一个可选材料把一次成功发布判成失败。</p>
      *
      * @param ctx     部署上下文
@@ -228,29 +284,126 @@ public class DockerDeployService {
         if (!StringUtils.hasText(remoteTar)) {
             return;
         }
+        String fileName = remoteTar.substring(remoteTar.lastIndexOf('/') + 1);
         support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
-                "下发构建上下文到 " + dir + "/build-context（含 Dockerfile 与源码，供上机 docker build 重建）");
+                "下发应急重建素材到 " + dir + "/build-context（含 jar / Dockerfile / compose，供上机 docker build 重建）");
         Path local = null;
         try {
-            local = support.downloadArtifact(ctx.task(), ctx.release(), remoteTar, "build-context.tar.gz", ctx.deployment());
-            String remoteFile = dir + "/build-context.tar.gz";
+            local = support.downloadArtifact(ctx.task(), ctx.release(), remoteTar, fileName, ctx.deployment());
+            String remoteFile = dir + "/" + fileName;
             session.sftpUpload(local, remoteFile);
-            // 解包到 build-context/ 子目录，Dockerfile 随源码一起落位；解包后删 tar 省空间。
+            // 解包到 build-context/ 子目录，jar / Dockerfile / compose 随之平铺落位；解包后删 tar 省空间。
             String extract = "mkdir -p " + ShellQuote.quote(dir + "/build-context")
                     + " && tar xzf " + ShellQuote.quote(remoteFile)
                     + " -C " + ShellQuote.quote(dir + "/build-context")
                     + " && rm -f " + ShellQuote.quote(remoteFile);
-            run(session, extract, "解包构建上下文失败");
+            run(session, extract, "解包应急重建素材失败");
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
-                    "构建上下文已就绪：" + dir + "/build-context（可 cd 进该目录执行 docker build -f <dockerfile> . 再次构建）");
+                    "应急重建素材已就绪：" + dir + "/build-context（cd 进去按 README.md 执行 docker build / docker compose up 即可，不依赖平台）");
         } catch (Exception e) {
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
-                    "构建上下文下发失败（不影响镜像发布，仍可回滚）：" + e.getMessage());
+                    "应急重建素材下发失败（不影响镜像发布，仍可回滚）：" + e.getMessage());
         } finally {
             if (local != null) {
                 support.deleteQuietly(local);
             }
         }
+    }
+
+    // ==================== 配置分发 ====================
+
+    /**
+     * 把版本目录里的配置初稿投放到目标机工作目录的 {@code config/} 子目录。
+     *
+     * <p><b>为什么 DOCKER 也需要这一步</b>：镜像里的配置是「构建时的那一份」，而生产现场的
+     * 库地址、账号几乎必然不同；compose 的 {@code ./config} 挂载只有在宿主目录真的有文件时才
+     * 起作用，否则容器静默回落到镜像内配置。此前平台从不往 {@code <work_dir>/config} 写东西，
+     * 于是首次部署后运维看到一个空目录，只能自己手抄一份配置放进去——
+     * 这既是多余的体力活，也是「改错文件不生效」这类问题的温床。</p>
+     *
+     * <p><b>默认只投初稿、不覆盖</b>：目标机已存在同名文件时跳过（部署记录
+     * {@code force_overwrite_config = false}）。配置与产物分离的意义就在于配置由运维自己维护，
+     * 平台不该在每次发版时用仓库里的配置盖掉现场改动。这条口径与 JAR 运行时完全一致，
+     * 实现也共用 {@link DeploySupport} 的那一份。</p>
+     *
+     * <p><b>勾选「强制覆盖」时放行</b>：部署记录 {@code force_overwrite_config = true} 时，
+     * 平台先比对内容，不一致则把目标机旧配置改名备份为 {@code <文件名>_bak_<时间戳>}
+     * （单文件、不建目录，与 JAR 备份约定同源）再写入新配置
+     * （留退路，符合容灾底线）。用于「配置由仓库管理、改了仓库配置想下发」的场景——
+     * 否则默认的「存在即跳过」会让新配置永远传不下去。</p>
+     *
+     * <p><b>配置缺失不阻断发布</b>：没有 {@code build_server_id}、构建机不可达、版本目录下没有
+     * {@code config/}，一律返回 0 并继续发版——服务能不能起来由运行态校验判定，
+     * 不该因为「没带配置文件」这种增强项把一次正常的镜像发布判成失败。</p>
+     *
+     * @param ctx     部署上下文
+     * @param session 已认证的目标机会话
+     * @param dir     目标机工作目录绝对路径
+     * @return 本次实际写入（新增或覆盖）的配置文件数量；跳过的文件不计入
+     */
+    private int deliverConfigFiles(DeployContext ctx, SshSession session, String dir) {
+        String buildServerId = ctx.release().getBuildServerId();
+        if (!StringUtils.hasText(buildServerId)) {
+            return 0;
+        }
+        Server buildServer = serverMapper.selectById(buildServerId);
+        // DOCKER 的 artifact_path 是 null（产物是镜像），配置目录只能按约定拼，
+        // 因此这里用 versionConfigDir 而不是从产物路径推断。
+        String configDir = support.versionConfigDir(buildServer, ctx.project().getCode(),
+                ctx.release().getVersion());
+        if (configDir == null) {
+            return 0;
+        }
+        Map<String, Path> files = support.downloadConfigFiles(ctx.task(), buildServer, configDir);
+        if (files.isEmpty()) {
+            return 0;
+        }
+        try {
+            // 强制覆盖开关：从部署记录读取（创建时固化、异步任务再读）。
+            // true 时内容不一致会先备份目标机旧配置再覆盖；false 时维持「存在即跳过」。
+            boolean overwrite = Boolean.TRUE.equals(ctx.deployment().getForceOverwriteConfig());
+            return support.uploadConfigFiles(ctx.task(), session,
+                    dir + "/" + DeploySupport.CONFIG_SUBDIR, files, overwrite);
+        } finally {
+            // 本地临时文件是「构建机 → 平台 → 目标机」两跳中转的中间产物，用完必须删。
+            files.values().forEach(support::deleteQuietly);
+        }
+    }
+
+    /**
+     * compose 挂载了 {@code ./config} 而目标机该目录启动前为空时，打一条显式提示。
+     *
+     * <p>这是最容易误判的一类「静默错配」：容器起得来、健康检查也过、平台报发布成功，
+     * 但实际跑的是镜像里的默认配置（比如连的是测试库）。{@code docker inspect} 里
+     * 挂载项一切正常，只有进容器 {@code ls /app/config} 才能发现是空的。
+     * 因此不等到出事，发布日志里先把结论写出来。</p>
+     *
+     * <p>任务日志只有 INFO / ERROR 两级（见 {@link TaskLogLevel}），这里是可继续的提示，
+     * 用「【注意】」前缀让它在一屏日志里能被一眼扫到。</p>
+     *
+     * @param ctx       部署上下文
+     * @param session   已认证的目标机会话
+     * @param dir       目标机工作目录
+     * @param content   compose 文件内容
+     * @param delivered 本次投放的文件数
+     */
+    private void warnIfConfigMountEmpty(DeployContext ctx, SshSession session, String dir,
+                                        String content, int delivered) {
+        if (content == null || !content.contains("./" + DeploySupport.CONFIG_SUBDIR)) {
+            return;
+        }
+        String configDir = dir + "/" + DeploySupport.CONFIG_SUBDIR;
+        SshCommandResult ls = session.exec("ls -1 " + ShellQuote.quote(configDir) + " 2>/dev/null");
+        if (ls.success() && StringUtils.hasText(ls.stdout())) {
+            return;
+        }
+        support.appendLog(ctx.task(), DeploySupport.STAGE_PREPARE, TaskLogLevel.INFO,
+                "【注意】compose 挂载了 ./" + DeploySupport.CONFIG_SUBDIR
+                        + "，但目标机该目录为空"
+                        + (delivered == 0 ? "（本次版本没有带出配置文件）" : "")
+                        + "：容器将回落到镜像 / jar 内 classpath 的内置配置启动。"
+                        + "需要外部配置请把文件放到 " + configDir
+                        + " 后执行 docker compose -p " + ctx.project().getCode() + " up -d 重新拉起");
     }
 
     /**

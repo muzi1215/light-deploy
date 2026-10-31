@@ -73,6 +73,21 @@ public class Deployment extends BaseEntity {
     private String strategy;
 
     /**
+     * 部署时是否强制覆盖目标机已有配置文件。
+     *
+     * <p>false（默认）：投放配置时若目标机已存在同名文件则跳过、不覆盖，
+     * 保护运维手动改过的现场配置（改库地址 / 账号等）。</p>
+     * <p>true：勾选时平台先比对内容，不一致则把目标机旧配置改名备份为
+     * {@code <文件名>_bak_<时间戳>}（单文件、不建目录，与 JAR 备份约定同源）再写入新配置
+     * （留退路，符合容灾底线）；内容一致则不动作。</p>
+     * <p>开关在创建部署时固化进本记录，异步执行任务再读，避免任务排队期间语义漂移。
+     * DOCKER 与 JAR 共用本列与同一条投放逻辑（见 {@code DeploySupport.uploadConfigFiles}）。</p>
+     */
+    @TableField("force_overwrite_config")
+    @Schema(description = "是否强制覆盖目标机已有配置文件，默认false；勾选时内容不一致会先备份再覆盖")
+    private Boolean forceOverwriteConfig;
+
+    /**
      * 部署状态数字编码，取值见 {@link DeploymentStatus}。
      *
      * <p>0 排队 / 1 发布中 / 2 成功 / 3 失败 / 4 已取消 / 5 回滚中 / 6 已回滚。

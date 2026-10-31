@@ -135,8 +135,13 @@ public class ProjectVo {
     /**
      * 构建模式。
      *
-     * <p>取值与后端 BuildMode 枚举一致：PROJECT_DOCKERFILE /
-     * LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY。</p>
+     * <p>取值与后端 {@code BuildMode} 枚举一一对应，共 5 种：
+     * {@code PROJECT_DOCKERFILE}（项目 Dockerfile 自行构建）、{@code LAYERED_DOCKER}（base + app 分层）、
+     * {@code JAR_PREBUILD}（平台先 Maven 打 jar 再包极简镜像）、{@code SCRIPT_DEPLOY}（执行项目脚本）、
+     * {@code ARTIFACT_ONLY}（不做构建，直接发布已有产物）。</p>
+     *
+     * <p>与 {@link #runtimeType} 的组合受 {@code RuntimeType.supportedBuildModes} 约束，
+     * 不是任意搭配都合法；各模式的执行链路见 docs/构建模式与执行链路.md。</p>
      */
     @Schema(description = "构建模式")
     private String buildMode;

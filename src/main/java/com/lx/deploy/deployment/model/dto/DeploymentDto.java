@@ -62,6 +62,16 @@ public class DeploymentDto extends TimeRangeQuery {
     private String strategy;
 
     /**
+     * 是否强制覆盖目标机已有配置文件（可选）。
+     *
+     * <p>默认 false：投放配置时若目标机已存在同名文件则跳过、不覆盖，保护运维现场改动。
+     * 传 true：勾选时平台先比对内容，不一致则把目标机旧配置备份后再写入新配置。
+     * 用于「配置由仓库管理、改了仓库配置想下发」的场景，绕开默认的「存在即跳过」。</p>
+     */
+    @Schema(description = "是否强制覆盖目标机已有配置文件，默认false")
+    private Boolean forceOverwriteConfig;
+
+    /**
      * 部署状态，仅用于查询条件。
      *
      * <p>数字编码，取值见 {@code DeploymentStatus}；创建请求传入本字段会被服务端忽略，

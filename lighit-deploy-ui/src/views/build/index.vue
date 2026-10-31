@@ -237,16 +237,10 @@ import { getBuildStatusStyle } from '@/constants/buildStatus.ts'
 // 日志查看器与日志时间格式化：5 处日志视图共用同一份实现
 import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.ts'
 
-/** 构建模式展示映射（与后端 BuildMode 枚举一致，仅用于列表展示） */
-const BUILD_MODE_MAP: Record<string, string> = {
-  PROJECT_DOCKERFILE: '项目Dockerfile',
-  LAYERED_DOCKER: '分层构建',
-  SCRIPT_DEPLOY: '脚本部署',
-  ARTIFACT_ONLY: '仅发布产物',
-  JAR_PREBUILD: 'JAR预构建'
-}
-
-const BUILD_MODE_OPTIONS = Object.entries(BUILD_MODE_MAP).map(([value, label]) => ({ value, label }))
+// 构建模式文案与选项一律从常量模块取：那里是前端唯一权威定义，与后端 BuildMode 枚举一一对应。
+// 本页曾经自己手写一份映射，与常量模块不同步（漏掉了 JAR_PREBUILD），导致编辑页选不到该模式、
+// 列表页把编码原样显示。禁止再在本页写第二份清单。
+import { BUILD_MODE_MAP, BUILD_MODE_OPTIONS } from '@/constants/projectConfig.ts'
 
 import CreateTimeRange from '@/components/CreateTimeRange.vue'
 import { splitTimeRange } from '@/utils/index.ts'

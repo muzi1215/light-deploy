@@ -300,11 +300,14 @@ public class JarDeployService {
     // ==================== 配置分发 ====================
 
     /**
-     * 下载随版本转存的配置文件。
+     * 下载随版本转存的配置文件（委托 {@link DeploySupport#downloadConfigFiles}）。
      *
-     * <p>配置目录约定在产物同级的 config 子目录，由构建阶段按 build_config_json.config_paths 转存。
-     * 没有配置文件时返回空集合，发布流程照常进行——配置缺失不该阻断发版，
-     * 是否真的起得来由服务启动与健康检查判定。</p>
+     * <p>JAR 的配置目录位置由产物路径直接推得：{@code {产物所在目录}/config}，由构建阶段按
+     * {@code build_config_json.config_paths} 转存。没有配置文件时返回空集合，发布照常进行——
+     * 配置缺失不该阻断发版，是否真的起得来由服务启动与健康检查判定。</p>
+     *
+     * <p><b>下载与投放的实现放在 {@link DeploySupport}，JAR 与 DOCKER 共用一份</b>：两边各写一份的
+     * 下场是「JAR 会判断目标机已存在不覆盖、DOCKER 却直接覆盖」这类悄悄分化。</p>
      *
      * @param ctx          发布上下文
      * @param artifactPath 构建机上的产物绝对路径
@@ -312,46 +315,20 @@ public class JarDeployService {
      * @throws DeployException 本地临时文件创建失败时抛出
      */
     private Map<String, Path> downloadConfigFiles(DeployContext ctx, String artifactPath) {
-        Map<String, Path> result = new LinkedHashMap<>();
         ReleaseRecord release = ctx.release();
         if (!StringUtils.hasText(release.getBuildServerId()) || !artifactPath.contains("/")) {
-            return result;
+            return Map.of();
         }
         Server buildServer = serverMapper.selectById(release.getBuildServerId());
-        if (buildServer == null) {
-            return result;
-        }
-        // 构建机会话在此方法内单独建立：配置下载只在确实有配置文件时才有意义，
-        // 让「无配置」这个最常见的分支不必多付一次 SSH 握手。
-        try (SshSession buildSession = sshSessionFactory.open(buildServer)) {
-            String configDir = artifactPath.substring(0, artifactPath.lastIndexOf('/')) + "/" + DEFAULT_CONFIG_DIR;
-            SshCommandResult ls = buildSession.exec("ls -1 " + configDir + " 2>/dev/null");
-            if (!ls.success() || !StringUtils.hasText(ls.stdout())) {
-                return result;
-            }
-            for (String line : ls.stdout().split("\n")) {
-                String fileName = line.strip();
-                if (fileName.isEmpty()) {
-                    continue;
-                }
-                Path local = Files.createTempFile(
-                        "ld-deploy-" + ctx.deployment().getId() + "-", "-" + fileName);
-                buildSession.sftpDownload(configDir + "/" + fileName, local);
-                result.put(fileName, local);
-                support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
-                        "已从构建机下载配置文件 " + fileName);
-            }
-        } catch (IOException e) {
-            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
-                    "创建平台本地临时文件失败：" + e.getMessage());
-        }
-        return result;
+        String configDir = artifactPath.substring(0, artifactPath.lastIndexOf('/'))
+                + "/" + DeploySupport.CONFIG_SUBDIR;
+        return support.downloadConfigFiles(ctx.task(), buildServer, configDir);
     }
 
     /**
-     * 投放配置文件到工作目录的 config 子目录。
+     * 投放配置文件到工作目录的 config 子目录（委托 {@link DeploySupport#uploadConfigFiles}）。
      *
-     * <p>目标机已存在同名配置时跳过，不覆盖：配置与 jar 分离的意义就在于配置由运维自己维护，
+     * <p>目标机已存在同名配置时跳过、不覆盖：配置与 jar 分离的意义就在于配置由运维自己维护，
      * 平台不该在每次发版时把仓库里的配置推到生产环境覆盖现场改动。</p>
      *
      * @param ctx       发布上下文
@@ -361,26 +338,7 @@ public class JarDeployService {
      * @throws DeployException 上传失败时抛出
      */
     private void uploadConfigFiles(DeployContext ctx, SshSession session, String targetDir, Map<String, Path> files) {
-        if (files.isEmpty()) {
-            return;
-        }
-        SshCommandResult mkdir = session.exec("mkdir -p " + targetDir);
-        if (!mkdir.success()) {
-            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
-                    "创建配置目录失败：" + support.firstLine(mkdir.stderr()));
-        }
-        for (Map.Entry<String, Path> entry : files.entrySet()) {
-            String target = targetDir + "/" + entry.getKey();
-            SshCommandResult exists = session.exec("test -f " + target + " && echo yes || echo no");
-            if (exists.success() && "yes".equals(exists.stdout().strip())) {
-                support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
-                        "目标机已存在 " + entry.getKey() + "，本次不覆盖");
-                continue;
-            }
-            session.sftpUpload(entry.getValue(), target);
-            support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
-                    "已投放配置文件 " + target);
-        }
+        support.uploadConfigFiles(ctx.task(), session, targetDir, files);
     }
 
     // ==================== jar 替换与校验 ====================

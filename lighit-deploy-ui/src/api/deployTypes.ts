@@ -105,7 +105,7 @@ export interface ProjectVo {
   gitUrl?: string
   gitBranch?: string
   gitCredentialId?: string
-  buildMode: string // PROJECT_DOCKERFILE / LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY
+  buildMode: string // 5 种，取值见 constants/projectConfig.ts 的 BUILD_MODE_OPTIONS（与后端 BuildMode 枚举一一对应）
   registryId?: string // 镜像仓库 ID，仅 DOCKER 运行时项目有值
   /**
    * 项目档案绑定的构建机（服务器 ID），选填。
@@ -361,7 +361,7 @@ export interface BuildVo {
   updateTime: string
   projectId: string
   projectName?: string
-  buildMode: string // PROJECT_DOCKERFILE / LAYERED_DOCKER / SCRIPT_DEPLOY / ARTIFACT_ONLY
+  buildMode: string // 5 种，取值见 constants/projectConfig.ts 的 BUILD_MODE_OPTIONS（与后端 BuildMode 枚举一一对应）
   buildServerId?: string
   buildServerName?: string
   /** 实际克隆到的 Git 提交号（短哈希），构建完成时回填 */
@@ -532,6 +532,12 @@ export interface DeploymentDto {
   releaseId: string
   /** 可选覆盖环境默认策略 */
   strategy?: string
+  /**
+   * 是否强制覆盖目标机已有配置文件。
+   * 默认 false：目标机已存在同名配置则跳过、不覆盖（保护运维现场改动）。
+   * 传 true：内容不一致时先备份旧配置再写入新配置（用于「改了仓库配置想下发」）。
+   */
+  forceOverwriteConfig?: boolean
   /** 仅作为查询条件，创建时由服务端维护 */
   status?: number
 }

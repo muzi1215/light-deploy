@@ -20,6 +20,7 @@ import com.lx.deploy.common.response.ResponseCode;
 import com.lx.deploy.common.util.GitAuthSupport;
 import com.lx.deploy.common.util.RegistryAuthSupport;
 import com.lx.deploy.common.util.SecretMasker;
+import com.lx.deploy.common.util.ShellQuote;
 import com.lx.deploy.credential.mapper.CredentialMapper;
 import com.lx.deploy.credential.model.Credential;
 import com.lx.deploy.project.mapper.ProjectMapper;
@@ -99,6 +100,26 @@ public class BuildTaskHandler implements TaskHandler {
 
     /** 产物持久目录内存放随行配置文件的子目录名，与目标机 JAR 工作目录的 config 目录对应。 */
     private static final String CONFIG_SUBDIR = "config";
+
+    /**
+     * 热修包内 jar 名的兜底值，仅在拿不到产物真实文件名时使用。
+     *
+     * <p>正常情况下热修包里的 jar <b>沿用构建产物自己的文件名</b>（如 {@code auth-tool.jar}）：
+     * 该名字就是 {@code artifact_path} 定位到的那个文件的名字，属于既成事实，
+     * 既不必从 pom 的 {@code <finalName>} 反推（要处理属性插值、模块/根 pom 优先级），
+     * 也不必让运维在配置里再抄一遍（与 {@code artifact_path} 构成两个真相来源）。
+     * 好处是运维解开热修包一眼能认出是哪个服务的包，而不是满目录同名 {@code app.jar}。</p>
+     */
+    private static final String DEFAULT_JAR_NAME = "app.jar";
+
+    /** 热修包内平铺 Dockerfile 的文件名，由项目仓库提供（约定与 dockerfile_path 同目录）。 */
+    private static final String HOTFIX_DOCKERFILE = "Dockerfile.hotfix";
+
+    /** 热修包内热修编排文件名，由项目仓库提供（与 dockerfile_path 同目录，RUN 形态可缺省）。 */
+    private static final String HOTFIX_COMPOSE = "docker-compose.hotfix.yml";
+
+    /** 热修包 tar.gz 文件名；发布端据此后缀判定「必须始终下发」，与源码上下文区分。 */
+    private static final String HOTFIX_KIT_FILE = "hotfix-kit.tar.gz";
 
     /**
      * 产物持久目录下的版本标识文件名。
@@ -401,7 +422,11 @@ public class BuildTaskHandler implements TaskHandler {
                     // B1：平台先出 jar，再用极简镜像打包，目标机只纯 run。
                     composeContent = buildJarPrebuild(task, session, project, config, runtimeType,
                             workspacePath, commit, releaseVersion.version(), artifacts);
-                    // 不产出构建上下文 tarball：目标机无源码也无 maven，应急上机重建无意义；RUN 形态本就不下发。
+                    // B1 的目标机既无源码也无 maven，源码上下文对它毫无意义；改产「平铺热修包」
+                    // （产物原名 jar + Dockerfile.hotfix + hotfix compose + 配置 + README），
+                    // 随发布下发到目标机，保证平台/仓库都不可用时仍能就地 docker build 把服务救回来。
+                    contextArtifactPath = captureHotfixKit(task, session, project, config, workspacePath,
+                            artifactBase, releaseVersion.version());
                 } else {
                     composeContent = buildDocker(task, session, project, config, runtimeType, buildMode,
                             workspacePath, commit, releaseVersion.version(), artifacts);
@@ -409,6 +434,10 @@ public class BuildTaskHandler implements TaskHandler {
                     contextArtifactPath = captureBuildContext(task, session, buildServer, workspacePath,
                             artifactBase, project, config, releaseVersion.version());
                 }
+                // 配置转存：DOCKER 的产物是镜像，走不到 buildFileArtifact 那条「产物 + 配置一起落盘」的路径，
+                // 但目标机上的 compose 一样会挂 ./config。这里单独补一次，保证发布端有配置可投。
+                persistVersionConfig(task, session, project, config, workspacePath,
+                        artifactBase, releaseVersion.version());
             } else {
                 buildFileArtifact(task, session, buildServer, project, config, runtimeType, workspacePath,
                         artifactBase, commit, releaseVersion.version(), artifacts);
@@ -822,10 +851,7 @@ public class BuildTaskHandler implements TaskHandler {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
                     "JAR_PREBUILD 模式必须在 build_config_json.artifact_path 给出 jar 相对路径");
         }
-        String jarFile = locateFile(session, workspacePath, config.getArtifactPath());
-        if (!StringUtils.hasText(jarFile) && StringUtils.hasText(moduleDir)) {
-            jarFile = locateFile(session, workspacePath + "/" + moduleDir, config.getArtifactPath());
-        }
+        String jarFile = locateJarArtifact(session, workspacePath, config);
         if (!StringUtils.hasText(jarFile)) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR,
                     "未找到 jar 产物，请检查 artifact_path：" + config.getArtifactPath());
@@ -934,6 +960,226 @@ public class BuildTaskHandler implements TaskHandler {
         }
         appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "构建上下文已打包 " + tarPath);
         return tarPath;
+    }
+
+    /**
+     * 把「平铺热修包」打到构建机产物目录，供平台或镜像仓库不可用时在目标机就地重建。
+     *
+     * <p>与 {@link #captureBuildContext} 的关键差异是<b>必须包含 jar</b>：B1 的目标机没有源码、
+     * 也没有 maven，运维手里唯一能替换的就是这个 jar。因此上下文被收敛成「jar + 一个平铺
+     * Dockerfile + 可选 hotfix compose + 可选配置 + README」，解包后直接
+     * {@code docker build -f Dockerfile.hotfix .}，<b>不需要还原仓库目录树</b>——
+     * 那恰恰是平台已经挂掉、运维最慌的时候最不该做的事。</p>
+     *
+     * <p>包内所有编排文件都由项目仓库提供（约定放在 dockerfile_path 同目录），平台只做收集与打包，
+     * 不生成任何 Dockerfile / compose，与「平台不猜项目编排」的硬约束一致。</p>
+     *
+     * <p>缺 {@code Dockerfile.hotfix} 视为项目未启用该能力：记日志后返回 null，不影响构建结论——
+     * 热修包是「应急素材」，不该让一次成功的镜像构建因为它失败。</p>
+     *
+     * @param task           当前任务
+     * @param session        已认证构建机会话
+     * @param project        项目，提供编码
+     * @param config         构建配置，提供 dockerfile_path / artifact_path / module_dir
+     * @param workspacePath  仓库工作区绝对路径
+     * @param artifactBase   构建机产物持久目录
+     * @param releaseVersion 发布版本号，作为产物持久目录名
+     * @return 热修包 tar.gz 的绝对路径；未启用或打包失败时返回 null
+     */
+    private String captureHotfixKit(Task task, SshSession session, Project project, BuildConfig config,
+                                    String workspacePath, String artifactBase, String releaseVersion) {
+        String dockerfileDir = parentDir(config.getDockerfilePath());
+        if (!StringUtils.hasText(dockerfileDir)) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                    "未配置 dockerfile_path，跳过热修包（平台不可用时该版本无法就地重建）");
+            return null;
+        }
+        String hotfixDockerfile = dockerfileDir + "/" + HOTFIX_DOCKERFILE;
+        if (!exists(session, workspacePath + "/" + hotfixDockerfile)) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                    "项目未提供 " + hotfixDockerfile + "，跳过热修包（平台不可用时该版本无法就地重建）");
+            return null;
+        }
+        String jarFile = locateJarArtifact(session, workspacePath, config);
+        if (!StringUtils.hasText(jarFile)) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "未定位到 jar 产物，跳过热修包");
+            return null;
+        }
+        // 包内沿用产物自己的文件名（auth-tool.jar）：这是既成事实，不从 pom 反推、不让运维另配。
+        String jarName = fileNameOf(jarFile);
+
+        String persistDir = artifactBase.strip() + "/" + project.getCode() + "/" + releaseVersion;
+        String staging = persistDir + "/hotfix-kit";
+        String tarPath = persistDir + "/" + HOTFIX_KIT_FILE;
+        // 重置暂存目录：上次失败可能留下半成品，混进本次包会让运维拿到错误内容。
+        if (!session.exec("rm -rf " + shellQuote(staging) + " && mkdir -p "
+                + shellQuote(staging + "/" + CONFIG_SUBDIR)).success()) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "创建热修包暂存目录失败，跳过热修包");
+            return null;
+        }
+        // 平铺 Dockerfile 用 COPY *.jar，与具体 jar 名解耦，产物改名后无需同步改 Dockerfile。
+        if (!copyIfPresent(session, jarFile, staging + "/" + jarName)) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "复制 jar 到热修包失败，跳过热修包");
+            return null;
+        }
+        copyIfPresent(session, workspacePath + "/" + hotfixDockerfile, staging + "/" + HOTFIX_DOCKERFILE);
+
+        // hotfix 编排（可选）：RUN 形态项目可以没有；缺失时 README 只给 docker build + docker run。
+        boolean hasCompose = copyIfPresent(session,
+                workspacePath + "/" + dockerfileDir + "/" + HOTFIX_COMPOSE, staging + "/" + HOTFIX_COMPOSE);
+        // 配置（可选）：解包后由 compose 的 ./config 挂载到 /app/config，改配置不必重建镜像。
+        copyIfPresent(session,
+                workspacePath + "/" + dockerfileDir + "/application.yml",
+                staging + "/" + CONFIG_SUBDIR + "/application.yml");
+
+        String readme = buildHotfixReadme(project, releaseVersion, jarName, hasCompose);
+        if (!session.exec(ShellQuote.heredocWrite(staging + "/README.md", readme)).success()) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "写入热修包 README 失败，跳过热修包");
+            return null;
+        }
+
+        // 在暂存目录内打包（-C staging .），解包后文件直接平铺落到目标机 build-context/，不套一层目录。
+        SshCommandResult pack = session.exec("tar czf " + shellQuote(tarPath)
+                + " -C " + shellQuote(staging) + " . && rm -rf " + shellQuote(staging));
+        if (!pack.success()) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                    "热修包打包失败（不影响镜像发布）：" + briefError(pack.stderr()));
+            return null;
+        }
+        appendLog(task, STAGE_BUILD, TaskLogLevel.INFO, "热修包已生成 " + tarPath
+                + "（" + jarName + " / " + HOTFIX_DOCKERFILE + (hasCompose ? " / " + HOTFIX_COMPOSE : "")
+                + "，平台不可用时下发目标机就地重建）");
+        return tarPath;
+    }
+
+    /**
+     * 取相对路径的父目录；不含斜杠时返回空串（表示仓库根）。
+     *
+     * @param path 相对仓库根的路径，如 {@code auth-tool/Docker/Dockerfile.jre}
+     * @return 父目录，如 {@code auth-tool/Docker}；无可切分时返回空串
+     */
+    private String parentDir(String path) {
+        if (!StringUtils.hasText(path)) {
+            return "";
+        }
+        String trimmed = path.strip();
+        int idx = trimmed.lastIndexOf('/');
+        return idx < 0 ? "" : trimmed.substring(0, idx);
+    }
+
+    /**
+     * 从绝对路径中取文件名，取不到时回落 {@link #DEFAULT_JAR_NAME}。
+     *
+     * <p>热修包里的 jar 名直接沿用构建产物自己的文件名（如 {@code auth-tool.jar}）。
+     * 该名字由 artifact_path 定位到的文件决定，属既成事实：比读 pom 的 {@code <finalName>} 可靠
+     * （后者可能是 {@code ${project.artifactId}} 这类属性引用，还要处理模块 pom 与根 pom 的优先级），
+     * 也比再让运维配一个 {@code jar_name} 好（与 artifact_path 构成两个会打架的真相来源）。</p>
+     *
+     * @param path 绝对路径，如 {@code /workspace/auth-tool/linux/auth-tool-7888/auth-tool.jar}
+     * @return 文件名，如 {@code auth-tool.jar}；路径为空或无文件名时返回 {@link #DEFAULT_JAR_NAME}
+     */
+    private String fileNameOf(String path) {
+        if (!StringUtils.hasText(path)) {
+            return DEFAULT_JAR_NAME;
+        }
+        String trimmed = path.strip();
+        String name = trimmed.substring(trimmed.lastIndexOf('/') + 1);
+        return StringUtils.hasText(name) ? name : DEFAULT_JAR_NAME;
+    }
+
+    /**
+     * 判断构建机上某个绝对路径是否存在。
+     *
+     * @param session 已认证会话
+     * @param absPath 绝对路径
+     * @return 存在返回 true
+     */
+    private boolean exists(SshSession session, String absPath) {
+        return session.exec("test -e " + shellQuote(absPath)).success();
+    }
+
+    /**
+     * 源文件存在才复制，不存在直接返回 false（不抛异常，用于可选素材）。
+     *
+     * @param session 已认证会话
+     * @param from    源绝对路径
+     * @param to      目标绝对路径
+     * @return 复制成功返回 true；源不存在或复制失败返回 false
+     */
+    private boolean copyIfPresent(SshSession session, String from, String to) {
+        return exists(session, from) && session.exec("cp " + shellQuote(from) + " " + shellQuote(to)).success();
+    }
+
+    /**
+     * 按 artifact_path 定位 jar：仓库根优先，未命中再回落模块目录。
+     *
+     * <p>构建与热修包打包共用这一份定位口径，避免「镜像里装的是 A、热修包里装的是 B」。
+     * 调用方须先保证 {@code artifact_path} 非空。</p>
+     *
+     * @param session       已认证会话
+     * @param workspacePath 仓库根工作区绝对路径
+     * @param config        构建配置
+     * @return jar 的绝对路径；未找到返回 null
+     */
+    private String locateJarArtifact(SshSession session, String workspacePath, BuildConfig config) {
+        if (config == null || !StringUtils.hasText(config.getArtifactPath())) {
+            return null;
+        }
+        String jarFile = locateFile(session, workspacePath, config.getArtifactPath());
+        if (!StringUtils.hasText(jarFile)) {
+            String moduleDir = resolveModuleDir(config);
+            if (StringUtils.hasText(moduleDir)) {
+                jarFile = locateFile(session, workspacePath + "/" + moduleDir, config.getArtifactPath());
+            }
+        }
+        return jarFile;
+    }
+
+    /**
+     * 生成热修包内的 README：只写命令级自救指引，不生成任何编排文件（编排由项目提供）。
+     *
+     * @param project        项目，提供编码
+     * @param releaseVersion 版本号，写进 README 便于人工比对
+     * @param jarName        包内 jar 文件名（沿用产物原名，如 {@code auth-tool.jar}），用于换包章节
+     * @param hasCompose     包内是否带了 hotfix compose（RUN 形态可能没有）
+     * @return README 正文
+     */
+    private String buildHotfixReadme(Project project, String releaseVersion, String jarName, boolean hasCompose) {
+        String code = project.getCode();
+        String image = code + ":hotfix";
+        StringBuilder sb = new StringBuilder();
+        sb.append("# ").append(code).append(" 应急重建包（").append(releaseVersion).append("）\n\n")
+                .append("> 用途：平台或镜像仓库不可用时，在本目录就地重建镜像并启动；")
+                .append("不依赖平台、不依赖构建机、不需要源码。\n\n")
+                .append("## 一键（推荐）\n\n```bash\ncd build-context\n");
+        if (hasCompose) {
+            sb.append("docker compose -p ").append(code)
+                    .append(" -f ").append(HOTFIX_COMPOSE).append(" up -d --build\n");
+        } else {
+            sb.append("docker build -f ").append(HOTFIX_DOCKERFILE).append(" -t ").append(image).append(" .\n")
+                    .append("docker rm -f ").append(code).append(" 2>/dev/null || true\n")
+                    .append("docker run -d --restart=always --name ").append(code)
+                    .append(" <端口/挂载参数，可从 docker inspect 旧容器取得> ").append(image).append("\n");
+        }
+        sb.append("```\n\n");
+        if (hasCompose) {
+            sb.append("## 分两步（便于单独查看构建日志）\n\n```bash\n")
+                    .append("docker build -f ").append(HOTFIX_DOCKERFILE).append(" -t ").append(image).append(" .\n")
+                    .append("docker compose -p ").append(code)
+                    .append(" -f ").append(HOTFIX_COMPOSE).append(" up -d\n```\n\n");
+        }
+        sb.append("## 应急换包（只换 jar，不碰其他文件）\n\n")
+                .append("```bash\ncd build-context\n")
+                .append("cp /path/to/new.jar ./").append(jarName).append("   # 覆盖同名文件\n")
+                .append("docker compose -p ").append(code).append(" -f ").append(HOTFIX_COMPOSE)
+                .append(" up -d --build\n```\n\n")
+                .append("> **必须保持文件名 `").append(jarName).append("` 不变**：`").append(HOTFIX_DOCKERFILE)
+                .append("` 用 `COPY *.jar` 定位 jar，目录里出现两个 jar 会直接报错（more than one source file）。\n")
+                .append("> 旧包不要在同一目录留 `.jar` 备份，挪到 `bak/` 子目录再放新包。\n\n")
+                .append("## 注意\n\n")
+                .append("- 配置通过 `./config` 挂载到 `/app/config`；改配置后需 `docker compose restart` 才生效。\n")
+                .append("- 手工构建的镜像 tag 平台不认识；平台恢复后请补一次正规部署，让平台记录与线上对齐。\n");
+        return sb.toString();
     }
 
     /**
@@ -1539,8 +1785,12 @@ public class BuildTaskHandler implements TaskHandler {
     /**
      * 把 build_config_json.config_paths 指向的配置文件转存到产物同级 config 目录。
      *
-     * <p>JAR 运行时才有意义：application.yml 与 jar 分离部署，配置不随版本目录漂移。
-     * 定位口径与产物一致（仓库根优先、模块目录回落）；单个文件找不到只记日志不中断构建，
+     * <p><b>JAR 与 DOCKER 都要用</b>：配置与产物分离部署，配置不随版本目录漂移。
+     * JAR 运行时由 {@code buildFileArtifact} 顺手转存（产物本来就要落盘）；
+     * DOCKER 运行时的产物是镜像、不落盘，由 {@link #persistVersionConfig} 单独补一次，
+     * 否则目标机那份 {@code ./config} 永远是空的。</p>
+     *
+     * <p>定位口径与产物一致（仓库根优先、模块目录回落）；单个文件找不到只记日志不中断构建，
      * 因为配置文件缺失不该让一次成功的构建判失败——是否阻断由发布阶段的服务启动结果决定。</p>
      *
      * @param task         当前任务
@@ -1590,6 +1840,41 @@ public class BuildTaskHandler implements TaskHandler {
             result.add(found.contains("/") ? found.substring(found.lastIndexOf('/') + 1) : found);
         }
         return result;
+    }
+
+    /**
+     * 把配置转存到「版本目录 / config」，供 DOCKER 发布时投放到目标机 {@code <work_dir>/config}。
+     *
+     * <p><b>为什么 DOCKER 要单独来一次</b>：镜像类产物不落构建机磁盘，{@code buildFileArtifact}
+     * 那条「产物 + 配置一起落盘」的路径根本不会执行，于是目标机上 compose 挂的 {@code ./config}
+     * 始终是个空目录——运维看到一个空目录，只能自己抄一份配置进去，还可能改错文件不生效。
+     * 这里按与 JAR 相同的约定落盘，发布端（{@code DeploySupport#versionConfigDir}）就能用同一套逻辑取。</p>
+     *
+     * <p>配置是增强项：没配 {@code config_paths}、文件找不到、复制失败都只记日志，
+     * 绝不让一次成功的镜像构建因为配置文件而判失败。</p>
+     *
+     * @param task           当前任务
+     * @param session        已认证构建机会话
+     * @param project        项目，提供编码与模块信息
+     * @param config         构建配置，提供 config_paths / module_dir
+     * @param workspacePath  仓库根工作区绝对路径
+     * @param artifactBase   构建机产物持久目录
+     * @param releaseVersion 本次发布版本号（与镜像 tag、版本记录同值）
+     */
+    private void persistVersionConfig(Task task, SshSession session, Project project, BuildConfig config,
+                                      String workspacePath, String artifactBase, String releaseVersion) {
+        if (!StringUtils.hasText(config.getConfigPaths())) {
+            return;
+        }
+        String moduleDir = resolveModuleDir(config);
+        String buildDir = StringUtils.hasText(moduleDir) ? workspacePath + "/" + moduleDir : workspacePath;
+        String persistDir = artifactBase.strip() + "/" + project.getCode() + "/" + releaseVersion;
+        List<String> files = collectConfigFiles(task, session, config, workspacePath, buildDir, persistDir);
+        if (!files.isEmpty()) {
+            appendLog(task, STAGE_BUILD, TaskLogLevel.INFO,
+                    "随版本转存配置文件 " + String.join("、", files)
+                            + "（发布时投放到目标机 config 目录，目标机已存在则不覆盖）");
+        }
     }
 
     /**

@@ -23,9 +23,12 @@ import org.springframework.util.StringUtils;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * 部署执行的共用支撑：任务日志、产物中转、路径与字符串工具、阶段名常量。
@@ -501,5 +504,222 @@ public class DeploySupport {
     public boolean isRollingBack(Deployment deployment) {
         return deployment.getStatus() != null
                 && deployment.getStatus() == DeploymentStatus.ROLLING_BACK;
+    }
+
+    // ==================== 配置分发（JAR / DOCKER 共用） ====================
+
+    /**
+     * 版本产物目录下存放随行配置文件的子目录名。
+     *
+     * <p>必须与构建阶段的 {@code BuildTaskHandler.CONFIG_SUBDIR} 保持一致：构建把
+     * {@code build_config_json.config_paths} 指到的文件转存到
+     * {@code {build_artifact_dir}/{项目编码}/{版本}/config}，发布端从这个目录取。</p>
+     */
+    public static final String CONFIG_SUBDIR = "config";
+
+    /**
+     * 计算「构建机上的版本配置目录」。
+     *
+     * <p>用约定拼路径而不读 {@code release_record.artifact_path}：DOCKER 管道的产物是镜像，
+     * 该字段为 null，但构建阶段仍按同一约定把配置转存到了版本目录下的 config 子目录。
+     * 两个运行时共用同一份约定，发布端就不必为「有没有 artifact_path」分叉。</p>
+     *
+     * @param buildServer 构建机档案，可为 null（此时返回 null）
+     * @param projectCode 项目编码
+     * @param version     发布版本号
+     * @return 形如 {@code /lx/light-deploy/artifacts/auth-tool/auth-tool-v9-536fd1c6/config} 的绝对路径；
+     *         构建机或产物根目录未配置时返回 null
+     */
+    public String versionConfigDir(Server buildServer, String projectCode, String version) {
+        if (buildServer == null || !StringUtils.hasText(buildServer.getBuildArtifactDir())
+                || !StringUtils.hasText(projectCode) || !StringUtils.hasText(version)) {
+            return null;
+        }
+        String base = buildServer.getBuildArtifactDir().strip();
+        while (base.endsWith("/") && base.length() > 1) {
+            base = base.substring(0, base.length() - 1);
+        }
+        return base + "/" + projectCode + "/" + version + "/" + CONFIG_SUBDIR;
+    }
+
+    /**
+     * 从构建机下载某目录下的全部配置文件到平台本地临时文件。
+     *
+     * <p><b>配置是增强项，不是发版的必要条件</b>：构建机不可达、目录不存在、目录为空，
+     * 一律返回空 Map 并继续发布——是否真的起得来由服务启动与健康检查判定。
+     * 唯一会抛出的是「本地临时文件创建失败」，那是平台自己的磁盘问题，必须暴露。</p>
+     *
+     * @param task        当前任务，用于写日志
+     * @param buildServer 构建机档案，为 null 时直接返回空 Map
+     * @param configDir   构建机上的配置目录绝对路径，为 null 或空时直接返回空 Map
+     * @return 文件名 → 本地临时文件路径（保持目录列举顺序）
+     * @throws DeployException 平台本地临时文件创建失败时抛出
+     */
+    public Map<String, Path> downloadConfigFiles(Task task, Server buildServer, String configDir) {
+        Map<String, Path> result = new LinkedHashMap<>();
+        if (buildServer == null || !StringUtils.hasText(configDir)) {
+            return result;
+        }
+        // 只有确实可能有配置时才建立 SSH 会话：绝大多数项目没有这个目录，
+        // 让「无配置」这个最常见分支不必多付一次握手。
+        try (SshSession buildSession = sshSessionFactory.open(buildServer)) {
+            SshCommandResult ls = buildSession.exec("ls -1 " + ShellQuote.quote(configDir) + " 2>/dev/null");
+            if (!ls.success() || !StringUtils.hasText(ls.stdout())) {
+                return result;
+            }
+            for (String line : ls.stdout().split("\\R")) {
+                String fileName = line.strip();
+                if (fileName.isEmpty()) {
+                    continue;
+                }
+                Path local;
+                try {
+                    local = Files.createTempFile("ld-deploy-" + task.getId() + "-", "-" + fileName);
+                } catch (IOException e) {
+                    throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                            "创建平台本地临时文件失败：" + e.getMessage());
+                }
+                buildSession.sftpDownload(configDir + "/" + fileName, local);
+                result.put(fileName, local);
+                appendLog(task, STAGE_DELIVER, TaskLogLevel.INFO, "已从构建机下载配置文件 " + fileName);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 把配置文件投放到目标机的配置目录（保守模式：存在即跳过）。
+     *
+     * <p>等价 {@link #uploadConfigFiles(Task, SshSession, String, Map, boolean)} 传 false，
+     * 保留历史行为：目标机已存在同名文件时跳过、不覆盖，保护运维手动改过的现场配置。
+     * JAR 运行时走的就是这一条。</p>
+     *
+     * @see #uploadConfigFiles(Task, SshSession, String, Map, boolean)
+     */
+    public int uploadConfigFiles(Task task, SshSession session, String targetDir, Map<String, Path> files) {
+        return uploadConfigFiles(task, session, targetDir, files, false);
+    }
+
+    /**
+     * 把配置文件投放到目标机的配置目录。
+     *
+     * <p><b>配置是增强项，不是发版的必要条件</b>：构建机不可达、目录不存在、目录为空，
+     * 一律返回 0 并继续发布——是否真的起得来由服务启动与健康检查判定。</p>
+     *
+     * <p><b>两种写入策略</b>：</p>
+     * <ul>
+     *   <li>{@code overwrite = false}（默认，保守）：目标机已存在同名文件则跳过、不覆盖，
+     *       保护运维手动改过的现场配置（改库地址 / 账号等）。JAR 与 DOCKER 共用此口径。</li>
+     *   <li>{@code overwrite = true}（强制）：先比对内容——与本次版本一致则跳过；不一致则把
+     *       目标机旧文件改名备份为 {@code <文件名>_bak_<时间戳>}（单文件、不建目录，
+     *       与 JAR 备份约定同源）再写入新配置。备份留退路，符合容灾底线；用于「配置由仓库管理、
+     *       改了仓库配置想下发」的场景，绕开默认的「存在即跳过」导致新配置传不下去的问题。</li>
+     * </ul>
+     *
+     * @param task      当前任务，用于写日志
+     * @param session   已连接的目标机会话
+     * @param targetDir 目标机配置目录绝对路径
+     * @param files     文件名 → 本地临时文件路径
+     * @param overwrite 是否强制覆盖（内容不一致时备份后覆盖）
+     * @return 本次实际写入（新增或覆盖）的文件数量；跳过的文件不计入
+     * @throws DeployException 创建配置目录、备份旧配置或上传新配置失败时抛出
+     */
+    public int uploadConfigFiles(Task task, SshSession session, String targetDir, Map<String, Path> files,
+                                 boolean overwrite) {
+        if (files == null || files.isEmpty()) {
+            return 0;
+        }
+        SshCommandResult mkdir = session.exec("mkdir -p " + ShellQuote.quote(targetDir));
+        if (!mkdir.success()) {
+            throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                    "创建配置目录失败：" + firstLine(mkdir.stderr()));
+        }
+        // 备份时间戳整次调用共用一个：保证同一次部署覆盖的多个文件时间戳一致，便于一眼归类。
+        String backupTs = null;
+        int delivered = 0;
+        for (Map.Entry<String, Path> entry : files.entrySet()) {
+            String fileName = entry.getKey();
+            String target = targetDir + "/" + fileName;
+            SshCommandResult exists = session.exec("test -f " + ShellQuote.quote(target) + " && echo yes || echo no");
+            boolean targetExists = exists.success() && "yes".equals(exists.stdout().strip());
+            if (!targetExists) {
+                session.sftpUpload(entry.getValue(), target);
+                delivered++;
+                appendLog(task, STAGE_DELIVER, TaskLogLevel.INFO, "已投放配置文件 " + fileName);
+                continue;
+            }
+            // 目标机已存在同名文件。
+            if (!overwrite) {
+                appendLog(task, STAGE_DELIVER, TaskLogLevel.INFO,
+                        "目标机已存在 " + fileName + "，本次不覆盖（如需用仓库配置覆盖请勾选「强制覆盖配置文件」）");
+                continue;
+            }
+            // 强制覆盖：先比对内容，一致则不动作，避免无谓备份。
+            if (contentEquals(entry.getValue(), target, session)) {
+                appendLog(task, STAGE_DELIVER, TaskLogLevel.INFO,
+                        "目标机 " + fileName + " 与本次版本内容一致，跳过");
+                continue;
+            }
+            // 内容不一致：把目标机旧文件改名备份为 <文件名>_bak_<时间戳>（单文件、不建目录，
+            // 与 JAR 备份约定 {文件名}_bak_{时间戳} 同源），再写入本次版本的新配置。
+            if (backupTs == null) {
+                backupTs = LocalDateTime.now().format(BACKUP_TS_FMT);
+            }
+            String backupPath = target + "_bak_" + backupTs;
+            SshCommandResult mv = session.exec("mv " + ShellQuote.quote(target) + " " + ShellQuote.quote(backupPath));
+            if (!mv.success()) {
+                throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
+                        "备份目标机旧配置失败：" + firstLine(mv.stderr()));
+            }
+            session.sftpUpload(entry.getValue(), target);
+            delivered++;
+            appendLog(task, STAGE_DELIVER, TaskLogLevel.INFO,
+                    "目标机 " + fileName + " 与本次版本不一致，已备份旧配置为 " + backupPath + " 并写入新配置");
+        }
+        return delivered;
+    }
+
+    /** 备份文件名时间戳格式：整次调用共用，保证同一次部署覆盖的多个文件时间戳一致。 */
+    private static final DateTimeFormatter BACKUP_TS_FMT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+
+    /**
+     * 比对「平台本地临时文件」与「目标机现有文件」的内容是否一致（按 MD5）。
+     *
+     * <p>本地文件是刚从构建机下载的本次版本配置；目标机文件是现场正在用的配置。
+     * 两者 MD5 相等即视为同一份，无需备份覆盖；不等才需要备份后覆盖。
+     * 任意一端取不到摘要都按「不一致」处理——宁可多一次备份，也不要漏覆盖。</p>
+     *
+     * @param local        本地临时文件路径（本次版本配置）
+     * @param remoteTarget 目标机现有文件绝对路径
+     * @param session      已连接的目标机会话
+     * @return true 表示内容一致
+     */
+    private boolean contentEquals(Path local, String remoteTarget, SshSession session) {
+        String localMd5 = md5Hex(local);
+        if (localMd5 == null) {
+            return false;
+        }
+        SshCommandResult r = session.exec("md5sum " + ShellQuote.quote(remoteTarget));
+        if (!r.success() || !StringUtils.hasText(r.stdout())) {
+            return false;
+        }
+        String remoteMd5 = r.stdout().trim().split("\\s+")[0];
+        return localMd5.equalsIgnoreCase(remoteMd5);
+    }
+
+    /** 计算本地文件 MD5 的十六进制串；读取或计算失败时返回 null。 */
+    private String md5Hex(Path local) {
+        try {
+            byte[] data = Files.readAllBytes(local);
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(data);
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

@@ -68,12 +68,12 @@ JAR 运行时采用「固定工作目录 + 原地替换」，**不按版本建�
 - **systemd 单元只在首次部署生成，之后不再重写**——运维手工调整过的启动参数（`-Xmx`、`--spring.config.location` 等）必须被尊重；
 - 发版动作固定为四步：备份旧 jar 到 `exec/bak` → 投放新 jar → `systemctl restart` → `is-active` 确认。回滚走同一路径，只是投放 `old_version` 的 jar；
 - 投放前先在目标机比对现有 jar 的 `sha256`：与本次版本一致时**跳过备份与上传**（重复发布、失败重试都会命中），两种传输方式与日志拆分要求见 §24.7；
-- jar 与配置分离：配置文件放在工作目录的 `config/` 下，由 `build_config_json.config_paths` 随产物转存，**平台不覆盖目标机已存在的配置**；
+- jar 与配置分离：配置文件放在工作目录的 `config/` 下，由 `build_config_json.config_paths` 随产物转存，默认**平台不覆盖目标机已存在的配置**；勾选「强制覆盖配置文件」时（部署记录 `force_overwrite_config=1`），内容不一致会先改名备份为 `<文件名>_bak_<时间戳>` 再覆盖（详见文档《产物分发链路》§6.4）；
 - 备份命名为 `{jar名}_bak_{时间戳}_{版本号}.jar`（如 `auth-tool_bak_20260925222851_auth-7888-v6-c9bb25d3.jar`），**被替换包的版本号内嵌在文件名里**，`ls` 一眼就能看出每个备份是哪个版本。取不到版本时省略版本段，退化为 `{jar名}_bak_{时间戳}.jar`；同一秒同版本重名时追加 `_2`、`_3`——该序号**只是防撞名，与版本无关**。三种形态 `jar-update.py` / `jar-fallback.py` 都必须能识别；
 - **版本段逐字保留平台版本号，不把其中的连字符换成下划线**：`release_record.version`、Docker 镜像 tag、`VERSION` 文件里写的都是 `auth-7888-v7-1521739f`，文件名必须与之字面一致，才能直接复制去查库、搜日志、比对镜像。若为「统一下划线」把 `-` 换成 `_`，读回时就得按段回译，而项目编码本身允许含 `_`，回译不再双射——拿一个隐式约定换一点视觉整齐，不划算。文件名里 `-` 与 `_` 混用**是有意为之**：`_` 分隔备份名的结构段，`-` 属于版本号本身；
 - 部署脚本内置在 `resources/scripts/jar-deploy/`，由平台上传执行。这类脚本必须**非交互（不接受 input）且返回明确退出码**：SSH 执行没有 TTY，交互式脚本会挂起到超时，而退出码恒为 0 会让平台把失败判成成功。
 
-本形态只约束「JAR + 脚本构建」链路。**DOCKER 不受影响**：仍按 `dockerfile_path` 构建镜像、`docker pull + run` 发布，不使用工作目录与上述脚本；`config_paths` 也不在 DOCKER 分支消费。
+本形态只约束「JAR + 脚本构建」链路。**DOCKER 不走这套工作目录与 systemd 脚本**：仍按 `dockerfile_path` 构建镜像、`docker pull + run` / `compose up` 发布。但 **`config_paths` 在 DOCKER 分支同样消费**（2026-10-31 补）：构建期 `persistVersionConfig` 把配置转存到 `{构建产物持久目录}/{项目编码}/{版本}/config`（镜像产物不落盘，走不到 `buildFileArtifact` 那条路径），发布期 `DockerDeployService.deliverConfigFiles` 投放到 `<work_dir>/config`，默认**目标机已存在则不覆盖**（部署记录 `force_overwrite_config=0`）；勾选「强制覆盖配置文件」（`force_overwrite_config=1`）时，内容不一致先改名备份为 `<文件名>_bak_<时间戳>`（单文件、不建目录，与 JAR 备份约定同源）再覆盖，用于「改了仓库配置想下发」的场景——否则默认的「存在即跳过」会让新配置永远传不下去；compose 引用了 `./config` 而该目录为空时，发布日志必须打一条【注意】提示「容器将回落到镜像/classpath 内置配置」——这类静默错配表现为「发布成功、连错库」。
 
 ### 3.2 STATIC 静态发布形态（固定目录 + 内容替换）
 
@@ -1295,7 +1295,13 @@ com.lx.deploy.common.constants
   - 后端在 `ProjectService.validateBusinessRule` 校验，拒绝时返回 VALIDATION_ERROR(4001) 并列出该运行时的可选模式；
   - 前端在项目表单用同一份矩阵做下拉联动（`BUILD_MODE_OPTIONS[].runtimes`），运行时切换时自动校正非法组合，并清空镜像仓库绑定；
   - **新增构建模式时必须同时改两处**（`RuntimeType` 枚举 + 前端 `BUILD_MODE_OPTIONS`），禁止在任何其它地方再写一份组合判断；
+  - **前端模式清单只有一份**：`constants/projectConfig.ts` 的 `BUILD_MODE_OPTIONS`。列表页文案、搜索下拉、编辑页下拉一律从它派生；页面内手写第二份映射曾导致 `JAR_PREBUILD` 从下拉里消失、编辑保存时被静默改成 `PROJECT_DOCKERFILE`（2026-10-31 事故，见 `docs/构建模式与执行链路.md` §7）；
+  - **静默纠偏是禁止的**：联动逻辑只允许在「值合法但当前运行时不支持」时回退并提示；「值不在清单里」必须保留原值 + 告警，不允许替用户改写数据；
   - 历史数据若存在非法组合（例如早期建的 `STATIC` + `LAYERED_DOCKER`），不会被自动修正，但再次编辑保存时会被拦下；
+  - 各模式的完整执行链路（平台做不做预先构建、产物是什么、目标机怎么发、日志特征）见 **`docs/构建模式与执行链路.md`**；本文档只定规则，不重复链路细节；
+  - **运行时 ≠ 构建模式**：运行时（`DOCKER` / `JAR` / `STATIC`）决定「产物到了目标机怎么跑」，构建模式决定「产物怎么来」，两者是两段流水线的两把开关。概念澄清、判定树（Dockerfile 能不能自己产出 jar）、Docker 下 Java 服务的默认口径见 `docs/构建模式与执行链路.md` §2；**不要把「是 Java 项目」当成「必须用 JAR_PREBUILD」的理由**；
+  - **选 `JAR_PREBUILD` 不等于要维护两份 Dockerfile**：编译交给平台后，项目里只留那份「只 COPY jar」的极简 Dockerfile 即可；同时保留多阶段那份才需要保证两者产出等价镜像；
+- **组合校验拦不住「选错了模式」**：`DOCKER` + `PROJECT_DOCKERFILE` 永远合法，哪怕该项目的 Dockerfile 其实是「只 COPY 预构建 jar」的极简版——那种 Dockerfile 只能配 `JAR_PREBUILD`，配错会在 `docker build` 阶段报 `COPY ... not found`。判断依据是「Dockerfile 自己能不能产出 jar」，不是「运行时是不是 Docker」；
 - 查询/统计构建相关数据时，脚本部署类的“构建”本质是「产出产物」，不要用镜像仓库维度的指标（推送次数、镜像大小）去统计它。
 
 ### 23.5 发布版本号的生成规则
@@ -1403,7 +1409,12 @@ Docker 的 Dockerfile 与 docker-compose.yml **统一来自项目仓库**（与 
    COMPOSE 形态下 `container_name` / `port_mappings` / `extra_docker_args` 不参与——
    它们表达的是 `docker run` 的参数，套到 compose 上只会造成「配了却没生效」；
 7. **不做 compose 的全量覆盖与备份**：`exec/bak`、`static-bak` 那套针对的是「平台产出、可能被运维改乱」的文件，
-   而 compose 由项目维护、每次随版本下发，平台也不充当它的真相来源。这条与 §24.12 是不同口径，不要套用。
+   而 compose 由项目维护、每次随版本下发，平台也不充当它的真相来源。这条与 §24.12 是不同口径，不要套用；
+8. **`./config` 这类绑定挂载目录必须在 `up -d` 之前就有内容**（2026-10-31 补）。bind mount 在容器创建时
+   一次性完成绑定，之后再往里放文件，容器已经按「空目录」起来了：表现为「宿主机有配置、容器读不到」，
+   `docker inspect` 也看不出异常。因此 `DockerDeployService` 的投放顺序是
+   「mkdir 工作目录 → 投放 config/ → 写 compose → up -d」，且目录为空时打【注意】日志
+   （容器会回落到镜像/classpath 内置配置）。见 §3.1 末尾与 `docs/产物分发链路.md` §6.4。
 
 **存量库升级**（MySQL 一律手工执行，平台不自动跑）：
 

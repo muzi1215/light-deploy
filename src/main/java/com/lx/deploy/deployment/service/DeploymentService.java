@@ -293,6 +293,8 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         deployment.setEnvironmentId(environment.getId());
         deployment.setReleaseId(release.getId());
         deployment.setStrategy(strategy);
+        // 强制覆盖开关：前端未传时按 false 处理（字段 NOT NULL DEFAULT 0，不能插 NULL）。
+        deployment.setForceOverwriteConfig(Boolean.TRUE.equals(dto.getForceOverwriteConfig()));
         deployment.setStatus(DeploymentStatus.QUEUED);
         // 操作者：过渡期没有登录态，接入统一权限中心后再从认证信息填充，此处不猜测用户名。
         if (!save(deployment)) {
@@ -379,6 +381,12 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
                         "部署策略必须为 SINGLE_TARGET、ALL_AT_ONCE 或 ROLLING");
             }
             deployment.setStrategy(dto.getStrategy());
+            updateById(deployment);
+        }
+        // 换强制覆盖开关：前端显式传了该字段且值与原记录不同才同步，不传则保留原值（创建时已落库）。
+        Boolean nextOverwrite = dto.getForceOverwriteConfig();
+        if (nextOverwrite != null && !nextOverwrite.equals(deployment.getForceOverwriteConfig())) {
+            deployment.setForceOverwriteConfig(nextOverwrite);
             updateById(deployment);
         }
         return getRequiredById(id);

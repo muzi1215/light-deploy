@@ -8,6 +8,7 @@ import com.lx.deploy.server.model.Server;
 import com.lx.deploy.ssh.SshSession;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.sshd.client.SshClient;
+import org.apache.sshd.client.config.hosts.HostConfigEntryResolver;
 import org.apache.sshd.client.session.ClientSession;
 import org.apache.sshd.common.NamedResource;
 import org.apache.sshd.common.config.keys.FilePasswordProvider;
@@ -124,6 +125,11 @@ public class SshSessionFactory {
 
         // 客户端随会话一起关闭，保证一次任务结束后不残留 IO 线程。
         SshClient client = SshClient.setUpDefaultClient();
+        // 禁用 ~/.ssh/config 解析：平台是服务端，连哪个 host/port/user 完全由服务器档案决定，
+        // 不该被运行账号本地的 Host / ProxyCommand / IdentityFile 规则改写。否则同一份档案
+        // 换台机器跑出来的行为不同，运维本地配置会静默覆盖平台意图；且 SSHD 默认会去读该文件，
+        // 在受限环境（沙箱 / 无家目录权限的容器）下直接抛 EPERM，表现为「SSH 连接失败」。
+        client.setHostConfigEntryResolver(HostConfigEntryResolver.EMPTY);
         try {
             client.start();
             // 先建立 TCP 与协议协商，再提交认证标识；顺序与 SSHD 的会话状态机一致。

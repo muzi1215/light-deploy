@@ -226,6 +226,25 @@
             环境默认：{{ envDefaultStrategyText }}；此处留空即按默认值执行
           </span>
         </el-form-item>
+        <!--
+          强制覆盖配置文件：默认不勾选（保守，保护运维现场改动）。
+          勾选后，若仓库配置与现场内容不一致，平台先备份旧配置再写入新配置。
+          用于「改了仓库配置想下发」的场景——否则默认的「存在即跳过」会让新配置传不下去。
+          仅对本次部署生效，属于执行选项而非长期配置。
+        -->
+        <el-form-item label="配置文件">
+          <el-checkbox v-model="createForm.forceOverwriteConfig">强制覆盖目标机已有配置</el-checkbox>
+          <el-tooltip placement="top" style="margin-left: 8px">
+            <template #content>
+              <div class="tooltip-lines">
+                <div>默认不覆盖：目标机已存在同名配置时跳过，保护运维手动改动。</div>
+                <div>勾选后：若仓库配置与现场内容不一致，先备份旧配置再写入新配置。</div>
+                <div>仅对本次部署生效，用于「改了仓库配置想下发」的场景。</div>
+              </div>
+            </template>
+            <el-icon class="form-label-tip"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -570,7 +589,9 @@ const createForm = reactive({
   projectId: '' as string,
   environmentId: '' as string,
   releaseId: '' as string,
-  strategy: '' as string
+  strategy: '' as string,
+  // 强制覆盖配置文件：默认不勾选（保守，保护运维现场改动）。
+  forceOverwriteConfig: false as boolean
 })
 
 /** 校验规则与后端 Service 校验镜像：必填项先由前端拦截，后端仍是最终依据 */
@@ -678,6 +699,7 @@ function resetCreate() {
   createForm.environmentId = ''
   createForm.releaseId = ''
   createForm.strategy = ''
+  createForm.forceOverwriteConfig = false
   releaseOptions.value = []
   projectEnvOptions.value = []
   createFormRef.value?.resetFields()
@@ -693,7 +715,8 @@ async function submitCreate() {
       projectId: createForm.projectId,
       environmentId: createForm.environmentId,
       releaseId: createForm.releaseId,
-      strategy: createForm.strategy || undefined
+      strategy: createForm.strategy || undefined,
+      forceOverwriteConfig: createForm.forceOverwriteConfig || undefined
     })
     ElMessage.success('已触发部署')
     createVisible.value = false

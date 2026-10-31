@@ -25,18 +25,66 @@ export const RUNTIME_TYPE_OPTIONS: { value: string; label: string }[] = [
 ]
 
 /**
- * 构建模式选项（与后端 BuildMode 枚举一一对应，枚举变更时必须同步本数组）。
+ * 构建模式选项 —— 前端唯一权威定义（与后端 `BuildMode` 枚举一一对应，枚举变更时必须同步本数组）。
  *
- * label 用于编辑页表单（空间充足，展示完整名称）；
- * shortLabel 用于搜索下拉与列表列（宽度有限，必须用短名）；
- * runtimes 是该构建模式允许的运行时，镜像自后端 RuntimeType.supports()：Docker 类构建模式
- * 产出镜像、只配 DOCKER，脚本 / 仅发布产物产出文件、只配 JAR 与 STATIC（AGENTS.md §23.4）。
+ * <p><b>铁律（AGENTS.md §23.4）</b>：新增/删除构建模式只改两处 —— 后端 `BuildMode` 枚举与
+ * `RuntimeType.supportedBuildModes`，以及本数组。除此之外任何地方都不得再写一份模式清单：
+ * 列表页的展示映射、搜索下拉都从本数组派生。历史上 `build/index.vue` 曾自己手写一份映射，
+ * 结果与这里不同步，漏掉了 `JAR_PREBUILD`，导致编辑页无法选择该模式（详见
+ * docs/构建模式与执行链路.md §6「变更检查清单」）。</p>
+ *
+ * <p><b>数组顺序有语义</b>：`edit.vue` 在运行时切换后若发现当前模式不被支持，会回退到该运行时的
+ * <b>第一个</b>可选模式。因此每个运行时至少要有一个兜底项，且兜底项应选「最不容易静默出错」的那个
+ * （DOCKER 目前是 `PROJECT_DOCKERFILE`）。</p>
+ *
+ * <p><b>label / shortLabel / runtimes 三个字段缺一不可</b>：</p>
+ * <ul>
+ *   <li>{@code label} —— 编辑页表单展示（空间充足，写清「平台会做什么」）；</li>
+ *   <li>{@code shortLabel} —— 搜索下拉与列表列（宽度有限，只能短名）；</li>
+ *   <li>{@code runtimes} —— 该模式允许的运行时，镜像自后端 {@code RuntimeType.supports()}：
+ *       Docker 类模式产出镜像、只配 DOCKER；脚本 / 仅发布产物产出文件、只配 JAR 与 STATIC。
+ *       <b>漏填 runtimes 会让该模式在任何运行时下都选不到</b>。</li>
+ * </ul>
  */
 export const BUILD_MODE_OPTIONS: { value: string; label: string; shortLabel: string; runtimes: string[] }[] = [
-  { value: 'PROJECT_DOCKERFILE', label: '项目自带 Dockerfile', shortLabel: '项目Dockerfile', runtimes: ['DOCKER'] },
-  { value: 'LAYERED_DOCKER', label: '分层构建（base + app）', shortLabel: '分层构建', runtimes: ['DOCKER'] },
-  { value: 'SCRIPT_DEPLOY', label: '脚本部署', shortLabel: '脚本部署', runtimes: ['JAR', 'STATIC'] },
-  { value: 'ARTIFACT_ONLY', label: '仅发布已有产物', shortLabel: '仅发布产物', runtimes: ['JAR', 'STATIC'] }
+  {
+    value: 'PROJECT_DOCKERFILE',
+    label: '项目自带 Dockerfile（Dockerfile 内自行构建产物）',
+    shortLabel: '项目Dockerfile',
+    runtimes: ['DOCKER']
+  },
+  {
+    // 分层构建同样是「Dockerfile 内自行构建产物」，只是拆成 base + app 两层复用依赖。
+    value: 'LAYERED_DOCKER',
+    label: '分层构建（Dockerfile.base + Dockerfile.app）',
+    shortLabel: '分层构建',
+    runtimes: ['DOCKER']
+  },
+  {
+    // 【易错点】脚本部署不产出镜像，只在构建机执行项目自带脚本；目标机按产物文件型发布。
+    value: 'SCRIPT_DEPLOY',
+    label: '脚本部署（执行项目自带构建脚本）',
+    shortLabel: '脚本部署',
+    runtimes: ['JAR', 'STATIC']
+  },
+  {
+    // 【易错点】不做任何构建，产物由页面直接上传（UPLOAD 来源专用）。
+    value: 'ARTIFACT_ONLY',
+    label: '仅发布已有产物（不做构建）',
+    shortLabel: '仅发布产物',
+    runtimes: ['JAR', 'STATIC']
+  },
+  {
+    // 【易错点】B1：平台先用 Maven 容器打出 jar（遵循 pom 的 finalName / outputDirectory），
+    // 再交给项目的「极简 Dockerfile」包成镜像。与该模式搭配的 Dockerfile 只做 COPY <jar>，
+    // 自己不具备构建能力 —— 所以 JAR_PREBUILD 与 PROJECT_DOCKERFILE 之间不可互换：
+    // 用「极简 Dockerfile」配 PROJECT_DOCKERFILE，Dockerfile 里的 COPY 必然找不到 jar。
+    // 反过来用「多阶段 Dockerfile」配 JAR_PREBUILD 会构建两次，浪费一半时间。
+    value: 'JAR_PREBUILD',
+    label: 'JAR 预构建镜像（平台先打 jar，再用极简 Dockerfile 包镜像）',
+    shortLabel: 'JAR预构建',
+    runtimes: ['DOCKER']
+  }
 ]
 
 /** 构建模式展示映射，从 BUILD_MODE_OPTIONS 派生，用于列表列渲染 */
@@ -199,7 +247,8 @@ export const BUILD_CONFIG_FIELDS: ConfigField[] = [
     group: '构建产物',
     span: 12,
     placeholder: '如 src/main/resources/application.yml，多个用英文逗号分隔',
-    tip: '随产物发布的配置文件，构建时转存到产物同级 config 目录；JAR 运行时消费，Docker 不消费'
+    tip: '随版本发布的配置文件：构建时转存到版本目录 config/，发布时投放到目标机（JAR → 工作目录 config，'
+      + 'Docker → work_dir/config），目标机已存在则不覆盖'
   },
   {
     key: 'dockerfile_path',

@@ -416,15 +416,43 @@ onMounted(async () => {
 
 // ==================== 联动与提交 ====================
 /**
- * 运行时切换时校正构建模式与镜像仓库绑定（AGENTS.md §23.4）：
- * 1. 当前构建模式不被新运行时支持时，自动切到该运行时的第一个可选模式；
- * 2. 运行时不是 DOCKER 时清空镜像仓库绑定。
+ * 运行时切换时校正构建模式与镜像仓库绑定（AGENTS.md §23.4）。
+ *
+ * <p>这里必须区分两种情况，历史实现把两者混为一谈，导致过真实的数据事故：</p>
+ * <ol>
+ *   <li><b>当前模式在选项表里、但新运行时不支持</b>（用户主动换了运行时）——
+ *       这是正常联动，回退到该运行时的第一个可选模式，并提示用户，因为下拉里已选不到原值；</li>
+ *   <li><b>当前模式根本不在选项表里</b>（选项表漏登记 / 历史遗留编码）——
+ *       <b>绝不能自动改</b>：这不是用户的选择错误，而是前端的登记缺失。静默替换会把本来正确的
+ *       项目配置改坏（曾把 auth-tool 的 JAR_PREBUILD 悄悄改成 PROJECT_DOCKERFILE，下一次构建
+ *       直接失败）。此时保留原值并告警，由人来决定是否切换。</li>
+ * </ol>
+ *
+ * <p>另外，运行时不是 DOCKER 时清空镜像仓库绑定——JAR / STATIC 不经过 registry。</p>
+ *
+ * @param value 运行时下拉的新值
  */
 function handleRuntimeTypeChange(value: string | number | boolean | undefined) {
   const runtimeType = String(value ?? '')
-  if (!BUILD_MODE_OPTIONS.find((item) => item.value === formData.buildMode)?.runtimes.includes(runtimeType)) {
-    formData.buildMode = BUILD_MODE_OPTIONS.find((item) => item.runtimes.includes(runtimeType))?.value || ''
+  const current = BUILD_MODE_OPTIONS.find((item) => item.value === formData.buildMode)
+
+  if (!current) {
+    // 情况 2：选项表里没有这个编码。保留原值，只告警，不替用户做决定。
+    if (formData.buildMode) {
+      ElMessage.warning(
+        `当前构建模式 ${formData.buildMode} 未在页面选项中登记，已保留原值。` +
+          '请检查前端 constants/projectConfig.ts 的 BUILD_MODE_OPTIONS 是否漏项。'
+      )
+    }
+  } else if (!current.runtimes.includes(runtimeType)) {
+    // 情况 1：正常联动，回退到该运行时的第一个可选模式。
+    const fallback = BUILD_MODE_OPTIONS.find((item) => item.runtimes.includes(runtimeType))
+    if (fallback) {
+      formData.buildMode = fallback.value
+      ElMessage.info(`运行时切换后，构建模式已调整为「${fallback.label}」`)
+    }
   }
+
   if (runtimeType !== 'DOCKER') {
     formData.registryId = ''
   }
