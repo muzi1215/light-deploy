@@ -5,6 +5,9 @@ server:
     context-path: /deploy
 
 spring:
+  profiles:
+    active:
+      - dev
   servlet:
     # 产物上传上限：前端 dist 打包后常见几十 MB，Spring Boot 默认单文件 1MB 会直接拒绝。
     # 平台自身是内网运维系统，上限放宽到 500MB；真正的边界由网关与磁盘空间决定。

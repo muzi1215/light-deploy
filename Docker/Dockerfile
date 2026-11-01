@@ -46,8 +46,8 @@ RUN groupadd -g 1000 appuser \
 # 用 ARG 留出改名/换版本的口子：docker build --build-arg JAR_FILE=xxx.jar .
 # 平铺目录里不要放第二个 jar（COPY 指定文件名不受影响，但容易搞混用的是哪个包）。
 ARG JAR_FILE=light-deploy.jar
-COPY ${JAR_FILE} /app/app.jar
-RUN chown appuser:appuser /app/app.jar
+COPY ${JAR_FILE} /app/light-deploy.jar
+RUN chown appuser:appuser /app/light-deploy.jar
 
 USER appuser
 
@@ -56,4 +56,4 @@ EXPOSE 2027
 
 # exec 形态 + sh -c：让 java 成为 PID 1，docker stop 的 SIGTERM 能直达 JVM 触发优雅停机；
 # JAVA_OPTS 用环境变量展开，改参数不用重建镜像（compose 里覆盖 environment 即可）。
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/light-deploy.jar"]
