@@ -43,7 +43,7 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="code" label="项目编码" min-width="170" show-overflow-tooltip align="center" />
+      <el-table-column prop="code" label="项目编码" min-width="170" show-overflow-tooltip fixed="left" align="center" />
       <el-table-column prop="name" label="项目名称" min-width="160" show-overflow-tooltip align="center" />
       <el-table-column prop="runtimeType" label="运行时" min-width="110" align="center">
         <template #default="{ row }">

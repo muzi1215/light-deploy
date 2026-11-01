@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
     base: '/',
 
     build: {
-      outDir: 'dist',
+      outDir: 'light-deploy',
       assetsDir: 'static',
       sourcemap: isDev,
       rollupOptions: {

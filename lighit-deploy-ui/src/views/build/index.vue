@@ -35,7 +35,7 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="projectName" label="项目" min-width="150" show-overflow-tooltip align="center" />
+      <el-table-column prop="projectName" label="项目" min-width="180" show-overflow-tooltip fixed="left" align="center" />
       <el-table-column prop="buildMode" label="构建模式" min-width="130" align="center">
         <template #default="{ row }">
           <el-tag>{{ BUILD_MODE_MAP[row.buildMode] || row.buildMode }}</el-tag>

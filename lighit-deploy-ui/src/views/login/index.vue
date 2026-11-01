@@ -29,9 +29,9 @@
             {{ loading ? '登录中...' : '登 录' }}
           </el-button>
         </el-form>
-        <div class="form-footer">
-          <span class="footer-hint">默认管理员：admin / admin123（首次启动请尽快改密）</span>
-        </div>
+        <!-- <div class="form-footer">
+          <span class="footer-hint"></span>
+        </div> -->
       </div>
       <p class="copyright">{{ copyrightText }}</p>
     </div>

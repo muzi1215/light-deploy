@@ -101,22 +101,6 @@ export const constantRoutes: AppRouteRecordRaw[] = [
     ]
   },
   {
-    // 任务管理（一级目录）：异步任务查询与执行日志
-    path: '/task',
-    component: Layout,
-    redirect: '/task/list',
-    alwaysShow: true,
-    meta: { title: '任务管理', icon: 'example' },
-    children: [
-      {
-        path: 'list',
-        name: 'TaskList',
-        component: () => import('@/views/task/index.vue'),
-        meta: { title: '任务列表' }
-      }
-    ]
-  },
-  {
     // 构建管理（一级目录）：构建记录查询、实时日志与产物查看
     path: '/build',
     component: Layout,
@@ -148,7 +132,7 @@ export const constantRoutes: AppRouteRecordRaw[] = [
       }
     ]
   },
-  {
+   {
     // 系统设置（一级目录）：全局资源，不属于某个项目
     // 凭据供 Git 拉取与镜像仓库推送使用；镜像仓库只服务于 DOCKER 运行时（AGENTS.md §23.4）
     path: '/system',
@@ -177,7 +161,24 @@ export const constantRoutes: AppRouteRecordRaw[] = [
         meta: { title: '操作日志' }
       }
     ]
-  }
+  },
+  {
+    // 任务管理（一级目录）：异步任务查询与执行日志
+    path: '/task',
+    component: Layout,
+    redirect: '/task/list',
+    alwaysShow: true,
+    meta: { title: '任务管理', icon: 'example' },
+    children: [
+      {
+        path: 'list',
+        name: 'TaskList',
+        component: () => import('@/views/task/index.vue'),
+        meta: { title: '任务列表' }
+      }
+    ]
+  },
+ 
 ]
 
 /** 创建路由实例 */

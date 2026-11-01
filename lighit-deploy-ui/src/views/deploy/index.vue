@@ -29,7 +29,7 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="projectName" label="项目" min-width="140" show-overflow-tooltip align="center" />
+      <el-table-column prop="projectName" label="项目" min-width="180" show-overflow-tooltip  fixed="left" align="center" />
       <el-table-column prop="environmentName" label="环境" min-width="110" align="center" />
       <!--
         版本列显示「本次动作针对的发布版本」。已回滚时再补一行「当前 xxx」——回滚后机器跑的
