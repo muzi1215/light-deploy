@@ -24,8 +24,12 @@ import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * DOCKER 运行时发布服务：拉取镜像并把容器按配置形态拉起来。
@@ -139,7 +143,7 @@ public class DockerDeployService {
                 String dir = workDir(ctx);
                 support.appendLog(ctx.task(), DeploySupport.STAGE_PREPARE, TaskLogLevel.INFO,
                         "准备应急重建目录 " + dir);
-                run(session, "mkdir -p " + ShellQuote.quote(dir), "创建目录失败");
+                run(session, ctx, DeploySupport.STAGE_PREPARE, "mkdir -p " + ShellQuote.quote(dir), "创建目录失败");
                 deliverBuildContext(ctx, session, dir);
             }
             // 配置分发：把版本目录里的配置初稿投放到 <工作目录>/config（目标机已存在则不覆盖）。
@@ -148,26 +152,28 @@ public class DockerDeployService {
             deliverConfigFiles(ctx, session, workDir(ctx));
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO, "拉取镜像 " + image);
             // 拉取镜像可能上千 MB，按长命令超时等待，不能用秒级超时。
-            SshCommandResult pull = session.execLong("docker pull " + image);
+            SshCommandResult pull = execLongLogged(session, ctx, DeploySupport.STAGE_DELIVER, "docker pull " + image);
             if (!pull.success()) {
                 throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
                         "docker pull 失败：" + support.firstLine(pull.stderr()));
             }
             support.writeOutput(ctx.task(), DeploySupport.STAGE_DELIVER, pull.stdout());
             // 先移除同名旧容器：容器名是发布幂等的关键，不删除会导致 run 直接失败。
-            session.exec("docker rm -f " + containerName + " >/dev/null 2>&1 || true");
+            // （等价于手工 docker stop + docker rm，rm -f 自带停止语义）
+            execLogged(session, ctx, DeploySupport.STAGE_START,
+                    "docker rm -f " + containerName + " >/dev/null 2>&1 || true");
             String runCommand = "docker run -d --restart=always --name " + containerName
                     + portOptions(ctx.config()) + extraArgs(ctx.config()) + " " + image;
             support.appendLog(ctx.task(), DeploySupport.STAGE_START, TaskLogLevel.INFO, "启动容器 " + containerName);
             // 容器启动可能包含镜像解压与首次初始化（如 Spring Boot 解包），按长命令超时等待。
-            SshCommandResult run = session.execLong(runCommand);
+            SshCommandResult run = execLongLogged(session, ctx, DeploySupport.STAGE_START, runCommand);
             if (!run.success()) {
                 throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
                         "docker run 失败：" + support.firstLine(run.stderr()));
             }
-            requireRunningContainer(session, containerName);
+            requireRunningContainer(ctx, session, containerName);
         } finally {
-            dockerLogoutOnTarget(session, login);
+            dockerLogoutOnTarget(ctx, session, login);
             session.close();
         }
     }
@@ -175,7 +181,7 @@ public class DockerDeployService {
     /**
      * COMPOSE 形态：下发项目自带的 compose 文件，用变量注入版本号后交给 docker compose 启动。
      *
-     * <p>顺序固定为「登录 → 准备目录 → 写 compose → 写版本变量 → pull → up -d → 校验运行态」。
+     * <p>顺序固定为「登录 → 准备目录 → 写 compose → 写版本变量 → pull → 清理旧容器(down/rm) → up -d → 校验运行态」。
      * 先 pull 再 up 是为了让镜像下载单独出日志：混在 up 里一旦失败，
      * 很难分清是拉不到镜像还是编排有问题。登录放在最前，保证 pull 之前目标机已具备仓库凭据。</p>
      */
@@ -188,12 +194,13 @@ public class DockerDeployService {
         // 名字一变 compose 就认不出上一次的容器，会在同一台机器上叠出两套。
         String base = "docker compose -p " + ctx.project().getCode()
                 + " -f " + ShellQuote.quote(composeFile) + " --env-file " + ShellQuote.quote(envFile);
+        log.info("compose容器启动命令：{}", base);
         SshSession session = sshSessionFactory.open(ctx.server());
         RegistryLogin login = null;
         try {
             login = dockerLoginOnTarget(session, ctx);
             support.appendLog(ctx.task(), DeploySupport.STAGE_PREPARE, TaskLogLevel.INFO, "准备部署目录 " + dir);
-            run(session, "mkdir -p " + ShellQuote.quote(dir), "创建目录失败");
+            run(session, ctx, DeploySupport.STAGE_PREPARE, "mkdir -p " + ShellQuote.quote(dir), "创建目录失败");
 
             // 配置分发必须在 up -d 之前：compose 里形如 ./config:/app/config 的绑定挂载
             // 在容器创建那一刻就把宿主目录挂进去了，之后才往里放文件，容器已经按「空目录」起来了
@@ -203,13 +210,13 @@ public class DockerDeployService {
 
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
                     "下发 compose 文件到 " + composeFile);
-            run(session, ShellQuote.heredocWrite(composeFile, content), "写入 compose 文件失败");
+            run(session, ctx, DeploySupport.STAGE_DELIVER, ShellQuote.heredocWrite(composeFile, content), "写入 compose 文件失败");
 
             // 版本号通过独立变量文件注入，平台不改 compose 原文：
             // 运维上机看到的文件必须与仓库里的一致，否则「文件里写的是啥」就不再可信。
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
                     "注入镜像版本 " + ComposeInjection.VARIABLE + "=" + image);
-            run(session, ShellQuote.heredocWrite(envFile, ComposeInjection.envContent(image)), "写入版本变量文件失败");
+            run(session, ctx, DeploySupport.STAGE_DELIVER, ShellQuote.heredocWrite(envFile, ComposeInjection.envContent(image)), "写入版本变量文件失败");
 
             // 应急重建素材：B1 热修包必须始终下发（目标机无源码，平台挂了只能靠它自救）；
             // 标准源码上下文沿用既有语义，仅在显式配置 work_dir 时下发。
@@ -218,25 +225,67 @@ public class DockerDeployService {
             }
 
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO, "拉取镜像 " + image);
-            SshCommandResult pull = session.execLong(base + " pull");
+            SshCommandResult pull = execLongLogged(session, ctx, DeploySupport.STAGE_DELIVER, base + " pull");
             if (!pull.success()) {
                 throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
                         "docker compose pull 失败：\n" + support.outputSummary(pull.stdout(), pull.stderr()));
             }
             support.writeOutput(ctx.task(), DeploySupport.STAGE_DELIVER, pull.stdout());
 
+            // 替换式重部署：docker compose up -d 遇到目标机上已存在的同名容器会直接报
+            // Conflict（常见于 compose 里硬编码 container_name，且旧容器来自上一次遗留栈 /
+            // 手动 docker run / 其它 -p 命名空间）——这与 RUN 形态用 docker rm -f 兜底一致。
+            // 先按 compose 显式声明的容器名强制移除，再 down 拆掉上一次同栈，最后 up -d 重建。
+            for (String name : parseContainerNames(content)) {
+                execLogged(session, ctx, DeploySupport.STAGE_START,
+                        "docker rm -f " + ShellQuote.quote(name) + " >/dev/null 2>&1 || true");
+            }
+            SshCommandResult down = execLongLogged(session, ctx, DeploySupport.STAGE_START, base + " down");
+            if (!down.success()) {
+                support.appendLog(ctx.task(), DeploySupport.STAGE_START, TaskLogLevel.INFO,
+                        "docker compose down 未完全成功（可能上一次并未以同栈方式运行），继续尝试 up -d");
+            }
+
             support.appendLog(ctx.task(), DeploySupport.STAGE_START, TaskLogLevel.INFO, "启动服务编排（up -d）");
-            SshCommandResult up = session.execLong(base + " up -d");
+            SshCommandResult up = execLongLogged(session, ctx, DeploySupport.STAGE_START, base + " up -d");
             if (!up.success()) {
                 throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
                         "docker compose up 失败：\n" + support.outputSummary(up.stdout(), up.stderr()));
             }
             support.writeOutput(ctx.task(), DeploySupport.STAGE_START, up.stdout());
-            requireRunningServices(session, base);
+            requireRunningServices(ctx, session, base);
         } finally {
-            dockerLogoutOnTarget(session, login);
+            dockerLogoutOnTarget(ctx, session, login);
             session.close();
         }
+    }
+
+    /**
+     * 解析 compose 内容里显式声明的容器名（{@code container_name: xxx}）。
+     *
+     * <p>仅返回静态字面量，跳过含 {@code ${...}} 变量展开的项——平台无法在发布期解析
+     * compose 变量文件之外的占位符，强行移除一个不存在的名字只会让 {@code docker rm -f}
+     * 走 {@code || true} 兜底，无害但无意义。硬编码容器名正是本次 {@code Conflict} 的来源，
+     * 平台在 up -d 前按这些名字强制移除，确保同名旧容器不会挡路。</p>
+     *
+     * @param content compose 文件内容
+     * @return 静态容器名集合（去重，可能为空）
+     */
+    private List<String> parseContainerNames(String content) {
+        List<String> names = new ArrayList<>();
+        if (content == null) {
+            return names;
+        }
+        Pattern pattern = Pattern.compile("^\\s*container_name:\\s*(\\S+)\\s*$", Pattern.MULTILINE);
+        Matcher matcher = pattern.matcher(content);
+        while (matcher.find()) {
+            String name = matcher.group(1).trim();
+            // 跳过变量展开（如 ${PROJECT}-backend）与 YAML 锚点引用
+            if (!name.contains("${") && !name.startsWith("*")) {
+                names.add(name);
+            }
+        }
+        return names;
     }
 
     /**
@@ -297,7 +346,7 @@ public class DockerDeployService {
                     + " && tar xzf " + ShellQuote.quote(remoteFile)
                     + " -C " + ShellQuote.quote(dir + "/build-context")
                     + " && rm -f " + ShellQuote.quote(remoteFile);
-            run(session, extract, "解包应急重建素材失败");
+            run(session, ctx, DeploySupport.STAGE_DELIVER, extract, "解包应急重建素材失败");
             support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
                     "应急重建素材已就绪：" + dir + "/build-context（cd 进去按 README.md 执行 docker build / docker compose up 即可，不依赖平台）");
         } catch (Exception e) {
@@ -393,7 +442,8 @@ public class DockerDeployService {
             return;
         }
         String configDir = dir + "/" + DeploySupport.CONFIG_SUBDIR;
-        SshCommandResult ls = session.exec("ls -1 " + ShellQuote.quote(configDir) + " 2>/dev/null");
+        SshCommandResult ls = execLogged(session, ctx, DeploySupport.STAGE_PREPARE,
+                "ls -1 " + ShellQuote.quote(configDir) + " 2>/dev/null");
         if (ls.success() && StringUtils.hasText(ls.stdout())) {
             return;
         }
@@ -454,7 +504,7 @@ public class DockerDeployService {
         writeSecretFile(session, passwordFile, up[1]);
         support.appendLog(ctx.task(), DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
                 "目标机登录镜像仓库 " + loginHost + "（密码经 stdin 传入，不落日志与命令行）");
-        SshCommandResult loginResult = session.exec(
+        SshCommandResult loginResult = execLogged(session, ctx, DeploySupport.STAGE_DELIVER,
                 RegistryAuthSupport.dockerLoginCommand(loginHost, up[0], passwordFile));
         if (!loginResult.success()) {
             throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
@@ -466,18 +516,19 @@ public class DockerDeployService {
     /**
      * 在目标机登出镜像仓库并清理密码临时文件（成功失败都要清，绝不能把明文密码留在目标机磁盘）。
      *
+     * @param ctx     部署上下文（取任务写命令日志）
      * @param session 已认证会话
      * @param login   登录态；为 null 时直接返回
      */
-    private void dockerLogoutOnTarget(SshSession session, RegistryLogin login) {
+    private void dockerLogoutOnTarget(DeployContext ctx, SshSession session, RegistryLogin login) {
         if (login == null) {
             return;
         }
         if (login.passwordFile() != null) {
-            session.exec("rm -f " + login.passwordFile());
+            execLogged(session, ctx, DeploySupport.STAGE_DELIVER, "rm -f " + login.passwordFile());
         }
         if (login.host() != null) {
-            session.exec(RegistryAuthSupport.dockerLogoutCommand(login.host()));
+            execLogged(session, ctx, DeploySupport.STAGE_DELIVER, RegistryAuthSupport.dockerLogoutCommand(login.host()));
         }
     }
 
@@ -510,9 +561,20 @@ public class DockerDeployService {
     }
 
     /**
-     * 执行远程命令并检查成功，失败时抛出带错误首行的异常。
+     * 执行远程命令并打印（脱敏后的）命令原文到任务日志，失败抛出带错误首行的异常。
+     *
+     * <p>把命令落进任务日志是为了「平台不可用时运维能直接从日志抄命令上机手工操作」——
+     * 尤其是不透明的 {@code docker compose -p &lt;项目编码&gt; ...} 与容器名，以前只能靠猜。
+     * 日志一律走 {@link #commandLogText(String)} 脱敏，密码等敏感片段不会出现在日志里。</p>
+     *
+     * @param session 已认证会话
+     * @param ctx     部署上下文（取任务用于写日志）
+     * @param stage   日志阶段（prepare / deliver / start）
+     * @param command 待执行命令
+     * @param message 失败时的中文说明
      */
-    private void run(SshSession session, String command, String message) {
+    private void run(SshSession session, DeployContext ctx, String stage, String command, String message) {
+        support.appendLog(ctx.task(), stage, TaskLogLevel.INFO, "执行命令：\n" + commandLogText(command));
         SshCommandResult result = session.exec(command);
         if (!result.success()) {
             throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
@@ -521,11 +583,79 @@ public class DockerDeployService {
     }
 
     /**
-     * 确认单个容器处于运行态。
+     * 记录并执行短命令（不抛异常，结果由调用方判定），并把脱敏命令写进任务日志。
+     *
+     * @see #commandLogText(String)
      */
-    private void requireRunningContainer(SshSession session, String containerName) {
+    private SshCommandResult execLogged(SshSession session, DeployContext ctx, String stage, String command) {
+        support.appendLog(ctx.task(), stage, TaskLogLevel.INFO, "执行命令：\n" + commandLogText(command));
+        return session.exec(command);
+    }
+
+    /**
+     * 记录并执行长命令（拉镜像 / 起容器等可能跑很久，不抛异常，结果由调用方判定），
+     * 并把脱敏命令写进任务日志。
+     *
+     * @see #commandLogText(String)
+     */
+    private SshCommandResult execLongLogged(SshSession session, DeployContext ctx, String stage, String command) {
+        support.appendLog(ctx.task(), stage, TaskLogLevel.INFO, "执行命令：\n" + commandLogText(command));
+        return session.execLong(command);
+    }
+
+    /**
+     * 生成写入任务日志的命令文本：先脱敏，再把 heredoc（compose / 版本变量文件）的正文折叠，
+     * 避免把整份 compose 塞进日志。
+     *
+     * @param command 原始命令
+     * @return 可安全打印的日志文本
+     */
+    private String commandLogText(String command) {
+        if (!StringUtils.hasText(command)) {
+            return "";
+        }
+        // heredoc 写文件：只保留「cat > '<path>' <<'LD_EOF'」头，正文折叠（见发布版本快照）。
+        if (command.contains("<<'LD_EOF")) {
+            int headEnd = command.indexOf('\n');
+            String head = headEnd > 0 ? command.substring(0, headEnd) : command;
+            long lines = command.lines().count();
+            return head + " ... (heredoc 内容 " + lines + " 行，不在命令日志展开，见发布版本快照)";
+        }
+        return redact(command);
+    }
+
+    /**
+     * 命令脱敏：抹掉可能泄露凭据的片段。
+     *
+     * <p>平台登录走 {@code --password-stdin &lt;密码文件&gt;}，命令本身不含密码；唯一会泄露的是
+     * {@code writeSecretFile} 里 {@code echo &lt;base64&gt; | base64 -d} 的 base64（可逆出明文）。
+     * 兜底再把 {@code --password &lt;值&gt;} 这类显式写法抹掉。</p>
+     *
+     * @param command 原始命令
+     * @return 脱敏后的命令
+     */
+    private static String redact(String command) {
+        String s = SECRET_ECHO.matcher(command).replaceAll("echo *** | base64 -d");
+        return PASSWORD_VALUE.matcher(s).replaceAll("$1***");
+    }
+
+    /** 匹配 {@code writeSecretFile} 里 {@code echo <base64> | base64 -d}：base64 可逆出明文密码，必须抹掉。 */
+    private static final Pattern SECRET_ECHO = Pattern.compile("echo\\s+[A-Za-z0-9+/=]{8,}\\s*\\|\\s*base64\\s+-d");
+
+    /** 兜底抹掉显式 {@code --password <值>}（登录已统一走 stdin，正常情况下不会命中）。 */
+    private static final Pattern PASSWORD_VALUE = Pattern.compile("(--password\\s+)\\S+");
+
+    /**
+     * 确认单个容器处于运行态。
+     *
+     * @param ctx           部署上下文（取任务写命令日志）
+     * @param session       已认证会话
+     * @param containerName 容器名
+     */
+    private void requireRunningContainer(DeployContext ctx, SshSession session, String containerName) {
         // 容器启动成功不代表进程还在：立刻确认一次运行状态，避免把「启动即退出」报成成功。
-        SshCommandResult inspect = session.exec(
+        // docker inspect 同时是「查看状态」的等价命令，落日志后运维可直接抄。
+        SshCommandResult inspect = execLogged(session, ctx, DeploySupport.STAGE_START,
                 "docker inspect -f '{{.State.Running}}' " + containerName + " 2>/dev/null");
         if (!inspect.success() || !"true".equalsIgnoreCase(inspect.stdout().strip())) {
             throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
@@ -538,9 +668,14 @@ public class DockerDeployService {
      *
      * <p>只判「至少一个」而不是「全部」：compose 里允许存在一次性任务容器（退出码 0 即完成），
      * 逐个苛求会让这类编排永远发布失败。</p>
+     *
+     * @param ctx  部署上下文（取任务写命令日志）
+     * @param session 已认证会话
+     * @param base 含 -p / -f / --env-file 的 compose 前缀命令
      */
-    private void requireRunningServices(SshSession session, String base) {
-        SshCommandResult result = session.exec(base + " ps --status running --services 2>/dev/null");
+    private void requireRunningServices(DeployContext ctx, SshSession session, String base) {
+        SshCommandResult result = execLogged(session, ctx, DeploySupport.STAGE_START,
+                base + " ps --status running --services 2>/dev/null");
         if (!result.success()) {
             throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR,
                     "查询编排运行状态失败：" + support.firstLine(result.stderr()));
