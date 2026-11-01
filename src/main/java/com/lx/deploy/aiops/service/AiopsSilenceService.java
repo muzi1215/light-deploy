@@ -259,7 +259,7 @@ public class AiopsSilenceService {
         if (serverIds.isEmpty()) {
             return List.of();
         }
-        List<Server> servers = serverMapper.selectBatchIds(serverIds);
+        List<Server> servers = serverMapper.selectByIds(serverIds);
         List<Server> result = new ArrayList<>();
         for (Server server : servers) {
             if (StringUtils.hasText(server.getHost())) {

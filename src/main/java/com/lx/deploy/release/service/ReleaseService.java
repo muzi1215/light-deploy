@@ -108,7 +108,7 @@ public class ReleaseService extends ServiceImpl<ReleaseRecordMapper, ReleaseReco
         if (names.isEmpty()) {
             return names;
         }
-        for (Server server : serverMapper.selectBatchIds(names.keySet())) {
+        for (Server server : serverMapper.selectByIds(names.keySet())) {
             names.put(server.getId(), server.getServerName());
         }
         return names;

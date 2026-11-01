@@ -162,7 +162,7 @@ class AiopsSilenceServiceTests {
         Deployment deployment = deployment(null);
         when(environmentMapper.selectById(ENVIRONMENT_ID)).thenReturn(environment((byte) 1));
         when(deploymentTargetMapper.selectList(any())).thenReturn(List.of(target()));
-        when(serverMapper.selectBatchIds(any())).thenReturn(List.of(server()));
+        when(serverMapper.selectByIds(any())).thenReturn(List.of(server()));
         when(client.createSilence(any())).thenReturn(
                 new SilenceData("silence-new", 1, null, "2026-11-02T03:00:00+08:00",
                         List.of("服务异常"), List.of("MySQL慢查询"), false));
@@ -192,7 +192,7 @@ class AiopsSilenceServiceTests {
         Deployment deployment = deployment(null);
         when(environmentMapper.selectById(ENVIRONMENT_ID)).thenReturn(environment((byte) 1));
         when(deploymentTargetMapper.selectList(any())).thenReturn(List.of(target()));
-        when(serverMapper.selectBatchIds(any())).thenReturn(List.of(server()));
+        when(serverMapper.selectByIds(any())).thenReturn(List.of(server()));
         when(client.createSilence(any())).thenThrow(new RuntimeException("connection refused"));
 
         AiopsSilenceService.SilenceOutcome outcome = service.openForDeployment(deployment);

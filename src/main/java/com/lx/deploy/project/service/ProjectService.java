@@ -536,7 +536,7 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
      * <p>VO 类型本身不声明敏感字段，因此属性复制不会把密码、密文、Token 或私钥返回给前端。</p>
      *
      * <p>构建机名称必须在这里**批量**回填而不是逐条查询：列表页一页 20 行时逐条查 server
-     * 就是 20 次额外查询（N+1）。收集全部 buildServerId 后一次 selectBatchIds 即可。</p>
+     * 就是 20 次额外查询（N+1）。收集全部 buildServerId 后一次 selectByIds 即可。</p>
      *
      * @param entities 数据库实体列表，允许为空
      * @return 可安全返回给 Controller 的响应对象列表
@@ -567,7 +567,7 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         if (serverIds.isEmpty()) {
             return;
         }
-        Map<String, String> nameById = serverMapper.selectBatchIds(serverIds).stream()
+        Map<String, String> nameById = serverMapper.selectByIds(serverIds).stream()
                 .collect(Collectors.toMap(Server::getId, Server::getServerName, (left, right) -> left));
         vos.forEach(vo -> vo.setBuildServerName(nameById.get(vo.getBuildServerId())));
     }
