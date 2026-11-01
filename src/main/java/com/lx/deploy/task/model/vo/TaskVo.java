@@ -34,7 +34,7 @@ public class TaskVo {
     /**
      * 任务编号，业务唯一标识。
      *
-     * <p>格式 TASK-yyyyMMddHHmmss-8位随机段，页面展示与人工检索使用。</p>
+     * <p>格式为 yyyyMMddHHmmss+6位随机 的连续数字串，页面展示与人工检索使用。</p>
      */
     @Schema(description = "任务编号")
     private String taskNo;

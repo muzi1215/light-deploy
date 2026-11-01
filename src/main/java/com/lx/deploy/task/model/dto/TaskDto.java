@@ -30,7 +30,7 @@ public class TaskDto extends TimeRangeQuery {
      * 任务编号。
      *
      * <p>查询时等值过滤；新增时可选，未传入由服务端按
-     * TASK-yyyyMMddHHmmss-8位随机段 规则生成，传入时做唯一性校验。</p>
+     * yyyyMMddHHmmss+6位随机 的纯数字规则生成，传入时做唯一性校验。</p>
      */
     @Schema(description = "任务编号，新增时可选，未传入自动生成")
     private String taskNo;

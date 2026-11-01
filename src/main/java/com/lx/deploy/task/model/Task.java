@@ -30,7 +30,7 @@ public class Task extends BaseEntity {
     /**
      * 任务编号，业务唯一标识。
      *
-     * <p>未传入时由 TaskService 按 TASK-yyyyMMddHHmmss-8位随机段 生成，
+     * <p>未传入时由 TaskService 按 yyyyMMddHHmmss+6位随机 的纯数字规则生成，
      * 数据库唯一键 uk_lds_task_no 兜底防重。</p>
      */
     @TableField("task_no")

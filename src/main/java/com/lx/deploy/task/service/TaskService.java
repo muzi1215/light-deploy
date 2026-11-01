@@ -11,7 +11,6 @@ import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ResponseCode;
-import com.lx.deploy.common.util.IdGenerator;
 import com.lx.deploy.task.mapper.TaskMapper;
 import com.lx.deploy.task.model.Task;
 import com.lx.deploy.task.model.dto.TaskDto;
@@ -24,6 +23,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 /**
@@ -84,7 +84,7 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     /**
      * 根据请求 DTO 新增一条异步任务。
      *
-     * <p>任务编号未传入时按 TASK-时间戳-随机段 规则自动生成；状态强制初始化为 0（排队中），
+     * <p>任务编号未传入时按 时间戳+6位随机 的纯数字规则自动生成；状态强制初始化为 0（排队中），
      * 不允许调用方直接创建非排队状态的任务，保证任务一定经过执行器调度。</p>
      *
      * @param dto 待新增的请求参数，不包含主键和审计字段
@@ -370,17 +370,19 @@ public class TaskService extends ServiceImpl<TaskMapper, Task> {
     }
 
     /**
-     * 生成任务编号。
+     * 生成纯数字任务编号。
      *
-     * <p>规则为 TASK-yyyyMMddHHmmss-8位随机段：时间部分便于人工排序检索，
-     * 随机段取自统一 IdGenerator 的 UUID，避免同一秒内冲突。</p>
+     * <p>规则为 yyyyMMddHHmmss + 6 位随机段（共 20 位连续数字）：时间部分便于人工排序检索，
+     * 随机段为百万级十进制空间，避免同一秒内并发创建任务时冲突。表 lds_task 对 task_no 有
+     * 唯一约束，因此即便时间戳相同，随机段也足以把两条任务区分开——这与历史
+     * {@code TASK-yyyyMMddHHmmss-8位hex} 相比去掉了字母与连字符，是更易读易记的连续数字串。</p>
      *
-     * @return 形如 TASK-20260903015900-1a2b3c4d 的任务编号
+     * @return 形如 20260903015900123456 的任务编号
      */
     private String generateTaskNo() {
-        // 时间戳 + UUID 前 8 位，兼顾可读性和唯一性。
-        return "TASK-" + LocalDateTime.now().format(TASK_NO_FORMATTER)
-                + "-" + IdGenerator.generateUUID().substring(0, 8);
+        // 秒级时间戳（14 位）+ 6 位随机（百万空间）：不退化成纯时间戳，保证并发唯一。
+        int suffix = ThreadLocalRandom.current().nextInt(1_000_000);
+        return "deploy" + "-"+LocalDateTime.now().format(TASK_NO_FORMATTER) + String.format("%06d", suffix);
     }
 
     /**

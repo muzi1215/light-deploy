@@ -363,11 +363,11 @@ public class TaskLogService extends ServiceImpl<TaskLogMapper, TaskLog> {
     /**
      * 生成下载文件名。
      *
-     * <p>优先用任务编号（形如 TASK-20260925155150-985a7990），运维在下载目录里一眼能对上
+     * <p>优先用任务编号（形如 20260925155150123456），运维在下载目录里一眼能对上
      * 平台上的哪条任务；任务编号缺失属于异常数据，回落到任务主键，保证文件名始终可生成。</p>
      *
      * @param task 任务实体
-     * @return 形如 {@code TASK-20260925155150-985a7990-执行日志.txt}
+     * @return 形如 {@code 20260925155150123456-执行日志.txt}
      */
     private String buildExportFileName(Task task) {
         return (StringUtils.hasText(task.getTaskNo()) ? task.getTaskNo() : task.getId()) + "-执行日志.txt";
