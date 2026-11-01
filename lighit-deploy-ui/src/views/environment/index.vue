@@ -60,9 +60,19 @@
       </el-table-column>
       <el-table-column prop="aiopsEnabled" label="AIops联动" min-width="110" align="center">
         <template #default="{ row }">
-          <el-tag :type="row.aiopsEnabled === 1 ? 'success' : 'info'">
-            {{ row.aiopsEnabled === 1 ? '开启' : '关闭' }}
-          </el-tag>
+          <!-- 悬浮说明：这里配的是「环境级」开关，平台总闸关掉时开了也不建窗 -->
+          <el-tooltip placement="top">
+            <template #content>
+              <div class="tooltip-lines">
+                <div v-for="(line, i) in AIOPS_ENABLED_TIPS" :key="i">{{ line }}</div>
+              </div>
+            </template>
+            <span class="hover-underline">
+              <el-tag :type="row.aiopsEnabled === 1 ? 'success' : 'info'">
+                {{ row.aiopsEnabled === 1 ? '开启' : '关闭' }}
+              </el-tag>
+            </span>
+          </el-tooltip>
         </template>
       </el-table-column>
       <el-table-column prop="createTime" label="创建时间" min-width="200" align="center" />
@@ -129,8 +139,18 @@
             </el-col>
             <el-col :span="12">
               <el-form-item label="AIops联动" prop="aiopsEnabled">
-                <el-switch v-model="formData.aiopsEnabled" :active-value="1" :inactive-value="0" />
-                <span class="form-tip">开启后发布期间自动创建 AIops 告警静默窗口</span>
+                <el-tooltip placement="top">
+                  <template #content>
+                    <div class="tooltip-lines">
+                      <div v-for="(line, i) in AIOPS_ENABLED_TIPS" :key="i">{{ line }}</div>
+                    </div>
+                  </template>
+                  <el-switch v-model="formData.aiopsEnabled" :active-value="1" :inactive-value="0" />
+                </el-tooltip>
+                <!-- 两句必须都留：只说「建窗」会让人以为开了就一定建，实际还要看平台总闸 -->
+                <span class="form-tip">
+                  发布期间自动创建 AIops 静默窗；需平台配置里 AIops 联动总闸同时开启才生效
+                </span>
               </el-form-item>
             </el-col>
           </el-row>
@@ -201,7 +221,8 @@ import {
   DEPLOY_STRATEGY_MAP,
   DEPLOY_STRATEGY_OPTIONS,
   DEPLOY_STRATEGY_TIPS,
-  BATCH_SIZE_TIPS
+  BATCH_SIZE_TIPS,
+  AIOPS_ENABLED_TIPS
 } from '@/constants/deploymentStatus.ts'
 
 import CreateTimeRange from '@/components/CreateTimeRange.vue'

@@ -16,6 +16,9 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  *   <li>{@code /error}、{@code /favicon.ico}：容器与浏览器默认请求，避免被拦截器误拦。</li>
  * </ul>
  * {@code /auth/me} 故意不放行：未登录时返回 4002，前端据此跳转登录页。</p>
+ *
+ * <p>平台只对外调用 AIops（建静默窗、推事件），不提供反向服务间接口，
+ * 因此这里没有任何机器到机器的免登录路径（见 AGENTS.md §15.1）。</p>
  */
 @Configuration
 public class WebConfig implements WebMvcConfigurer {

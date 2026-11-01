@@ -10,7 +10,7 @@
     <!-- white:白色 -->
     <!-- magenta:洋红 -->
     <property name="LOG_PATTERN"
-              value="%yellow(%date{yyyy-MM-dd HH:mm:ss}) |%highlight(%-5level) |%blue(%thread) |%blue(%file:%line) |%green(%logger) |%cyan(%msg%n)"/>
+              value="%yellow(%date{yyyy-MM-dd HH:mm:ss}) |%highlight(%-5level) |%blue(%thread) |%magenta([%X{requestId:-no-request}]) |%blue(%file:%line) |%green(%logger) |%cyan(%msg%n)"/>
 
     <!-- 开发和容器环境保留标准输出，便于 docker logs 直接查看。 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">

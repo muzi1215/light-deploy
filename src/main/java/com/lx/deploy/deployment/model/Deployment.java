@@ -118,11 +118,14 @@ public class Deployment extends BaseEntity {
     /**
      * AIops 告警静默窗口 ID。
      *
-     * <p>v1 只占位不发起真实调用：环境开启 AIops 联动后，后续版本在发布前创建静默、
-     * 发布稳定后关闭，静默必须带自动过期时间（AGENTS.md §15）。可为空。</p>
+     * <p>发布前由 {@code AiopsSilenceService} 在 AIops 建窗后写回，发布结束或人工取消时关窗
+     * （静默必须带自动过期时间，见 AGENTS.md §15）。</p>
+     * <p>关窗后<b>刻意不清空</b>：留痕「这次发布用过哪个窗口」，事后可从平台反查 AIops 侧的
+     * 静默记录（{@code external_key = light-deploy:silence:<deploymentId>}）。
+     * 未启用联动、或建窗降级时为空。</p>
      */
     @TableField("aiops_silence_id")
-    @Schema(description = "AIops静默窗口ID，v1仅占位")
+    @Schema(description = "AIops静默窗口ID，建窗成功时写入，关窗后保留留痕")
     private String aiopsSilenceId;
 
     /**

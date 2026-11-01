@@ -801,6 +801,53 @@ AIops 负责：
 
 AIops 第一版只提供分析和建议，不直接无条件执行生产回滚。
 
+### 15.1 落地实现（2026-11-02）
+
+平台侧代码在 `com.lx.deploy.aiops`，AIops 侧在 `aiops/deploylink`；完整说明见 **`docs/AIops联动.md`**。
+下面几条是约束，不是建议，改发布链路时必须一起看：
+
+- **开关与短路**：全部联动受 `light-deploy.aiops.enabled` 控制。`enabled=false` 时不建窗、不推事件、
+  不注册定时任务。新增联动逻辑必须遵守同一开关，不能绕过它自己发请求。
+- **建窗是两级开关「与」**：一级 `light-deploy.aiops.enabled`＝平台有没有这个能力（总闸）；
+  二级 `environment.aiops_enabled`＝该环境的发布要不要建窗（生产建、测试不建）。
+  两级都开才建窗，判定顺序固定为「总闸 → 已有窗幂等 → 环境开关 → 目标机非空」，
+  实现在 `AiopsSilenceService.openForDeployment`。**环境关只是跳过建窗**（`SilenceOutcome.skipped`，
+  不打【注意】），事件推送不受影响——事件是审计视角、静默窗是降噪视角，不许绑死。
+  存量环境该列默认全 `0`，排障时先查这一列，别急着怀疑总闸。
+- **降级优先于完整**：默认 `fail-open=true`，AIops 不可用时建窗失败只降级（任务日志打 `【注意】`），
+  **绝不允许因为外部系统故障让发布失败**。事件推送失败同样只能让事件晚到，不能反噬发布结论。
+- **开窗早于重启**：静默窗必须在第一台目标执行前建好（`DeployTaskHandler.execute` 中 `markDeploying` 之前）。
+  晚一步，重启引起的告警已经推给值班，静默等于没做。
+- **关窗晚于结论**：关窗必须在部署状态落库之后（`finishDeployment` 内）。先关窗再写结论，
+  中间那几秒的告警既没被静默、也没有归因可查。
+- **静默范围按主机对齐**：平台 `server.id` 与 AIops `ops_server.id` 是两套主键，只按 ID 匹配会永不命中。
+  建窗请求必须同时带 `host`，AIops 侧按 `hosts` 兜底匹配。
+- **事件先落库再投递**：所有对外推送先写 `aiops_event`（待发送）再调对端，失败排重试时间由
+  `AiopsRetryScheduler` 补发。`event_id`（投递标识，重试不变）与 `idempotency_key`（业务幂等键）
+  **不可混用**。`next_retry_time`、`error_message` 必须用 `updateStrategy = FieldStrategy.ALWAYS`，
+  否则成功记录会残留过期的重试时间。
+- **挂载点清单**（新增/调整发布动作时同步维护）：`DeployTaskHandler.execute`（开窗+PREPARED）、
+  `deployTarget` 成功/失败分支（HOST_*）、`finishDeployment`（关窗+SILENCE_CLOSED）、
+  `DeploymentService.markDeploying/markSuccess/markFailed/markRolledBack/markRollbackFailed/cancel`。
+- **只做单向，不开放反向接口**：平台调 AIops 建静默窗、推事件；**AIops 不回调平台，平台也不对 AIops
+  开放任何服务间接口**。因此 `WebConfig` 里不应出现机器到机器的免登录路径。发布状态真值只在平台侧，
+  不需要第二份对外投影。
+- **联动展示只读且必须能降级**：前端走 `GET /aiops/link/{deploymentId}`（`AiopsLinkController` →
+  `AiopsLinkService`），聚合本地事件流水与远程静默窗详情。两个硬约束：
+  ① 远程查询失败**不得抛异常**，只能写进 `silenceMessage`（排障最需要该页面时，往往正是 AIops 挂了）；
+  ② 该接口**只有查询没有写**，页面不允许手工建窗/补发事件——那会绕开幂等键与 `fail-open` 降级判断。
+- **事件序号不在表里**：`aiops_event` 没有 `sequence` 列，内容整体存 `request_body` 快照。
+  展示层按快照解析序号与主机，**不要为展示去加列**（加列 = 一次手工 DDL + 改写入链路）。
+- **事件类型中文名只有两处，前端不写第三份**：平台侧 `AiopsEventType.getLabel()`（权威定义，接口下发
+  `eventTypeLabel`）、AIops 侧 `aiops/deploylink/constants.py`。前端一律渲染后端给的 label，**禁止**再写
+  `code→中文` 的 map——漏改的表现是「页面显示英文编码」，不会报错也不会有人发现。新增/改名事件类型必须同时
+  改这两处，并按 `docs/AIops联动.md` 附录的比对脚本核一遍。
+- **运维可关闭**：改 `enabled=false` 重启即可停用联动；已开的窗口按自身过期时间失效，
+  需要立即恢复通知就手工调用 AIops 关窗接口（命令见 `docs/AIops联动.md` §9.3）。
+- **单实例假设**：`AiopsRetryScheduler` 未加分布式锁。多实例部署前必须补 Redis 锁，
+  否则同一批事件会被重复投递。
+
+
 ## 16. 权限边界
 
 当前 `user` 表只用于过渡期登录和开发联调。

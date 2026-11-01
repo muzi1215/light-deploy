@@ -50,3 +50,6 @@ generated-ui/
 ### Runtime logs ###
 logs/
 *.log
+
+### Docker 部署目录里平铺的 jar（本地构建产物，与本机 JDK/系统相关，不入库） ###
+Docker/*.jar

@@ -3,6 +3,9 @@ package com.lx.deploy.deployment.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import com.lx.deploy.aiops.model.AiopsEventType;
+import com.lx.deploy.aiops.service.AiopsEventPublisher;
+import com.lx.deploy.aiops.service.AiopsSilenceService;
 import com.lx.deploy.common.util.TimeRangeSupport;
 import com.lx.deploy.common.constants.DeploymentStatus;
 import com.lx.deploy.common.constants.DeploymentTargetStatus;
@@ -109,6 +112,12 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
     /** 发布目标展开器：解析策略、裁剪目标并推断每台机器当前版本。 */
     private final DeploymentTargetPlanner targetPlanner;
 
+    /** AIops 事件发布器：把发布生命周期结论同步给 AIops（失败不影响本地状态）。 */
+    private final AiopsEventPublisher aiopsEventPublisher;
+
+    /** AIops 静默窗服务：人工取消时立即关窗，别让窗口挂到自然过期。 */
+    private final AiopsSilenceService aiopsSilenceService;
+
     /**
      * 注入部署模块与跨模块数据访问依赖。
      *
@@ -124,6 +133,8 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
      * @param rollbackService                回滚判定服务
      * @param voAssembler                    VO 组装器
      * @param targetPlanner                  发布目标展开器
+     * @param aiopsEventPublisher            AIops 事件发布器
+     * @param aiopsSilenceService            AIops 静默窗服务
      */
     public DeploymentService(DeploymentTargetMapper deploymentTargetMapper,
                              ProjectMapper projectMapper,
@@ -136,7 +147,9 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
                              ArtifactProbe artifactProbe,
                              DeploymentRollbackService rollbackService,
                              DeploymentVoAssembler voAssembler,
-                             DeploymentTargetPlanner targetPlanner) {
+                             DeploymentTargetPlanner targetPlanner,
+                             AiopsEventPublisher aiopsEventPublisher,
+                             AiopsSilenceService aiopsSilenceService) {
         this.deploymentTargetMapper = deploymentTargetMapper;
         this.projectMapper = projectMapper;
         this.environmentMapper = environmentMapper;
@@ -149,6 +162,8 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         this.rollbackService = rollbackService;
         this.voAssembler = voAssembler;
         this.targetPlanner = targetPlanner;
+        this.aiopsEventPublisher = aiopsEventPublisher;
+        this.aiopsSilenceService = aiopsSilenceService;
     }
 
     // ==================== 查询接口 ====================
@@ -538,6 +553,10 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         }
         // 同步取消驱动本次发布的异步任务；已结束的任务会被任务服务拒绝，异常在此忽略。
         cancelDeployTask(id);
+        // 取消同样要关窗并上报：窗口挂到自然过期，会让这次「没发成功」的发布继续压着告警，
+        // 期间的真实故障就被掩掉了。
+        aiopsSilenceService.closeForDeployment(id, "人工取消发布");
+        aiopsEventPublisher.publish(AiopsEventType.CANCELLED, deployment, null, null, "人工取消发布");
         return voAssembler.toVo(deployment);
     }
 
@@ -578,6 +597,7 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         deployment.setFinishedAt(null);
         deployment.setErrorMessage(null);
         updateById(deployment);
+        aiopsEventPublisher.publish(AiopsEventType.STARTED, deployment, null, null, null);
     }
 
     /**
@@ -656,6 +676,7 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         deployment.setFinishedAt(LocalDateTime.now());
         deployment.setErrorMessage(null);
         updateById(deployment);
+        aiopsEventPublisher.publish(AiopsEventType.SUCCEEDED, deployment, null, null, null);
     }
 
     /**
@@ -670,6 +691,7 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         deployment.setFinishedAt(LocalDateTime.now());
         deployment.setErrorMessage(voAssembler.truncate(errorMessage));
         updateById(deployment);
+        aiopsEventPublisher.publish(AiopsEventType.FAILED, deployment, null, null, errorMessage);
     }
 
     /**
@@ -683,6 +705,7 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         deployment.setFinishedAt(LocalDateTime.now());
         deployment.setErrorMessage(null);
         updateById(deployment);
+        aiopsEventPublisher.publish(AiopsEventType.ROLLBACK_SUCCEEDED, deployment, null, null, null);
     }
 
     /**
@@ -700,6 +723,7 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         deployment.setFinishedAt(LocalDateTime.now());
         deployment.setErrorMessage(voAssembler.truncate("回滚失败：" + errorMessage));
         updateById(deployment);
+        aiopsEventPublisher.publish(AiopsEventType.ROLLBACK_FAILED, deployment, null, null, errorMessage);
     }
 
     // ==================== 私有辅助 ====================

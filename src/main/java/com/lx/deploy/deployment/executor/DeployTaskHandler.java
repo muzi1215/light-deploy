@@ -4,6 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.lx.deploy.aiops.model.AiopsEventType;
+import com.lx.deploy.aiops.service.AiopsEventPublisher;
+import com.lx.deploy.aiops.service.AiopsSilenceService;
 import com.lx.deploy.common.constants.DeploymentTargetStatus;
 import com.lx.deploy.common.constants.EnableStatus;
 import com.lx.deploy.common.constants.HealthStatus;
@@ -132,6 +135,12 @@ public class DeployTaskHandler implements TaskHandler {
     /** JSON 解析器：解析与合并运行/健康检查配置。 */
     private final ObjectMapper objectMapper;
 
+    /** AIops 静默窗服务：发布期间压制目标机的预期内告警。 */
+    private final AiopsSilenceService aiopsSilenceService;
+
+    /** AIops 事件发布器：把发布生命周期事件推给 AIops（失败进补偿队列，不阻断发布）。 */
+    private final AiopsEventPublisher aiopsEventPublisher;
+
     /**
      * 创建部署任务处理器。
      *
@@ -149,6 +158,8 @@ public class DeployTaskHandler implements TaskHandler {
      * @param dockerDeployService           DOCKER 发布服务
      * @param healthChecker                 健康检查探测器
      * @param taskService                   任务服务
+     * @param aiopsSilenceService           AIops 静默窗服务
+     * @param aiopsEventPublisher           AIops 事件发布器
      */
     public DeployTaskHandler(DeploymentMapper deploymentMapper,
                              DeploymentTargetMapper deploymentTargetMapper,
@@ -163,7 +174,9 @@ public class DeployTaskHandler implements TaskHandler {
                              StaticDeployService staticDeployService,
                              DockerDeployService dockerDeployService,
                              HealthChecker healthChecker,
-                             TaskService taskService) {
+                             TaskService taskService,
+                             AiopsSilenceService aiopsSilenceService,
+                             AiopsEventPublisher aiopsEventPublisher) {
         this.deploymentMapper = deploymentMapper;
         this.deploymentTargetMapper = deploymentTargetMapper;
         this.deploymentService = deploymentService;
@@ -178,6 +191,8 @@ public class DeployTaskHandler implements TaskHandler {
         this.dockerDeployService = dockerDeployService;
         this.healthChecker = healthChecker;
         this.taskService = taskService;
+        this.aiopsSilenceService = aiopsSilenceService;
+        this.aiopsEventPublisher = aiopsEventPublisher;
         this.objectMapper = new ObjectMapper();
     }
 
@@ -268,7 +283,7 @@ public class DeployTaskHandler implements TaskHandler {
             support.appendLog(task, DeploySupport.STAGE_FINISH, TaskLogLevel.INFO,
                     rollingBack ? "没有待回滚的目标，本次回滚无实际变更" : "没有待执行的目标，直接收敛本次部署");
             // 没有目标可发（例如回滚时全部被排除）：直接收敛为成功，没有失败可汇总。
-            finishDeployment(deploymentId, rollingBack, null);
+            finishDeployment(task, deploymentId, rollingBack, null);
             return;
         }
         if (!reportProgress(task, DeploySupport.STAGE_PREPARE, PROGRESS_PREPARED)) {
@@ -278,6 +293,17 @@ public class DeployTaskHandler implements TaskHandler {
         // 运行配置与健康检查配置在创建时已固化到项目上，此处按目标做差异覆盖。
         DeployConfig baseConfig = parseDeployConfig(project.getRuntimeConfigJson());
         HealthConfig healthConfig = parseHealthConfig(project.getHealthConfigJson());
+
+        // AIops 静默窗必须在第一台目标重启之前开好：晚一步，重启引起的告警就已经推给值班了，
+        // 静默等于没做。建窗失败按 failOpen 决定「降级继续」还是「阻断发布」，
+        // 两种结论都要在任务日志里写明，不能让使用者事后猜「这次发布到底有没有静默」。
+        AiopsSilenceService.SilenceOutcome silence = aiopsSilenceService.openForDeployment(deployment);
+        support.appendLog(task, DeploySupport.STAGE_PREPARE, TaskLogLevel.INFO,
+                silence.degraded() ? "【注意】" + silence.message() : silence.message());
+        if (silence.opened() || silence.degraded()) {
+            aiopsEventPublisher.publish(AiopsEventType.PREPARED, deployment, null, null, silence.message());
+        }
+
         deploymentService.markDeploying(deploymentId);
 
         List<List<DeploymentTarget>> batches = buildBatches(targets, deployment.getStrategy(),
@@ -333,7 +359,7 @@ public class DeployTaskHandler implements TaskHandler {
                         "回滚失败：" + failureSummary + "，完成时间 " + support.nowText() + "，请人工确认目标机当前版本");
             }
         }
-        finishDeployment(deploymentId, rollingBack, failureSummary);
+        finishDeployment(task, deploymentId, rollingBack, failureSummary);
         if (failureSummary != null) {
             throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR, failureSummary);
         }
@@ -428,6 +454,7 @@ public class DeployTaskHandler implements TaskHandler {
                 }
             }
             deploymentService.markTargetSuccess(target.getId(), healthStatus);
+            aiopsEventPublisher.publish(AiopsEventType.HOST_SUCCESS, deployment, target, server, null);
             if (rollingBack) {
                 // 「是否启动成功」是回滚结论的一部分：只有重启并通过健康检查才会走到这里，
                 // 把这两个事实写进同一行，使用者不必再去翻上面的启动日志确认。
@@ -442,6 +469,7 @@ public class DeployTaskHandler implements TaskHandler {
         } catch (Exception e) {
             // 失败原因不含凭据：所有远程输出在 SshCommandResult 中已做脱敏。
             deploymentService.markTargetFailed(target.getId(), safeMessage(e), healthStatus);
+            aiopsEventPublisher.publish(AiopsEventType.HOST_FAILED, deployment, target, server, safeMessage(e));
             support.appendLog(task, DeploySupport.STAGE_FINISH, TaskLogLevel.ERROR,
                     rollingBack
                             ? "目标 " + server.getServerName() + " 回滚失败：" + safeMessage(e)
@@ -496,25 +524,59 @@ public class DeployTaskHandler implements TaskHandler {
     }
 
     /**
-     * 收敛部署主记录状态。
+     * 收敛部署主记录状态，并关闭 AIops 静默窗。
      *
+     * @param task           当前任务
      * @param deploymentId   部署主键
      * @param rollingBack    本次是否为回滚
      * @param failureSummary 失败汇总；为空表示全部成功
      */
-    private void finishDeployment(String deploymentId, boolean rollingBack, String failureSummary) {
+    private void finishDeployment(Task task, String deploymentId, boolean rollingBack, String failureSummary) {
         if (rollingBack) {
             if (failureSummary == null) {
                 deploymentService.markRolledBack(deploymentId);
             } else {
                 deploymentService.markRollbackFailed(deploymentId, failureSummary);
             }
-            return;
-        }
-        if (failureSummary == null) {
+        } else if (failureSummary == null) {
             deploymentService.markSuccess(deploymentId);
         } else {
             deploymentService.markFailed(deploymentId, failureSummary);
+        }
+        closeSilenceWindow(task, deploymentId, rollingBack, failureSummary);
+    }
+
+    /**
+     * 收尾时关闭静默窗，让告警通知立刻恢复正常。
+     *
+     * <p>关窗放在状态落库之后：先关窗再写结论，中间那几秒产生的告警既没被静默、
+     * 也没有发布归因可查。关窗失败只提示不阻断——窗口自带过期时间，最坏是多静默几分钟。</p>
+     *
+     * @param task           当前任务
+     * @param deploymentId   部署主键
+     * @param rollingBack    本次是否为回滚
+     * @param failureSummary 失败汇总；为空表示全部成功
+     */
+    private void closeSilenceWindow(Task task, String deploymentId, boolean rollingBack, String failureSummary) {
+        String reason;
+        if (rollingBack) {
+            reason = failureSummary == null ? "回滚成功" : "回滚失败";
+        } else {
+            reason = failureSummary == null ? "发布成功" : "发布失败";
+        }
+        AiopsSilenceService.CloseOutcome outcome = aiopsSilenceService.closeForDeployment(deploymentId, reason);
+        if (!outcome.hadWindow()) {
+            return;
+        }
+        if (outcome.closed()) {
+            support.appendLog(task, DeploySupport.STAGE_FINISH, TaskLogLevel.INFO,
+                    "已关闭 AIops 静默窗（" + outcome.silenceId() + "），告警通知恢复正常");
+            aiopsEventPublisher.publish(AiopsEventType.SILENCE_CLOSED,
+                    deploymentMapper.selectById(deploymentId), null, null, reason);
+        } else {
+            support.appendLog(task, DeploySupport.STAGE_FINISH, TaskLogLevel.INFO,
+                    "【注意】关闭 AIops 静默窗失败（" + outcome.silenceId()
+                            + "），将等待窗口自动过期，期间该环境的告警通知可能仍被抑制");
         }
     }
 

@@ -132,3 +132,39 @@ light-deploy:
     # 默认构建机服务器 ID：留空则每次构建请求必须显式指定 buildServerId。
     # 生产环境建议在外部配置或环境变量中设置，不把真实服务器 ID 提交到 Git。
     server-id: 908f73d91848486bade3d3bf1654dff0
+
+  # AIops 联动（发布静默窗 + 发布事件上报）。整套能力默认关闭：
+  # enabled=false 时所有联动逻辑直接短路，不建窗、不推事件、不注册定时任务，
+  # 平台行为与接入前完全一致。没部署 AIops 的环境无需关心这一段。
+  aiops:
+    enabled: true
+    # AIops 服务地址（AIops 默认 2029 端口）。
+    base-url: http://127.0.0.1:2029
+    # 平台调 AIops 时出示的令牌，必须与 AIops 侧 DEPLOY_OPENAPI_TOKEN 一致。
+    # 只从环境变量注入，禁止把真实令牌写进本文件并提交到 Git。
+    service-token: light-deploy-aiops-token
+    # 调用方标识，AIops 侧按它做 X-Service-Id 白名单校验。
+    service-id: light-deploy
+    # 建连/读取超时（毫秒）。AIops 在内网，建连失败要快速暴露，不能拖住发布线程。
+    connect-timeout-ms: 3000
+    read-timeout-ms: 5000
+    # 事件推送失败的重试上限与退避扫描间隔。
+    retry-max: 5
+    retry-interval-seconds: 30
+    # 事件有效期（小时）：发布结束太久之后再补发只会污染对方的告警归因时序。
+    expire-hours: 2
+    # 建静默窗失败时是否继续发布。true=继续（默认，AIops 挂了不能连带发不了版）；
+    # 只有「发布必须留痕」的严格环境才设为 false 阻断发布。
+    fail-open: true
+    # 静默窗基准时长（分钟），平台按「基准 + 每台目标 3 分钟余量」估算，上限 120 分钟（与 AIops 硬上限一致）。
+    silence-ttl-minutes: 40
+    # 需要静默的告警类型，取值沿用 AIops 的 alarm_type_name，避免两套词汇表互相翻译。
+    alert-categories:
+      - 服务异常
+    # 显式声明永不静默的类型（AIops 侧另有硬编码底线，此处只是把口径写明）。
+    never-silence:
+      - 系统资源
+      - 内核
+      - 网络
+      - MySQL连接池
+      - MySQL慢查询

@@ -1,0 +1,14 @@
+# build context 就是本目录：只把 jar 送进构建上下文，其余都不该烤进镜像。
+# 不加这个文件时，logs/ 里的历史日志会被整包发给 docker daemon，越积越慢。
+
+# 配置走挂载（docker-compose.yml 的 volumes），不进镜像：
+# 好处是改配置只需 restart，不用 --build 重建镜像。
+application.yaml
+docker-compose.yml
+
+# 日志与临时文件
+logs/
+*.log
+
+# 说明性文件
+*.md

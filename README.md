@@ -149,6 +149,33 @@ Vite 开发代理已配置：`/api` → `http://localhost:2027`，并改写为 `
 
 浏览器打开 `http://localhost:9850`（开发）或 Nginx 地址（生产）。当前前端为「假登录 + 静态菜单」演示态，任意账号可进入。
 
+### 6. Docker 部署（生产推荐，jar 本地构建）
+
+平台自身的容器化部署文件在 `Docker/` 目录：**不在镜像里编译**，只把本地构建好的 jar 装进 JRE 镜像。
+
+```bash
+# 1. 本地（或构建机）打包
+mvn -DskipTests package
+cp target/light-deploy-0.0.1-SNAPSHOT.jar Docker/light-deploy.jar
+
+# 2. 整个 Docker 目录上传到目标机，目录里内容：
+#    Dockerfile  docker-compose.yml  application.yaml  light-deploy.jar  logs/
+
+# 3. 目标机一次性准备
+docker network create lx-app-net          # 平台不创建网络，external
+mkdir -p logs && chown -R 1000:1000 logs  # 容器内以 appuser(1000) 运行
+
+# 4. 起服务（换 jar 后要带 --build，只 restart 不会更新镜像）
+docker compose up -d --build
+```
+
+要点：
+
+- **配置外置**：`application.yaml` 只写「与容器不同」的键（MySQL/Redis 地址、AIops 地址），挂载到容器内 `/app/application.yaml`。改完 `docker compose restart` 生效，不用重建镜像；未写的键继续沿用 jar 内配置。
+- **网络**：加入 external 网络 `lx-app-net`，容器间按容器名互访（如 AIops 后端 `aiops-backend:2029`）；`extra_hosts: host.docker.internal` 用于访问宿主机上裸跑的 MySQL/Redis。
+- **端口**：`2027:2027`，容器内端口由 `server.port` 决定，两边要一起改。
+- **日志**：落盘到宿主机 `./logs`（`LOG_PATH=/app/logs`），容器删了日志还在。
+
 ---
 
 ## 使用流程

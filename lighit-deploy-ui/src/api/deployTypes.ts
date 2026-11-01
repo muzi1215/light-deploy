@@ -638,3 +638,63 @@ export interface AuditLogQuery {
   createTimeBegin?: string
   createTimeEnd?: string
 }
+
+// ==================== AIops 联动类型 ====================
+
+/**
+ * 静默窗展示对象（对应后端 AiopsSilenceVo）。
+ *
+ * 数据来自 AIops 而非本平台库，因此整块可能不存在。判断「还生效吗」必须看 expired，
+ * 不能只看 status ——「已过期」在对端不落库，是按到期时间实时算出来的。
+ */
+export interface AiopsSilenceVo {
+  silenceId: string
+  status: number // 0 生效中 / 1 已关闭 / 2 已过期
+  statusText: string
+  expired: boolean
+  startAt: string
+  expiresAt: string
+  closeTime?: string
+  closeReason?: string
+  projectCode?: string
+  environmentCode?: string
+  hosts: string[]
+  serverIds: string[]
+  alertCategories: string[]
+  source?: string
+}
+
+/**
+ * 联动事件展示对象（对应后端 AiopsEventVo）。
+ *
+ * 一次发布有多条（部署级 4 条 + 每台目标 1 条），是流水不是单条记录；
+ * sequence 是同一次发布内的序号，页面按它排序才能还原时间线。
+ */
+export interface AiopsEventVo {
+  id: string
+  eventType: string
+  eventTypeLabel: string
+  sequence: number
+  idempotencyKey?: string
+  status: number // 0 待发送 / 1 成功 / 2 失败待重试 / 3 已放弃
+  statusText: string
+  retryCount?: number
+  nextRetryTime?: string
+  errorMessage?: string
+  serverId?: string
+  host?: string
+  occurredAt?: string
+  deliveredAt?: string
+}
+
+/** 一次发布的联动全景（对应后端 AiopsLinkVo） */
+export interface AiopsLinkVo {
+  deploymentId: string
+  globalEnabled: boolean
+  environmentAiopsEnabled: boolean
+  silenceId?: string
+  silence?: AiopsSilenceVo
+  /** 静默窗为空时的解释文案：总闸关 / 环境关 / 未建窗 / 查询失败 */
+  silenceMessage?: string
+  events: AiopsEventVo[]
+}

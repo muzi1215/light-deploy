@@ -1,0 +1,75 @@
+# ==================== Light Deploy 平台 · 本地构建 jar 的 Docker 部署 ====================
+# 不走镜像仓库：jar 本地构建后与 Dockerfile 一起平铺上传，compose 现场 build。
+#
+# 目标机目录（就是本文件所在目录）：
+#   Dockerfile
+#   docker-compose.yml
+#   application.yaml      <- 挂载进容器 /app/application.yaml（覆盖 jar 内的同名配置）
+#   light-deploy.jar      <- mvn package 产物，改名为 light-deploy.jar
+#   logs/                 <- 日志落盘目录，需 chown 1000:1000（容器内以 appuser 运行）
+#
+# 常用命令：
+#   docker compose up -d --build    # 首次部署 / 换了新 jar 后（重建镜像并滚动替换）
+#   docker compose up -d            # 只改了 application.yaml（重读配置，不重建镜像）
+#   docker compose logs -f          # 跟启动日志（logback 同时写 stdout 与 /app/logs）
+#   docker compose down             # 停容器，镜像保留
+#
+# 前置条件（平台不创建，运维一次到位）：
+#   1) docker network create lx-app-net           —— external 网络，容器间按容器名互访
+#   2) mkdir -p logs && chown -R 1000:1000 logs   —— 否则 appuser 写不进日志
+#   3) MySQL / Redis 可达：
+#        - 裸跑在宿主机 -> 走 host.docker.internal（extra_hosts 已配）
+#        - 也在 lx-app-net 里的容器 -> 直接用容器名（见 application.yaml 注释）
+# =======================================================================================
+
+services:
+  light-deploy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 上传的 jar 文件名不是 light-deploy.jar 时改这里，省得手动改名
+        JAR_FILE: light-deploy.jar
+    # 本地 tag，仅用于「哪次 build 的产物」辨识；不 push，也不参与版本管理。
+    # 换 jar 必须 `up -d --build`，只 `restart` 不会更新镜像内容。
+    image: light-deploy:local
+    container_name: light-deploy
+    restart: unless-stopped
+
+    ports:
+      # 宿主端口:容器端口。容器内端口由 application.yaml 的 server.port=2027 决定，
+      # 改端口要两边一起改（只改这里会连到空端口）。
+      - "2027:2027"
+
+    extra_hosts:
+      # 让容器能用 host.docker.internal 访问宿主机（Linux 上必须显式加 host-gateway）。
+      # 用途：MySQL / Redis 裸跑在宿主机时，容器内 127.0.0.1 指向容器自己，必须换这个名字。
+      - "host.docker.internal:host-gateway"
+
+    environment:
+      TZ: Asia/Shanghai
+      # logback-spring.xml 优先读 LOG_PATH；容器内用绝对路径，避免落到随机 WORKDIR。
+      LOG_PATH: /app/logs
+
+    volumes:
+      # 配置外置：application.yaml 只写「与容器环境不同」的键，其余沿用 jar 内配置。
+      # 只读挂载 —— 平台不写配置，避免容器内误改宿主机文件。
+      - ./application.yaml:/app/application.yaml:ro
+      # 日志落盘。容器删了日志还在，排障不依赖 docker logs 的历史长度。
+      - ./logs:/app/logs
+      # 时间同步（TZ 之外的双保险，某些 JVM 时间 API 读宿主机时区文件）
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+
+    networks:
+      - lx-app-net
+
+    # 健康检查故意不做：JRE 镜像里没有 curl/wget，只能靠 java/python 探活，
+    # 为了一个探针往镜像里塞东西不划算。存活判断用 `docker compose ps` + `/app/logs/info.log`。
+
+networks:
+  # external: 网络由运维预先创建，平台不负责创建/删除，避免 down 时误删共用网络。
+  # name: 显式写死，防止 compose 项目名变化时拼出 lx-app-net_default 之类的新网络。
+  lx-app-net:
+    external: true
+    name: lx-app-net

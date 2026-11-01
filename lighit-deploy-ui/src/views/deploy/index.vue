@@ -82,6 +82,11 @@
           <el-button link type="primary" :icon="Document" @click="handleViewTargets(row)">目标明细</el-button>
           <el-button link type="success" :icon="Monitor" @click="handleViewLog(row)">发布日志</el-button>
           <!--
+            联动详情常驻入口，不按「有没有窗口」决定显隐：没有窗口时这个页面恰恰最有用——
+            它会把「总闸关 / 环境关 / 建窗失败」的原因直接写出来，而不是让人去翻任务日志猜。
+          -->
+          <el-button link type="info" :icon="Connection" @click="handleViewAiops(row)">AIops联动</el-button>
+          <!--
             回滚按钮的可用性只认服务端的 rollbackable：状态为「成功」只说明有可退的新版本，
             还要历史版本的记录与产物仍在才真的退得回去。置灰而不是隐藏，是为了让使用者
             看到入口的同时知道「为什么现在不能点」——原因由 rollbackBlockReason 给出。
@@ -434,6 +439,9 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- AIops 联动抽屉：静默窗（1 条）+ 事件流水（4 + N 条），只读 -->
+    <AiopsLinkDrawer v-model="aiopsVisible" :deployment="aiopsRow" />
   </div>
 </template>
 
@@ -469,7 +477,8 @@ import {
   RefreshLeft,
   CircleClose,
   QuestionFilled,
-  Download
+  Download,
+  Connection
 } from '@element-plus/icons-vue'
 import {
   pageDeployment,
@@ -514,6 +523,7 @@ import {
 import { useTaskLogViewer, formatLogTime } from '@/composables/useTaskLogViewer.ts'
 
 import CreateTimeRange from '@/components/CreateTimeRange.vue'
+import AiopsLinkDrawer from '@/components/AiopsLinkDrawer.vue'
 import { splitTimeRange } from '@/utils/index.ts'
 
 defineOptions({ name: 'DeploymentList' })
@@ -745,6 +755,21 @@ async function handleViewTargets(row: DeploymentVo) {
   } finally {
     targetLoading.value = false
   }
+}
+
+// ==================== AIops 联动 ====================
+const aiopsVisible = ref(false)
+const aiopsRow = ref<DeploymentVo | null>(null)
+
+/**
+ * 打开联动抽屉。
+ *
+ * 只传入行数据用于标题，不预填内容：静默窗详情要实时向 AIops 查询，
+ * 列表里没有这份数据，预填只会让人以为「列表上显示的就是最新的」。
+ */
+function handleViewAiops(row: DeploymentVo) {
+  aiopsRow.value = row
+  aiopsVisible.value = true
 }
 
 // ==================== 版本展示 ====================
