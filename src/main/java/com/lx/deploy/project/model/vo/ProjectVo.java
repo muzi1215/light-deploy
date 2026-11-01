@@ -211,4 +211,21 @@ public class ProjectVo {
     @Schema(description = "更新人")
     private String updatedBy;
 
+    /**
+     * 项目负责人 ID，指向 user 表主键 UUID。
+     *
+     * <p>非空时只有该负责人能对该项目发起构建、发布、回滚与取消；前端据此在
+     * 非负责人视角下屏蔽发版按钮。</p>
+     */
+    @Schema(description = "项目负责人ID")
+    private String ownerId;
+
+    /**
+     * 项目负责人名称，展示用。
+     *
+     * <p>列表与详情直接显示负责人姓名，不必让前端再查一次用户。</p>
+     */
+    @Schema(description = "项目负责人名称，展示用")
+    private String ownerName;
+
 }

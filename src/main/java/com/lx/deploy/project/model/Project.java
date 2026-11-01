@@ -230,4 +230,23 @@ public class Project extends BaseEntity {
     @Schema(description = "更新人")
     private String updatedBy;
 
+    /**
+     * 项目负责人 ID，指向 user 表主键 UUID。
+     *
+     * <p>发版约束的核心字段：非空时只有该负责人能对项目发起构建、发布、回滚与取消，
+     * 防止项目被随便发版。为空表示尚未指派，过渡期按放行处理（见 OwnerGuard）。</p>
+     */
+    @TableField("owner_id")
+    @Schema(description = "项目负责人ID，指向user表")
+    private String ownerId;
+
+    /**
+     * 项目负责人名称，展示用。
+     *
+     * <p>冗余存储负责人用户名/昵称，列表与详情直接显示，不必让前端再查一次用户。</p>
+     */
+    @TableField("owner_name")
+    @Schema(description = "项目负责人名称，展示用")
+    private String ownerName;
+
 }

@@ -15,6 +15,7 @@ import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ResponseCode;
+import com.lx.deploy.common.security.OwnerGuard;
 import com.lx.deploy.deployment.mapper.DeploymentMapper;
 import com.lx.deploy.deployment.mapper.DeploymentTargetMapper;
 import com.lx.deploy.deployment.executor.DeployContext;
@@ -235,6 +236,8 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         if (project.getStatus() == null || project.getStatus() != EnableStatus.ENABLED) {
             throw new DeployException(ResponseCode.DATA_CONFLICT, "目标项目已停用，不允许发起部署");
         }
+        // 发版约束：只有项目负责人能发起部署，防止项目被随便发版。
+        OwnerGuard.assertOwner(project.getOwnerId(), project.getOwnerName(), project.getCode());
         // 环境必须存在。
         Environment environment = environmentMapper.selectById(dto.getEnvironmentId());
         if (environment == null) {
@@ -438,6 +441,8 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
     @Transactional(rollbackFor = Exception.class)
     public DeploymentVo rollback(String id) {
         Deployment deployment = getRequiredEntityById(id);
+        // 发版约束：回滚同样只能由项目负责人发起。
+        assertProjectOwner(deployment.getProjectId());
         List<DeploymentTarget> targets = voAssembler.listTargetsEntity(id);
         // 入口先判定：状态是否允许、有没有历史版本、历史版本的产物是否还在。
         DeploymentRollbackService.RollbackEvaluation evaluation = rollbackService.evaluateRollback(deployment, targets);
@@ -512,6 +517,8 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
      */
     public DeploymentVo cancel(String id) {
         Deployment deployment = getRequiredEntityById(id);
+        // 发版约束：取消同样只能由项目负责人发起。
+        assertProjectOwner(deployment.getProjectId());
         if (!DeploymentStatus.canCancel(deployment.getStatus())) {
             throw new DeployException(ResponseCode.DATA_CONFLICT,
                     "当前状态为 " + DeploymentStatus.describe(deployment.getStatus()) + "，不允许取消");
@@ -532,6 +539,22 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         // 同步取消驱动本次发布的异步任务；已结束的任务会被任务服务拒绝，异常在此忽略。
         cancelDeployTask(id);
         return voAssembler.toVo(deployment);
+    }
+
+    /**
+     * 校验当前登录用户是否为指定项目的负责人。
+     *
+     * <p>构建/发布/回滚/取消共用同一发版约束（见 {@code OwnerGuard}）：项目负责人才能操作。
+     * 项目不存在时按「未指派负责人」放行，避免历史脏数据把入口彻底锁死。</p>
+     *
+     * @param projectId 项目主键
+     */
+    private void assertProjectOwner(String projectId) {
+        Project project = projectMapper.selectById(projectId);
+        OwnerGuard.assertOwner(
+                project == null ? null : project.getOwnerId(),
+                project == null ? null : project.getOwnerName(),
+                project == null ? projectId : project.getCode());
     }
 
     // ==================== 发布执行器回调 ====================

@@ -1,96 +1,50 @@
 /**
- * 认证 API
+ * 认证 API —— 对接真实后端过渡期鉴权（基于 Spring Session Cookie，无 Token）。
  *
- * ============================================================
- * 当前为模拟登录模式，无需后端即可运行。
- * 对接真实后端时：
- *   1. 注释掉下面的 mock 函数
- *   2. 取消注释底部真实 API 调用的代码
- *   3. 确保后端返回统一格式：{ code: 200, message: "success", data: {...} }
- * ============================================================
+ * 后端接口（经 request.ts 的 /api 前缀 + Vite 代理重写到 /deploy）：
+ *   POST /auth/login  - 账号密码登录，成功后由后端写入 SESSION Cookie；返回 { code:200, data:{ id, username, nickname } }
+ *   GET  /auth/me     - 获取当前登录用户；未登录返回 code:4002
+ *   POST /auth/logout - 失效会话
  *
- * 后端需要实现的接口：
- * POST /login     - 登录，返回 { code: 200, data: { token: "xxx" } }
- * GET  /info      - 获取当前用户信息，返回 { code: 200, data: { id, name, avatar, buttons[], routers[] } }
- * GET  /logout    - 退出登录
- *
- * routers 字段为动态菜单 JSON 数组，格式参考 src/types/api.d.ts 中的 RouteRecordItem
- * 如果不需要动态菜单，让后端返回 routers: [] 即可，前端将仅渲染静态路由
+ * 说明：
+ * - 本项目使用 HttpSession（Redis 托管）鉴权，浏览器自动携带 SESSION Cookie，无需前端管理 Token。
+ *   但路由守卫仍依赖一个登录标志位，故登录成功后写入一个哨兵 token 到 Cookie，仅用于「是否已登录」判定，
+ *   不作为接口鉴权凭据（接口鉴权靠后端会话）。
+ * - 登录用户昵称优先用 nickname，缺省回落 username。
  */
+import request from '@/utils/request'
 import type { ApiResponse } from '@/types/api'
 
-// ==================== 模拟数据（无需后端） ====================
-
-/** 模拟登录：任意用户名密码均可登录 */
-export async function login(data: { username: string; password: string }): Promise<ApiResponse<{ token: string }>> {
-  // 模拟网络延迟
-  await new Promise(resolve => setTimeout(resolve, 300))
-  const mockToken = 'mock_token_' + Date.now()
-  return {
-    code: 200,
-    message: 'success',
-    data: { token: mockToken }
-  }
-}
-
-/** 模拟获取用户信息（过渡期假登录，返回空菜单走前端静态路由模式） */
-export async function getInfo(): Promise<ApiResponse<{
+/** 登录用户快照（与后端 LoginUser 一致）。 */
+export interface LoginUser {
   id: string
-  name: string
-  avatar: string
-  buttons: string[]
-  routers: any[]
-}>> {
-  await new Promise(resolve => setTimeout(resolve, 200))
-  return {
-    code: 200,
-    message: 'success',
-    data: {
-      id: '1',
-      name: 'admin',
-      avatar: '',
-      buttons: [],
-      // routers 返回空数组：前端使用 constantRoutes 静态菜单模式。
-      // 后续接入统一权限中心后，替换为后端返回的真实菜单 JSON。
-      routers: []
-    }
-  }
+  username: string
+  nickname: string | null
 }
 
-/** 模拟退出登录 */
+/** 登录。 */
+export async function login(data: { username: string; password: string }): Promise<ApiResponse<LoginUser>> {
+  return request({
+    url: '/auth/login',
+    method: 'post',
+    data
+  })
+}
+
+/** 获取当前登录用户（用于路由守卫鉴权与菜单）。 */
+export async function getInfo(): Promise<
+  ApiResponse<LoginUser & { buttons: string[]; routers: any[] }>
+> {
+  return request({
+    url: '/auth/me',
+    method: 'get'
+  })
+}
+
+/** 退出登录。 */
 export async function logout(): Promise<ApiResponse> {
-  await new Promise(resolve => setTimeout(resolve, 100))
-  return { code: 200, message: 'success', data: null }
+  return request({
+    url: '/auth/logout',
+    method: 'post'
+  })
 }
-
-// ==================== 真实 API（对接后端时取消注释） ====================
-//
-// import request from '@/utils/request'
-//
-// export async function login(data: { username: string; password: string }): Promise<ApiResponse<{ token: string }>> {
-//   return request({
-//     url: '/login',
-//     method: 'post',
-//     data
-//   })
-// }
-//
-// export async function getInfo(): Promise<ApiResponse<{
-//   id: string
-//   name: string
-//   avatar: string
-//   buttons: string[]
-//   routers: any[]
-// }>> {
-//   return request({
-//     url: '/info',
-//     method: 'get'
-//   })
-// }
-//
-// export async function logout(): Promise<ApiResponse> {
-//   return request({
-//     url: '/logout',
-//     method: 'get'
-//   })
-// }

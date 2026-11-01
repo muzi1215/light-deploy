@@ -21,6 +21,7 @@ import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ResponseCode;
+import com.lx.deploy.common.security.OwnerGuard;
 import com.lx.deploy.project.mapper.ProjectMapper;
 import com.lx.deploy.project.model.Project;
 import com.lx.deploy.release.mapper.ReleaseRecordMapper;
@@ -181,6 +182,8 @@ public class BuildService extends ServiceImpl<BuildMapper, Build> {
         if (project.getStatus() == null || project.getStatus() != EnableStatus.ENABLED) {
             throw new DeployException(ResponseCode.DATA_CONFLICT, "目标项目已停用，不允许发起构建");
         }
+        // 发版约束：只有项目负责人能发起构建，防止项目被随便发版。
+        OwnerGuard.assertOwner(project.getOwnerId(), project.getOwnerName(), project.getCode());
         // 运行时与构建模式组合必须合法：DOCKER 只能配镜像类构建模式，JAR/STATIC 只能配脚本类。
         RuntimeType runtimeType = RuntimeType.fromCode(project.getRuntimeType());
         BuildMode buildMode = BuildMode.fromCode(project.getBuildMode());

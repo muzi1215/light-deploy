@@ -30,6 +30,8 @@ import com.lx.deploy.server.model.Server;
 import com.lx.deploy.task.model.dto.TaskDto;
 import com.lx.deploy.task.model.vo.TaskVo;
 import com.lx.deploy.task.service.TaskService;
+import com.lx.deploy.common.security.CurrentUser;
+import com.lx.deploy.common.security.LoginUser;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -193,6 +195,17 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         // DTO 转换为新的持久化实体，主键和时间字段由 MyBatis-Plus 维护。
         Project entity = toEntity(dto);
         applyDefaultValue(entity);
+        // 过渡期：记录创建人，并默认将项目负责人指派为创建者（owner_id 为空时）。
+        // 后续接入统一权限中心后，createdBy/ownerId 改为外部用户 ID。
+        LoginUser creator = CurrentUser.get();
+        if (creator != null) {
+            entity.setCreatedBy(creator.username());
+            entity.setUpdatedBy(creator.username());
+            if (!StringUtils.hasText(entity.getOwnerId())) {
+                entity.setOwnerId(creator.id());
+                entity.setOwnerName(creator.username());
+            }
+        }
         if (!save(entity)) {
             throw new DeployException(ResponseCode.BUSINESS_ERROR, "新增部署项目失败");
         }
@@ -217,8 +230,20 @@ public class ProjectService extends ServiceImpl<ProjectMapper, Project> {
         Project entity = getRequiredEntityById(id);
         // 修改时编码唯一性检查排除当前记录。
         validateBusinessRule(dto, id);
+        // 项目负责人为可选改派字段：先保留原值，再整体拷贝 DTO，最后仅在请求显式携带 ownerId 时覆盖，
+        // 避免过渡期旧前端未传 ownerId 时把已有负责人清空。
+        String originalOwnerId = entity.getOwnerId();
+        String originalOwnerName = entity.getOwnerName();
         BeanUtils.copyProperties(dto, entity);
         entity.setId(id);
+        if (!StringUtils.hasText(dto.getOwnerId())) {
+            entity.setOwnerId(originalOwnerId);
+            entity.setOwnerName(originalOwnerName);
+        }
+        LoginUser operator = CurrentUser.get();
+        if (operator != null) {
+            entity.setUpdatedBy(operator.username());
+        }
         if (!updateById(entity)) {
             throw new DeployException(ResponseCode.BUSINESS_ERROR, "修改部署项目失败");
         }

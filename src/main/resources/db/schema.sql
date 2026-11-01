@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS project (
     description VARCHAR(500) NULL COMMENT '项目描述',
     created_by VARCHAR(100) NULL COMMENT '创建人',
     updated_by VARCHAR(100) NULL COMMENT '更新人',
+    owner_id VARCHAR(100) NULL COMMENT '项目负责人ID，指向user表，为空表示尚未指派（过渡期放行）',
+    owner_name VARCHAR(100) NULL COMMENT '项目负责人名称，展示用',
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     is_deleted TINYINT NOT NULL DEFAULT 0 COMMENT '软删除标记：0未删除，1已删除',

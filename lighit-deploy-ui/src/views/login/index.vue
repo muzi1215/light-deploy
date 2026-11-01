@@ -30,7 +30,7 @@
           </el-button>
         </el-form>
         <div class="form-footer">
-          <span class="footer-hint">模拟登录模式：任意账号密码即可登录</span>
+          <span class="footer-hint">默认管理员：admin / admin123（首次启动请尽快改密）</span>
         </div>
       </div>
       <p class="copyright">{{ copyrightText }}</p>

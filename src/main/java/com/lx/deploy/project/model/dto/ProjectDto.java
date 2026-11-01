@@ -158,4 +158,21 @@ public class ProjectDto extends TimeRangeQuery {
     @Schema(description = "项目描述")
     private String description;
 
+    /**
+     * 项目负责人 ID，指向 user 表主键 UUID。
+     *
+     * <p>选填：新增时未传则默认指派为当前登录人（项目创建者）；修改时可改派他人。
+     * 非空时只有该负责人能对该项目发起构建、发布、回滚与取消。</p>
+     */
+    @Schema(description = "项目负责人ID，指向user表，选填")
+    private String ownerId;
+
+    /**
+     * 项目负责人名称，展示用。
+     *
+     * <p>选填，通常与 ownerId 配套传入；为空时服务端按 ownerId 关联的用户名回填。</p>
+     */
+    @Schema(description = "项目负责人名称，展示用，选填")
+    private String ownerName;
+
 }

@@ -2,8 +2,15 @@
 <configuration scan="true" scanPeriod="60 seconds">
     <!-- 优先读取环境变量 LOG_PATH，未配置时写入项目 logs 目录。 -->
     <property name="LOG_PATH" value="${LOG_PATH:-logs}"/>
+    <!-- 彩色日志 -->
+    <!-- 配置格式变量：CONSOLE_LOG_PATTERN 彩色日志格式 -->
+    <!-- magenta:洋红 -->
+    <!-- boldMagenta:粗红-->
+    <!-- cyan:青色 -->
+    <!-- white:白色 -->
+    <!-- magenta:洋红 -->
     <property name="LOG_PATTERN"
-              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{requestId:-no-request}] %logger{50} - %msg%n"/>
+              value="%yellow(%date{yyyy-MM-dd HH:mm:ss}) |%highlight(%-5level) |%blue(%thread) |%blue(%file:%line) |%green(%logger) |%cyan(%msg%n)"/>
 
     <!-- 开发和容器环境保留标准输出，便于 docker logs 直接查看。 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
