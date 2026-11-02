@@ -252,6 +252,12 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
             throw new DeployException(ResponseCode.DATA_CONFLICT, "项目绑定的构建机已停用，请更换构建机");
         }
 
+        // —— 项目连通性测试编排起点（业务维度：连通性测试）——
+        // 本编排器只处理 taskType=PROJECT_TEST 的任务，bizId 即 project.id；在「构建机」上验证
+        // Git/Maven/Docker/镜像仓库/目标机 java，全程只读，不写工作区、不构建、不推送。
+        // 配合 TaskExecutor 的 [中央调度分发] 日志，可从「测试触发」追到「可放心发起构建」。
+        log.info("[项目测试编排器] 收到 TaskExecutor 分派的 PROJECT_TEST 任务：projectId={}，项目编码={}，构建机={}（{}）",
+                projectId, project.getCode(), buildServer.getServerName(), buildServer.getHost());
         String target = buildServer.getUsername() + "@" + buildServer.getHost() + ":" + buildServer.getSshPort();
         appendLog(task, STAGE_CONNECT, TaskLogLevel.INFO,
                 "开始校验项目 " + project.getCode() + "（" + project.getName() + "）的构建前置条件，"
@@ -264,16 +270,25 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
 
         try (SshSession session = sshSessionFactory.open(buildServer)) {
             appendLog(task, STAGE_CONNECT, TaskLogLevel.INFO, "SSH 连接与认证成功");
+            log.info("[项目测试编排器] 阶段① 连接构建机成功：{}", target);
             reportProgress(task, STAGE_CONNECT, 15);
 
+            // 阶段②：工具链检查（git 必需；DOCKER 运行时 docker 必需；mvn 缺失仅提示）。
+            log.info("[项目测试编排器] 阶段② 检查构建机工具链（git/docker/mvn）");
             // 1) 工具链：缺 git 一定构建不了，缺 docker 只有 DOCKER 运行时致命。
             if (!checkToolchain(task, session, runtimeType)) {
                 return;
             }
+            // 阶段③：代码仓库校验（git ls-remote 验证可达性/凭据/分支存在性）。
+            log.info("[项目测试编排器] 阶段③ 校验代码仓库（Git 可达性/凭据/分支）");
             // 2) 代码仓库：ls-remote 等价于真克隆前的认证 + 可达 + 分支存在性校验，秒级完成且不落盘。
             checkGitRepository(task, session, project);
+            // 阶段④：镜像仓库校验（仅 DOCKER 且绑定仓库时，docker login 验证凭据与可达）。
+            log.info("[项目测试编排器] 阶段④ 校验镜像仓库（docker login）");
             // 3) 镜像仓库：仅有镜像产物的运行时需要。
             checkRegistry(task, session, project, runtimeType);
+            // 阶段⑤：目标机运行前置检查（仅 JAR 运行时，逐台目标机确认 java 可用）。
+            log.info("[项目测试编排器] 阶段⑤ 检查目标机 java 可用性（仅 JAR 运行时）");
             // 4) 目标机运行前置：JAR 运行时 java 必须在每台目标机上真实可用。
             checkJavaOnTargets(task, project, runtimeType);
             // 5) 结论：把各段的结论写清楚，运维只看结尾这几行就能判断这次测试成没成。
@@ -283,6 +298,7 @@ public class ProjectConnectTestTaskHandler implements TaskHandler {
                             + (isImageRuntime(project, runtimeType) ? "、镜像仓库可登录" : "")
                             + (runtimeType == RuntimeType.JAR ? "、目标机 java 可用" : "")
                             + "，可以放心发起构建");
+            log.info("[项目测试编排器] 项目连通性测试通过：项目编码={}，运行时={}", project.getCode(), runtimeType.getCode());
         } catch (DeployException e) {
             // 业务异常原样上抛，保留「分支不存在」「镜像仓库登录失败」这类可操作的具体原因。
             throw e;

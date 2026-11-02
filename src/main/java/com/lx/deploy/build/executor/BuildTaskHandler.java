@@ -165,6 +165,15 @@ public class BuildTaskHandler implements TaskHandler {
         // 解析运行时与构建模式，二者是后续所有分支的总开关。
         RuntimeType runtimeType = RuntimeType.fromCode(project.getRuntimeType());
         BuildMode buildMode = BuildMode.fromCode(project.getBuildMode());
+        // —— 构建业务编排起点（业务维度：构建）——
+        // 本编排器只处理 taskType=BUILD 的任务，bizId 即 build.id。后续固定 5 阶段推进：
+        // ① 连接构建机 → ② 克隆代码 → ③ 定稿版本号 → ④ 按运行时构建 → ⑤ 组装发布版本并落库。
+        // 用 log.info 打印业务维度进度，配合 TaskExecutor 的 [中央调度分发] 日志，
+        // 即可从「构建触发」一路追到「发布版本生成」，不再只有 taskId。
+        log.info("[构建编排器] 收到 TaskExecutor 分派的 BUILD 任务：buildId={}，项目编码={}，运行时={}，构建模式={}",
+                buildId, project.getCode(),
+                runtimeType == null ? "?" : runtimeType,
+                buildMode == null ? "?" : buildMode);
         if (runtimeType == null) {
             throw new DeployException(ResponseCode.VALIDATION_ERROR, "项目的运行时非法：" + project.getRuntimeType());
         }
@@ -204,6 +213,7 @@ public class BuildTaskHandler implements TaskHandler {
         try {
             session = buildSupport.openSession(buildServer);
             buildSupport.appendLog(task, BuildSupport.STAGE_CONNECT, TaskLogLevel.INFO, "SSH 连接与认证成功");
+            log.info("[构建编排器] 阶段① 连接构建机成功：{}", target);
             buildSupport.reportProgress(task, BuildSupport.STAGE_CONNECT, BuildSupport.PROGRESS_CONNECTED);
             // 标记 build 进入构建中，与任务执行中状态对齐。
             buildService.startBuild(buildId);
@@ -216,14 +226,18 @@ public class BuildTaskHandler implements TaskHandler {
             // 克隆后即回填实际提交 ID：即便后续构建/推送失败，也能在 build 记录上溯源本次尝试的 commit。
             // （原 cloneRepository 内部调用 buildService.captureCommit，重构后统一在此捕获，行为一致）
             buildService.captureCommit(buildId, commit);
+            log.info("[构建编排器] 阶段② 克隆代码完成，commit={}", commit);
 
             // 2.1) 定稿本次构建的发布版本号。镜像 tag、构建机产物持久目录、版本记录三处共用
             //      同一个字符串，所以在这里算一次往下传；中途重新生成会让三者对不上。
             BuildService.ReleaseVersion releaseVersion = buildService.resolveReleaseVersion(
                     project.getId(), project.getCode(), commit, build.getVersionSeq());
             buildSupport.appendLog(task, BuildSupport.STAGE_BUILD, TaskLogLevel.INFO, "本次构建版本号 " + releaseVersion.version());
+            log.info("[构建编排器] 阶段③ 定稿版本号={}", releaseVersion.version());
 
             // 3) 按运行时与构建模式执行构建，并收集产物。
+            log.info("[构建编排器] 阶段④ 执行构建：运行时={}，构建模式={}，将调用对应 Builder（DockerBuilder/JarPrebuildBuilder/ScriptBuildService）",
+                    runtimeType, buildMode);
             List<BuildArtifact> artifacts = new ArrayList<>();
             String composeContent = null;
             String contextArtifactPath = null;
@@ -258,6 +272,8 @@ public class BuildTaskHandler implements TaskHandler {
             ReleaseRecord release = assembleRelease(project, runtimeType, commit, releaseVersion, artifacts,
                     composeContent, contextArtifactPath);
             buildService.completeSuccess(buildId, commit, artifacts, release);
+            log.info("[构建编排器] 阶段⑤ 构建完成，调用 BuildService.completeSuccess 生成发布版本 {}",
+                    release.getVersion());
             buildSupport.reportProgress(task, BuildSupport.STAGE_FINISH, BuildSupport.PROGRESS_DONE);
             buildSupport.appendLog(task, BuildSupport.STAGE_FINISH, TaskLogLevel.INFO, "构建完成，已生成发布版本 " + release.getVersion());
             // 5) 按项目保留版本数回收超额历史版本：先删磁盘再置废弃，失败不影响本次构建结论。

@@ -176,6 +176,11 @@ public class ServerTestTaskHandler implements TaskHandler {
             throw new DeployException(ResponseCode.DATA_CONFLICT, "目标服务器已停用，不允许执行连通性测试");
         }
 
+        // —— 服务器连通性测试编排起点（业务维度：连通性测试）——
+        // 本编排器只处理 taskType=SERVER_TEST 的任务，bizId 即 server.id。流程：连接 → 逐项只读探活 → 部署目录检查。
+        // 用 log.info 打印业务维度进度，配合 TaskExecutor 的 [中央调度分发] 日志，可从「测试触发」追到「服务器可用」。
+        log.info("[服务器测试编排器] 收到 TaskExecutor 分派的 SERVER_TEST 任务：serverId={}，目标={}（{}）",
+                serverId, server.getServerName(), server.getHost());
         String target = server.getUsername() + "@" + server.getHost() + ":" + server.getSshPort();
         ServerAuthType authType = ServerAuthType.fromCode(server.getAuthType() == null
                 ? null : server.getAuthType().intValue());
@@ -189,8 +194,11 @@ public class ServerTestTaskHandler implements TaskHandler {
         // try-with-resources：无论成功失败都关闭会话，避免连接与 IO 线程泄漏。
         try (SshSession session = sshSessionFactory.open(server)) {
             appendLog(task, STAGE_CONNECT, TaskLogLevel.INFO, "SSH 连接与认证成功");
+            log.info("[服务器测试编排器] 阶段① 连接服务器成功：{}", target);
             reportProgress(task, STAGE_CONNECT, PROGRESS_CONNECTED);
 
+            // 阶段②：逐项执行只读探活命令（系统信息 / 运行时 / 构建依赖 / 磁盘），必需项失败即判不可用。
+            log.info("[服务器测试编排器] 阶段② 逐项执行只读探活命令（共 {} 项）", PROBES.size());
             // 逐项执行固定探活命令。
             for (Probe probe : PROBES) {
                 if (!executeProbe(task, session, probe)) {
@@ -198,6 +206,8 @@ public class ServerTestTaskHandler implements TaskHandler {
                     return;
                 }
             }
+            // 阶段③：检查部署根目录是否真实存在且可写（只读检查，不产生副作用）。
+            log.info("[服务器测试编排器] 阶段③ 检查部署根目录可写性");
             // 部署目录检查依赖配置且结论要分等级，因此独立实现而不放进固定的 PROBES 列表。
             if (!checkDeployDirectory(task, session, server)) {
                 return;
@@ -205,6 +215,7 @@ public class ServerTestTaskHandler implements TaskHandler {
             // 全部探活项完成，进度收敛到 100，保证页面进度条与任务终态一致。
             taskService.updateProgress(task.getId(), "完成", PROGRESS_FINISHED);
             appendLog(task, STAGE_CONNECT, TaskLogLevel.INFO, "连通性测试完成，服务器可用");
+            log.info("[服务器测试编排器] 连通性测试完成，服务器可用：{}", target);
         } catch (DeployException e) {
             // 业务异常原样上抛，保留「已停用」「私钥解析失败」这类可操作的具体原因。
             throw e;

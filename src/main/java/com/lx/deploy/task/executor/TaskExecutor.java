@@ -144,21 +144,102 @@ public class TaskExecutor implements SmartLifecycle {
     }
 
     /**
-     * 启动执行器：先收敛上次运行残留的中断任务，再开始轮询排队任务。
+     * 启动任务执行器。
+     *
+     * <p>整体职责：这是一个「基于数据库轮询」的任务执行器的启动入口。它完成两件事：
+     * <ol>
+     *   <li>先对上次进程异常退出（kill / OOM / 断电）时残留在数据库中的任务做一次故障恢复；</li>
+     *   <li>再启动一个单线程、守护、固定延迟的调度器，周期性调用 {@link #pollOnce()} 去
+     *       数据库拉取待执行任务并分发执行。</li>
+     * </ol>
+     *
+     * <p>执行顺序（不可随意调换）：
+     * <pre>
+     * start()
+     *   ├─ recoverInterruptedTasks()        // ① 恢复上次遗留任务（DB 层修复）
+     *   ├─ running = true                   // ② 打开运行开关（对 pollOnce 可见）
+     *   ├─ 创建 poller（单线程/守护/命名）   // ③ 构造调度器
+     *   ├─ scheduleWithFixedDelay(pollOnce) // ④ 立即起跑，之后「结束→等待→再跑」
+     *   └─ log.info(...)                    // ⑤ 打印启动快照
+     * </pre>
+     *
+     * <p>⚠️ 设计约束（详见方法末尾的「复核清单」块注释）：
+     * <ul>
+     *   <li>{@code running} / {@code poller} 字段应为 {@code volatile}（跨线程可见性）；</li>
+     *   <li>{@code start()} 应做幂等保护，防止重复启动产生多个 poller；</li>
+     *   <li>{@code pollOnce()} 内部必须全量 try-catch，否则一次异常会导致调度被永久取消；</li>
+     *   <li>守护线程在 JVM 退出时会被强杀，必须配套优雅停机钩子。</li>
+     * </ul>
      */
-    @Override
     public void start() {
+
+        // ① 崩溃恢复：必须在 running=true 和启动 poller 之前执行。
+        //    因为任务状态持久化在 DB 中，进程重启时 DB 里可能残留状态为「执行中」的任务
+        //    （上次进程被 kill / OOM / 断电，来不及回写结果）。
+        //    典型逻辑：把 status=RUNNING 且 locked_until 已过期的任务重置为 PENDING，
+        //    或把「卡在 RUNNING 但属于本实例」的任务重新入队。
+        //    ⚠️ 若先启动 poller 再恢复，轮询线程可能先跑起来，与恢复逻辑产生竞态。
+        //    ⚠️ 多实例部署时，恢复逻辑需加锁/乐观版本号，防止多实例重复处理同一批任务。
         recoverInterruptedTasks();
-        // 先置为运行中，再启动轮询线程，避免首轮调度因为标记未就绪而空跑。
+
+        // ② 先置为运行中，再启动轮询线程，避免首轮调度因为标记未就绪而空跑。
+        //    scheduleWithFixedDelay 的 initialDelay=0，线程池一建好就立即执行第一轮 pollOnce；
+        //    若先启动线程后设标志，存在极短时间窗口内 pollOnce 读到 running=false 而空跑，
+        //    对轮询间隔较大的系统，等于启动后要白等几十秒才真正干活。
+        //    ⚠️ running 字段必须是 volatile：写发生在主线程，读发生在 lds-task-poller 线程，
+        //       跨线程可见性必须有保障，否则这里的「先置 true」在另一线程可能不可见。
         running = true;
+
+        // ③ 创建调度器。三个决策：
+        //    (1) newSingleThreadScheduledExecutor —— 单线程调度器
+        //        保证轮询逻辑串行执行，不会出现两轮 pollOnce 并发拉取同一批任务（重复消费）。
+        //        注意分工：调度串行，真正的业务执行靠 concurrency(Semaphore) 控制的业务线程池。
+        //    (2) 自定义 ThreadFactory
+        //        - 命名 "lds-task-poller"：排查问题 jstack / top -H 一眼认出；
+        //        - setDaemon(true)：守护线程，所有非守护线程结束后不会阻止 JVM 退出，
+        //          避免忘记 shutdown 时 JVM 挂住。
+        //        ⚠️ 代价：JVM 关闭时守护线程被直接杀掉，不会走完当前 pollOnce，
+        //           因此必须配合优雅停机（先 running=false，再 poller.shutdown() 并 awaitTermination），
+        //           否则任务状态可能写一半被打断，依赖 recoverInterruptedTasks() 下次启动兜底。
+        //    (3) 赋值给成员变量 poller，供 shutdown() 关闭使用。
+        //        ⚠️ poller 字段若在 start/shutdown 跨线程访问，也应为 volatile；
+        //        ⚠️ start() 若无幂等保护，重复调用会创建多个调度线程、双重轮询，很危险。
         poller = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "lds-task-poller");
             thread.setDaemon(true);
             return thread;
         });
+
+        // ④ 固定延迟调度（注意不是 FixedRate）：
+        //    - initialDelay = 0L            → 立即执行第一轮，不等待；
+        //    - delay = pollIntervalMs       → 本轮「结束之后」再等该间隔才开始下一轮。
+        //
+        //    为什么用 FixedDelay 而不是 FixedRate：
+        //    若某轮 pollOnce 因数据库慢查询卡了 30s，FixedRate 会立刻连发好几轮追赶进度，
+        //    造成任务堆积甚至雪崩；FixedDelay 则保证两轮之间至少有 pollIntervalMs 的喘息，
+        //    任务不会堆积，是数据库轮询场景的正确选择。
+        //
+        //    ⚠️ 极其容易踩的坑：ScheduledExecutorService 中，若提交的 task 抛出未捕获异常，
+        //       后续调度会被「静默取消」，poller 从此装死且不报错。
+        //       所以 pollOnce() 内部必须自己 try-catch 兜住所有异常，绝不能让异常冒泡到调度器。
         poller.scheduleWithFixedDelay(this::pollOnce, 0L, pollIntervalMs, TimeUnit.MILLISECONDS);
-        log.info("任务执行器已启动，并发上限 {}，轮询间隔 {} ms，已注册任务类型 {}",
-                concurrency.availablePermits(), pollIntervalMs, handlers.keySet());
+
+        // ⑤ 启动快照日志：三个诊断信息用于排查问题
+        //    - concurrency.availablePermits()：Semaphore 当前可用许可数。刚启动时应等于总许可数
+        //      （并发上限）；若这里打印值小于上限，说明 start 被重复调用或恢复任务时已占用许可，
+        //      正好能暴露异常状态。
+        //      （注：语义上「上限」更准确地应打印构造时保存的总许可数，availablePermits 是当前可用量。）
+        //    - pollIntervalMs：排查「任务为什么延迟这么久才被执行」的第一手资料。
+        //    - handlers.keySet()：快速核对配置的任务类型是否都注册上了，
+        //      防止某个 handler 漏注册导致对应类型任务永远不被消费。
+        // ★ 中央调度中枢启用日志：打印已注册的编排器清单（类名 + taskType），
+        // 便于从日志一眼确认「构建 / 发布 / 回滚 / 连通性测试」各任务类型都已挂到对应 Handler 上，
+        // 也作为后续每次分发日志的起点（详见 executeTask 的分发日志）。
+        String registered = handlers.entrySet().stream()
+                .map(e -> e.getValue().getClass().getSimpleName() + "(" + e.getKey() + ")")
+                .collect(java.util.stream.Collectors.joining(", "));
+        log.info("[中央调度中枢] TaskExecutor 已启用：并发上限={}，轮询间隔={}ms，已注册编排器=[{}]",
+                concurrency.availablePermits(), pollIntervalMs, registered);
     }
 
     /**
@@ -330,6 +411,14 @@ public class TaskExecutor implements SmartLifecycle {
             failTask(taskId, "暂不支持的任务类型：" + task.getTaskType());
             return;
         }
+        // —— 中央调度分发点（全平台异步任务唯一的「分派」动作）——
+        // handlers 是构造函数按 taskType 收集的 Map；这里按 task.getTaskType() 取出对应编排器并调用 execute(task)。
+        // 控制台日志显式打印「编排器类名 + 任务类型 + 业务主键」，把一次发布/构建从「只看到 taskId」
+        // 变成能从日志追溯到具体编排器与业务维度（发布 / 回滚 / 构建 / 连通性测试）。
+        // 这正是解耦架构的代价：Controller 从不调用 Handler，Handler 只在这里被统一扇出。
+        String orchestrator = handler.getClass().getSimpleName();
+        log.info("[中央调度分发] 分派 taskId={} → 编排器 {} (taskType={})，业务主键 bizId={}",
+                taskId, orchestrator, task.getTaskType(), task.getBizId());
         appendLog(task, STAGE_SYSTEM, TaskLogLevel.INFO,
                 "任务开始执行：" + handler.taskType() + "，关联业务主键 " + task.getBizId());
         try {

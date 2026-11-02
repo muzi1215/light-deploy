@@ -249,6 +249,13 @@ public class DeployTaskHandler implements TaskHandler {
         // 回滚与主发布共用本处理器：主任务处于回滚中时，每个目标发的是它自己的 old_version。
         boolean rollingBack = support.isRollingBack(deployment);
         int targetTotal = (int) countTargets(deploymentId);
+        // —— 部署业务编排起点（业务维度：发布 / 回滚）——
+        // 本编排器只处理 taskType=DEPLOY 的任务，bizId 即 deployment.id；发布与回滚共用本编排器，
+        // 靠主任务状态（rollingBack）区分本次该发 new_version 还是 old_version。
+        // 业务维度进度通过 log.info 打印，配合 TaskExecutor 的 [中央调度分发] 日志，
+        // 即可从「发布/回滚触发」追到「服务起停」，不再只有 taskId。
+        log.info("[部署编排器] 收到 TaskExecutor 分派的 DEPLOY 任务：deploymentId={}，阶段={}，策略={}，目标总数={}",
+                deploymentId, rollingBack ? "回滚" : "发布", deployment.getStrategy(), targetTotal);
 
         // 只处理仍处于排队的目标：回滚时被排除的目标保持已跳过，不会重复处理。
         // 顺序按创建部署时固化的 deploy_order：这里必须用快照字段，不能用 create_time。
@@ -297,6 +304,7 @@ public class DeployTaskHandler implements TaskHandler {
         // AIops 静默窗必须在第一台目标重启之前开好：晚一步，重启引起的告警就已经推给值班了，
         // 静默等于没做。建窗失败按 failOpen 决定「降级继续」还是「阻断发布」，
         // 两种结论都要在任务日志里写明，不能让使用者事后猜「这次发布到底有没有静默」。
+        log.info("[部署编排器] 阶段① 调用 AiopsSilenceService.openForDeployment 开告警静默窗（发布/回滚期间抑制告警）");
         AiopsSilenceService.SilenceOutcome silence = aiopsSilenceService.openForDeployment(deployment);
         support.appendLog(task, DeploySupport.STAGE_PREPARE, TaskLogLevel.INFO,
                 silence.degraded() ? "【注意】" + silence.message() : silence.message());
@@ -304,6 +312,8 @@ public class DeployTaskHandler implements TaskHandler {
             aiopsEventPublisher.publish(AiopsEventType.PREPARED, deployment, null, null, silence.message());
         }
 
+        log.info("[部署编排器] 阶段② 调用 DeploymentService.markDeploying 标记部署中，准备按批次发布 {} 个目标",
+                targetTotal);
         deploymentService.markDeploying(deploymentId);
 
         List<List<DeploymentTarget>> batches = buildBatches(targets, deployment.getStrategy(),
@@ -317,6 +327,8 @@ public class DeployTaskHandler implements TaskHandler {
             List<DeploymentTarget> batch = batches.get(batchIndex);
             support.appendLog(task, DeploySupport.STAGE_DELIVER, TaskLogLevel.INFO,
                     "开始第 " + (batchIndex + 1) + "/" + batches.size() + " 批，含 " + batch.size() + " 个目标");
+            log.info("[部署编排器] 阶段③ 开始第 {}/{} 批发布，本批 {} 个目标",
+                    (batchIndex + 1), batches.size(), batch.size());
             int failedInBatch = 0;
             for (DeploymentTarget target : batch) {
                 boolean ok = deployTarget(task, deployment, project, target, baseConfig, healthConfig, rollingBack);
@@ -359,6 +371,8 @@ public class DeployTaskHandler implements TaskHandler {
                         "回滚失败：" + failureSummary + "，完成时间 " + support.nowText() + "，请人工确认目标机当前版本");
             }
         }
+        log.info("[部署编排器] 阶段④ 调用 DeploymentService.finishDeployment 收敛部署状态（结论：{}）",
+                failureSummary == null ? (rollingBack ? "回滚成功" : "发布成功") : "存在失败目标");
         finishDeployment(task, deploymentId, rollingBack, failureSummary);
         if (failureSummary != null) {
             throw new DeployException(ResponseCode.REMOTE_EXECUTION_ERROR, failureSummary);
@@ -427,6 +441,12 @@ public class DeployTaskHandler implements TaskHandler {
             ReleaseRecord versionRelease = resolveVersionRelease(project, deployment, target, rollingBack);
             DeployContext ctx = new DeployContext(task, deployment, project, server, target,
                     config, versionRelease, rollingBack);
+            // 按运行时把「发布/回滚」动作委托给对应发布服务（这就是编排器扇出的业务方法）。
+            String deployService = runtimeType == RuntimeType.DOCKER ? "DockerDeployService"
+                    : runtimeType == RuntimeType.JAR ? "JarDeployService"
+                    : runtimeType == RuntimeType.STATIC ? "StaticDeployService" : "Unknown";
+            log.info("[部署编排器] 阶段③ 按运行时分发：runtimeType={} → 调用 {}#deploy 执行{}",
+                    runtimeType, deployService, rollingBack ? "回滚" : "发布");
             switch (runtimeType) {
                 case DOCKER -> dockerDeployService.deploy(ctx);
                 case JAR -> jarDeployService.deploy(ctx);
@@ -564,6 +584,7 @@ public class DeployTaskHandler implements TaskHandler {
         } else {
             reason = failureSummary == null ? "发布成功" : "发布失败";
         }
+        log.info("[部署编排器] 阶段⑤ 调用 AiopsSilenceService.closeForDeployment 关闭告警静默窗（发布/回滚收尾）");
         AiopsSilenceService.CloseOutcome outcome = aiopsSilenceService.closeForDeployment(deploymentId, reason);
         if (!outcome.hadWindow()) {
             return;
