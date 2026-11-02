@@ -36,17 +36,17 @@ spring:
     #   jdbc:mysql://mysql:3306/deploy?characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://host.docker.internal:3306/deploy?characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=GMT
-    username: lx
+    username: your-username
     # 生产建议改成宿主机 .env 注入。注意别在 compose 里写 ${DB_PASSWORD:-}：
     # 变量存在但为空字符串时，Spring 的 ${DB_PASSWORD:默认值} **不会**回落到默认值，会直接拿空串去连库。
-    password: lx_relife
+    password: your-password
 
   data:
     redis:
       # 同上：容器内不能用 127.0.0.1。Redis 也在 lx-app-net 时改 redis://redis:6379 对应的 host: redis。
       host: host.docker.internal
       port: 6379
-      password: lx2026
+      password: your-password
       database: 0
       timeout: 18000
       jedis:
