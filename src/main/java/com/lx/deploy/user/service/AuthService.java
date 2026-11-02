@@ -5,6 +5,7 @@ import com.lx.deploy.common.crypto.Pbkdf2PasswordEncoder;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.response.ResponseCode;
 import com.lx.deploy.common.security.LoginUser;
+import com.lx.deploy.common.util.IdGenerator;
 import com.lx.deploy.user.mapper.UserMapper;
 import com.lx.deploy.user.model.User;
 import org.slf4j.Logger;
@@ -78,6 +79,7 @@ public class AuthService {
             return;
         }
         User admin = new User();
+        admin.setId(IdGenerator.generateNumericId());
         admin.setUsername(DEFAULT_ADMIN_USERNAME);
         admin.setPasswordHash(Pbkdf2PasswordEncoder.encode(DEFAULT_ADMIN_PASSWORD));
         admin.setNickname("系统管理员");

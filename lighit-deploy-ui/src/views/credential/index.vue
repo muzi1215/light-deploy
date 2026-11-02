@@ -26,7 +26,7 @@
 
     <!-- 数据表格：所有列居中、统一 min-width、操作列固定右侧（约定见 AGENTS.md §20.8） -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="name" label="凭据名称" min-width="170" show-overflow-tooltip align="center" />
+      <el-table-column prop="name" label="凭据名称" min-width="170" show-overflow-tooltip fixed="left" align="center" />
       <el-table-column prop="type" label="凭据类型" min-width="140" align="center">
         <template #default="{ row }">
           <el-tag :type="CREDENTIAL_TYPE_TAG[row.type] || 'info'">

@@ -32,7 +32,7 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="taskNo" label="任务编号" min-width="200" show-overflow-tooltip align="center" />
+      <el-table-column prop="taskNo" label="任务编号" min-width="260" show-overflow-tooltip fixed="left" align="center" />
       <el-table-column prop="taskType" label="任务类型" min-width="140" align="center">
         <template #default="{ row }">
           <el-tag :type="TASK_TYPE_TAG[row.taskType] || 'info'">

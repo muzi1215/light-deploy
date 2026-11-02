@@ -37,8 +37,8 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="serverName" label="服务器名称" min-width="140" show-overflow-tooltip align="center"/>
-      <el-table-column prop="host" label="主机地址" min-width="140" show-overflow-tooltip align="center"/>
+      <el-table-column prop="serverName" label="服务器名称" min-width="140" show-overflow-tooltip fixed="left" align="center"/>
+      <el-table-column prop="host" label="主机地址" min-width="140" show-overflow-tooltip fixed="left" align="center"/>
       <el-table-column prop="sshPort" label="SSH端口" min-width="130" align="center" />
       <el-table-column prop="username" label="登录用户" min-width="130" show-overflow-tooltip align="center"/>
       <el-table-column prop="authType" label="认证类型" min-width="130" align="center">

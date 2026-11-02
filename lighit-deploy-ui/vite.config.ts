@@ -8,8 +8,8 @@ export default defineConfig(({ mode }) => {
   const isDev = mode === 'development'
 
   return {
-    // 打包路径（默认 /，如有子路径部署需求如 /admin 请修改此处）
-    base: '/',
+     // 打包路径 - 对应 vue.config.js 的 publicPath
+    base: '/light-deploy',
 
     build: {
       outDir: 'light-deploy',
@@ -27,16 +27,17 @@ export default defineConfig(({ mode }) => {
 
     // 开发服务器
     server: {
-      port: 9850,
+      port: 9827,
       open: true,
       proxy: {
         // 将 /api 请求代理到后端 Light Deploy 服务。
         // 后端监听 2027 端口，context-path 为 /deploy，
         // 因此 /api/server/page → http://localhost:2027/deploy/server/page
-        '/api': {
-          target: 'http://localhost:2027',
+        '/deploy-api': {
+          target: 'http://localhost:2027/deploy',
           changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, '/deploy')
+          rewrite: (path) => path.replace(/^\/deploy-api/, '')
+          //rewrite: (path) => path.replace(/^\/api/, '/deploy')
         }
       }
     },

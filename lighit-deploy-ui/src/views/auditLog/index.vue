@@ -43,8 +43,8 @@
 
     <!-- 数据表格：居中、min-width、操作列固定右侧（约定见 AGENTS.md §20.8） -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column type="index" label="序号" width="70" align="center" />
-      <el-table-column prop="operName" label="操作人" min-width="120" align="center">
+      <el-table-column type="index" label="序号" width="70" align="center" fixed="left"/>
+      <el-table-column prop="operName" label="操作人" min-width="120" fixed="left" align="center">
         <template #default="{ row }">
           {{ row.operName || '—' }}
         </template>

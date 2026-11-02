@@ -24,7 +24,7 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column prop="code" label="环境编码" min-width="120" align="center">
+      <el-table-column prop="code" label="环境编码" min-width="120" fixed="left" align="center">
         <template #default="{ row }">
           <el-tag>{{ row.code }}</el-tag>
         </template>

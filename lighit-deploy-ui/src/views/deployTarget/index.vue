@@ -34,7 +34,7 @@
 
     <!-- 数据表格 -->
     <el-table v-loading="loading" :data="tableData" border stripe>
-      <el-table-column label="项目" min-width="150" show-overflow-tooltip align="center">
+      <el-table-column label="项目" min-width="200" show-overflow-tooltip  fixed="left" align="center">
         <template #default="{ row }">
           {{ projectNameMap[row.projectId] || row.projectId }}
         </template>
