@@ -1,0 +1,1 @@
+import{az as t}from"./vue-vendor-CrQYPlAv.js";const r=t("pageRefresh",{state:()=>({dirtyPages:[]}),actions:{markDirty(e){this.dirtyPages.includes(e)||this.dirtyPages.push(e)},consumeDirty(e){const s=this.dirtyPages.indexOf(e);return s>-1?(this.dirtyPages.splice(s,1),!0):!1}}});export{r as u};
