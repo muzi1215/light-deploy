@@ -1,6 +1,9 @@
 package com.lx.deploy.aiops.controller;
 
+import com.lx.deploy.aiops.client.AiopsClient;
+import com.lx.deploy.aiops.config.AiopsProperties;
 import com.lx.deploy.aiops.model.vo.AiopsLinkVo;
+import com.lx.deploy.aiops.model.vo.AiopsStatusVo;
 import com.lx.deploy.aiops.service.AiopsLinkService;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
@@ -31,6 +34,14 @@ public class AiopsLinkController {
     @Autowired
     private AiopsLinkService service;
 
+    /** 联动总闸配置，只读取，不修改。 */
+    @Autowired
+    private AiopsProperties properties;
+
+    /** AIops 对端客户端，仅用于连通性探测（ping），不在页面接口里推送任何事件。 */
+    @Autowired
+    private AiopsClient client;
+
     /**
      * 查询一次发布的联动全景（静默窗 + 事件流水）。
      *
@@ -41,6 +52,27 @@ public class AiopsLinkController {
     @GetMapping("/link/{deploymentId}")
     public ApiResponse<AiopsLinkVo> link(@PathVariable String deploymentId, HttpServletRequest request) {
         return ApiResponse.success(service.getByDeployment(deploymentId), requestId(request));
+    }
+
+    /**
+     * 查询平台级 AIops 联动状态（首页实时状态卡）。
+     *
+     * <p>只读、无写操作、不标注 {@code @OperLog}（与 {@code link} 一致）。
+     * 总闸关闭时 {@code reachable} 恒为 false，避免把「没开联动」误显示成「对端挂了」。
+     * 总闸开启但对端不可达时由 {@link AiopsClient#ping()} 内部吞掉异常返回 false，接口仍 200。</p>
+     *
+     * @param request 当前 HTTP 请求，用于取 requestId
+     * @return 平台级联动状态
+     */
+    @GetMapping("/status")
+    public ApiResponse<AiopsStatusVo> status(HttpServletRequest request) {
+        boolean reachable = properties.isEnabled() && client.ping();
+        AiopsStatusVo vo = new AiopsStatusVo();
+        vo.setEnabled(properties.isEnabled());
+        vo.setReachable(reachable);
+        vo.setBaseUrl(properties.getBaseUrl());
+        vo.setCheckedAt(java.time.LocalDateTime.now());
+        return ApiResponse.success(vo, requestId(request));
     }
 
     /**

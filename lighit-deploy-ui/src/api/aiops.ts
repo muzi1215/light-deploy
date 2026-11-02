@@ -11,9 +11,19 @@
  * 3. 事件是流水（一次发布多条），页面按 `sequence` 排序展示。
  */
 import request from '@/utils/request.ts'
-import type { ApiResponse, AiopsLinkVo } from './deployTypes.ts'
+import type { ApiResponse, AiopsLinkVo, AiopsStatusVo } from './deployTypes.ts'
 
 /** 查询一次发布的联动全景（静默窗 + 事件流水） */
 export function getDeploymentAiopsLink(deploymentId: string): Promise<ApiResponse<AiopsLinkVo>> {
   return request({ url: `/aiops/link/${deploymentId}`, method: 'get' })
+}
+
+/**
+ * 查询平台级 AIops 联动状态（首页实时状态卡）。
+ *
+ * 只读，无写操作；总闸关闭或对端不可达时接口仍返回 200，
+ * reachable 字段区分「没开联动」与「对端挂了」，前端据此呈现三档状态。
+ */
+export function getAiopsStatus(): Promise<ApiResponse<AiopsStatusVo>> {
+  return request({ url: `/aiops/status`, method: 'get' })
 }

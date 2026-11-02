@@ -698,3 +698,17 @@ export interface AiopsLinkVo {
   silenceMessage?: string
   events: AiopsEventVo[]
 }
+
+/**
+ * 平台级 AIops 联动状态（对应后端 AiopsStatusVo，首页实时状态卡数据源）。
+ *
+ * 不绑定任何部署：enabled=总闸是否开启；reachable=对端是否可达（仅 enabled 时探测）；
+ * enabled=false 时 reachable 恒为 false（平台不会去连 AIops）。
+ */
+export interface AiopsStatusVo {
+  enabled: boolean
+  reachable: boolean
+  baseUrl: string
+  /** 探测时刻，ISO（带 T），展示时 T→空格 */
+  checkedAt: string
+}

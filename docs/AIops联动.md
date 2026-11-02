@@ -60,8 +60,12 @@ DeployTaskHandler.execute
 | `model/AiopsEvent` | 表 `aiops_event` |
 | `model/AiopsEventType` | 10 类事件编码 + 中文短名（`getLabel`，页面直接渲染，前端不再维护第二份映射） |
 | `service/AiopsLinkService` | 只读聚合：本地事件流水 + 远程静默窗详情，远程失败降级为文案 |
-| `controller/AiopsLinkController` | `GET /aiops/link/{deploymentId}`，供前端联动抽屉 |
-| `model/vo/AiopsLinkVo` / `AiopsSilenceVo` / `AiopsEventVo` | 联动抽屉的响应模型 |
+| `controller/AiopsLinkController` | `GET /aiops/link/{deploymentId}` 供前端联动抽屉；`GET /aiops/status` 供首页实时状态卡（平台级只读探针，不绑定部署） |
+| `model/vo/AiopsLinkVo` / `AiopsSilenceVo` / `AiopsEventVo` / `AiopsStatusVo` | 联动抽屉与首页状态卡的响应模型 |
+
+> `/aiops/status` 与 `/aiops/link` 一样是**只读、不标注 `@OperLog`** 的页面接口。`AiopsStatusVo` 只回答两件事：总闸是否开启（`enabled`）、对端是否可达（`reachable`，仅在 `enabled=true` 时执行 `AiopsClient.ping()`，关闭时恒为 false，避免把「没开联动」误显示成「对端挂了」）。首页卡片据此呈现「未启用 / 联动正常 / 后端不可达」三档状态。
+>
+> **轮询间隔（改刷新频率看这里）**：首页 `AiopsStatusCard` 默认每 **30000ms（30 秒）** 轮询一次 `/aiops/status`。改法二选一——① 父组件传 `:interval-ms`（毫秒，如 `:interval-ms="10000"` = 10 秒；传 `0` 关闭轮询，只在挂载时拉一次）；② 改组件内默认值 `30_000`。只影响刷新频率，不改变接口语义。
 
 ### 3.2 挂载点（改发布链路时必须同步的位置）
 

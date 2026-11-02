@@ -4,6 +4,8 @@
 
 Light Deploy 是面向中小企业的**轻量化部署发布平台**。基于 Spring Boot 单体架构，通过 SSH/SFTP 纳管多台 Linux 目标服务器，支持 **DOCKER / JAR / STATIC** 三种运行时的构建与发布。运维在页面上完成「登记服务器 → 建项目 → 绑定目标机 → 选版本一键发布」，全程无需人工登录目标机；发布过程日志按阶段实时滚动，健康检查通过才标记成功，并支持回滚到任意保留版本。
 
+> **相关系统（Relife 产品矩阵）**：[AIops 智能运维平台](https://lxrelife.xyz/aiops/)（巡检告警 / 工单闭环 / 数据大屏）与规划中的 Auth Cloud 统一鉴权中心。统一门户见 [`portal/index.html`](portal/index.html)，本平台线上地址：<https://lxrelife.xyz/deploy>。
+
 ---
 
 ## 目录
@@ -34,6 +36,8 @@ Light Deploy 是面向中小企业的**轻量化部署发布平台**。基于 Sp
 | **并发发布** | 线程池并发令牌 + 同服务器互斥键，支持多台服务器并行发布、同机串行 |
 | **健康检查** | HTTP / TCP 探针，不通过即判目标失败，避免「发布成功但服务起不来」 |
 | **操作审计** | AOP 全链路操作日志（`audit_log`），含字段级 diff 与脱敏 |
+| **演示只读模式** | 前端总开关（`v-readonly` 指令 + `VITE_DEMO_READONLY`），仅指定管理员可切换；开启后编辑/删除按钮置灰，演示只读不误操作 |
+| **AIops 实时状态** | 平台概览首页轮询 `GET /aiops/status`，联动总闸是否开启、AIops 对端是否可达一屏可见（默认 30s，可配） |
 
 ---
 
@@ -147,7 +151,7 @@ Vite 开发代理已配置：`/api` → `http://localhost:2027`，并改写为 `
 
 ### 5. 访问
 
-浏览器打开 `http://localhost:9850`（开发）或 Nginx 地址（生产）。当前前端为「假登录 + 静态菜单」演示态，任意账号可进入。
+浏览器打开 `http://localhost:9850`（开发）或 Nginx 地址（生产）。登录已对接后端 `/auth/login`（`/auth/me`、`/auth/logout` 配套），会话由 Spring Session + Redis 托管；使用库中账号登录，登录页演示提示为 `admin / admin123`（以实际初始化数据为准）。
 
 ### 6. Docker 部署（生产推荐，jar 本地构建）
 
@@ -231,9 +235,9 @@ docker compose up -d --build
 | 发布模块 | `com.lx.deploy.deployment` | ✅ 完成 |
 | 发布版本查询（只读） | `com.lx.deploy.release` | ✅ 完成 |
 | 操作日志（审计） | `com.lx.deploy.audit` | ✅ 完成 |
-| 前端工程 | `lighit-deploy-ui` | ✅ 完成（项目管理 / 构建 / 发布 / 审计等页面，Nginx 托管生产前端） |
-| 用户模块 | `com.lx.deploy.user` | ⏳ 过渡期（Model/Mapper/Service，无 Controller，仅开发联调登录） |
-| AIops 集成（发布联动） | `openapi` / `deployLink` | ✅ 完成（发布静默窗口 + 事件推送 + 前端联动抽屉） |
+| 前端工程 | `lighit-deploy-ui` | ✅ 完成（项目管理 / 构建 / 发布 / 审计等页面；平台概览首页 + AIops 实时状态卡 + 演示只读开关；Nginx 托管生产前端） |
+| 用户模块 | `com.lx.deploy.user` | ✅ 登录已对接（`AuthController`：`POST /auth/login`、`GET /auth/me`、`POST /auth/logout`，Spring Session + Redis）；用户管理页待补 |
+| AIops 集成（发布联动） | `com.lx.deploy.aiops` | ✅ 完成（静默窗口 + 事件推送 + 前端联动抽屉 + 平台级状态探针 `GET /aiops/status`） |
 
 状态图例：✅ 已完成 ｜ ⏳ 进行中/占位 ｜ ⬜ 未开始
 
@@ -264,7 +268,7 @@ docker compose up -d --build
 3. ✅ 构建模块（含 JAR_PREBUILD）
 4. ✅ 发布模块（三策略 + 健康检查 + 回滚）
 5. ✅ AIops 集成（发布静默窗口 + 事件推送 + 前端联动抽屉）
-6. ⏳ 鉴权中心接入（统一登录 + 动态菜单）
+6. ⏳ Auth Cloud 统一鉴权中心接入（统一登录 + SSO + RBAC + 动态菜单），接回后 Light Deploy / AIops 不再各自维护登录态
 7. ✅ 收尾（audit_log 审计、Docker 化交付、Nginx 托管前端）
 
 ---
