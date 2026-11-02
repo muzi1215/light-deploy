@@ -119,16 +119,30 @@ public class TaskExecutor implements SmartLifecycle {
         this.pollIntervalMs = pollIntervalMs;
         this.pollBatchSize = pollBatchSize;
 
-        // 构建任务类型到处理器的映射；同一类型出现两个实现属于配置错误，启动即失败更安全。
+        // —— 任务类型路由表构建（仅构造期执行一次，运行期只读）——
+        // 路由本质：Map<taskType字符串, 对应 Handler 实例>。
+        // 来源：所有被 Spring 管理的 TaskHandler 实现（@Component），由 Spring 自动收集成 List 注入上方 handlerList 参数。
+        // 约定：每个 Handler 通过 taskType() 自报类型编码，必须与 Service 插入 lds_task 时写入的 task_type 完全一致，
+        //       否则运行期 handlers.get(taskType) 返回 null，任务会落到"未支持类型"分支。
         Map<String, TaskHandler> handlerMap = new HashMap<>();
+        StringBuilder routeInfo = new StringBuilder();
         for (TaskHandler handler : handlerList) {
+            // 用 Handler 自报的 taskType() 作为 key，把"类型字符串"映射到"具体编排器实例" —— 这就是运行期路由的依据
             TaskHandler exists = handlerMap.put(handler.taskType(), handler);
             if (exists != null) {
+                // 同一 taskType 出现两个实现 = 配置错误：启动即失败，避免运行期把一种任务静默路由错 Handler
                 throw new IllegalStateException("任务类型 " + handler.taskType() + " 存在多个处理器："
                         + exists.getClass().getName() + " 与 " + handler.getClass().getName());
             }
+            if (routeInfo.length() > 0) {
+                routeInfo.append(", ");
+            }
+            routeInfo.append(handler.taskType()).append('=').append(handler.getClass().getSimpleName());
         }
+        // Map.copyOf 生成不可变路由表：后续只查不改，杜绝运行期被误写
         this.handlers = Map.copyOf(handlerMap);
+        // 把"类型 → 编排器"路由表显式打印，启动排障一眼可见当前平台支持哪些任务类型、各由谁处理
+        log.info("[中央调度中枢] 任务类型路由表（type → 编排器）：{}", routeInfo);
 
         // 固定大小线程池 + 与池同宽的令牌：提交前先拿令牌，池内不会有排队任务，
         // 被提交的任务可以立即开始抢占状态，不会长时间停留在「已提交未开始」。
@@ -330,7 +344,15 @@ public class TaskExecutor implements SmartLifecycle {
      * @return true 表示本轮可以继续处理后续任务；false 表示应结束本轮调度
      */
     private boolean trySubmit(Task task) {
+        // —— 运行期路由查表：用任务里存好的 task_type 字符串，从构造期建好的路由表 handlers 取出对应编排器实例 ——
+        // 这一步就是"Spring 注入 + 构造函数建 Map"的最终落点：任务本身不持有 Handler 引用，只持有 type 字符串，
+        // 由调度器在这里按 type 反查到真正的执行器。若返回 null 表示库里出现本平台未实现的任务类型。
         TaskHandler handler = handlers.get(task.getTaskType());
+        if (handler == null) {
+            // 未注册的任务类型：没有 Handler 能处理它，必须领取并以失败收尾，否则任务会永远停在 status=0 被反复轮询。
+            log.warn("[中央调度分发] 未找到任务类型 {} 对应的编排器，任务将标记失败：taskId={}",
+                    task.getTaskType(), task.getId());
+        }
         // 未知类型也必须领取执行，否则任务会永远停留在排队中；这里用任务主键作为互斥键。
         String lockKey = handler == null ? LOCK_KEY_UNKNOWN + task.getId() : handler.lockKey(task);
 
