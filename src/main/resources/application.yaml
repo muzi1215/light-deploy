@@ -99,7 +99,7 @@ light-deploy:
   crypto:
     # AES-256 密钥必须是 Base64 编码后解码为32字节的随机密钥。
     # 只从环境变量注入，禁止将真实密钥写入 application.yaml 或提交到 Git。
-    # aes-key: ${LIGHT_DEPLOY_AES_KEY:}
+    # aes-key: ${LIGHT_DEPLOY_AES_KEY:}，sCiAhDKE1xzqkAXnMECqPLvrFE3w7G2dqXSJPOffEOE=
     aes-key: sCiAhDKE1xzqkAXnMECqPLvrFE3w7G2dqXSJPOffEOE=
 
   # SSH 执行层参数。只影响建立连接与执行远程命令的等待时长，不涉及凭据本身。
