@@ -48,6 +48,10 @@ public class AiopsLinkVo {
     @Schema(description = "静默窗查询失败原因")
     private String silenceMessage;
 
+    /** 补关对账状态：窗口还开着且已过收尾宽限时，页面据此提示「补关中」。 */
+    @Schema(description = "静默窗补关对账状态")
+    private AiopsReconcileVo silenceReconcile;
+
     /** 事件流水，按 sequence 升序。 */
     @Schema(description = "事件流水")
     private List<AiopsEventVo> events;

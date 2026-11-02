@@ -38,6 +38,7 @@ Light Deploy 是面向中小企业的**轻量化部署发布平台**。基于 Sp
 | **操作审计** | AOP 全链路操作日志（`audit_log`），含字段级 diff 与脱敏 |
 | **演示只读模式** | 前端总开关（`v-readonly` 指令 + `VITE_DEMO_READONLY`），仅指定管理员可切换；开启后编辑/删除按钮置灰，演示只读不误操作 |
 | **AIops 实时状态** | 平台概览首页轮询 `GET /aiops/status`，联动总闸是否开启、AIops 对端是否可达一屏可见（默认 30s，可配） |
+| **静默窗补关对账** | 关窗失败（含发布 AIops 自身撞重启）由对账任务重试补关并补发 `SILENCE_CLOSED`；联动抽屉显示「补关中：约 N 秒内自动重试」，窗口 TTL 默认压到 15 分钟兜底 |
 
 ---
 
@@ -237,7 +238,7 @@ docker compose up -d --build
 | 操作日志（审计） | `com.lx.deploy.audit` | ✅ 完成 |
 | 前端工程 | `lighit-deploy-ui` | ✅ 完成（项目管理 / 构建 / 发布 / 审计等页面；平台概览首页 + AIops 实时状态卡 + 演示只读开关；Nginx 托管生产前端） |
 | 用户模块 | `com.lx.deploy.user` | ✅ 登录已对接（`AuthController`：`POST /auth/login`、`GET /auth/me`、`POST /auth/logout`，Spring Session + Redis）；用户管理页待补 |
-| AIops 集成（发布联动） | `com.lx.deploy.aiops` | ✅ 完成（静默窗口 + 事件推送 + 前端联动抽屉 + 平台级状态探针 `GET /aiops/status`） |
+| AIops 集成（发布联动） | `com.lx.deploy.aiops` | ✅ 完成（静默窗口 + 事件推送 + 前端联动抽屉 + 平台级状态探针 `GET /aiops/status` + 静默窗补关对账） |
 
 状态图例：✅ 已完成 ｜ ⏳ 进行中/占位 ｜ ⬜ 未开始
 

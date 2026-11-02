@@ -12,7 +12,9 @@ import com.lx.deploy.aiops.model.AiopsEventStatus;
 import com.lx.deploy.aiops.model.AiopsEventType;
 import com.lx.deploy.aiops.model.vo.AiopsEventVo;
 import com.lx.deploy.aiops.model.vo.AiopsLinkVo;
+import com.lx.deploy.aiops.model.vo.AiopsReconcileVo;
 import com.lx.deploy.aiops.model.vo.AiopsSilenceVo;
+import com.lx.deploy.common.constants.DeploymentStatus;
 import com.lx.deploy.common.exception.DeployException;
 import com.lx.deploy.common.response.ResponseCode;
 import com.lx.deploy.deployment.mapper.DeploymentMapper;
@@ -23,6 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -96,8 +99,79 @@ public class AiopsLinkService {
                 && environment.getAiopsEnabled() == 1);
         vo.setSilenceId(deployment.getAiopsSilenceId());
         fillSilence(vo, deployment);
-        vo.setEvents(listEvents(deploymentId));
+        List<AiopsEventVo> events = listEvents(deploymentId);
+        vo.setEvents(events);
+        vo.setSilenceReconcile(resolveReconcile(deployment, events));
         return vo;
+    }
+
+    /**
+     * 计算补关对账状态。
+     *
+     * <p>判定条件与 {@link AiopsSilenceReconciler} 的候选条件逐条对齐（终态、有窗口、
+     * 没「静默已关」事件、终态稳定超过宽限、在回看时间窗内）。对齐是刻意的：页面显示
+     * 「补关中」就等于「下一轮扫描会处理它」，不会出现「页面说在补，任务其实不管」的错位。</p>
+     *
+     * @param deployment 部署记录
+     * @param events     本次发布的事件流水（已在内存里，不再多查一次）
+     * @return 对账状态；间隔与宽限恒定返回，供页面把「多久内会重试」说清楚
+     */
+    private AiopsReconcileVo resolveReconcile(Deployment deployment, List<AiopsEventVo> events) {
+        AiopsReconcileVo vo = new AiopsReconcileVo();
+        vo.setRetryIntervalSeconds(properties.getSilenceReconcileIntervalSeconds());
+        vo.setGraceSeconds(AiopsSilenceReconciler.GRACE_SECONDS);
+        vo.setPending(isAwaitingClose(deployment, events));
+        return vo;
+    }
+
+    /**
+     * 是否正在等待补关。
+     *
+     * <p>总闸关闭时恒为 false：对账任务靠 {@code @ConditionalOnProperty} 注册，总闸一关就没有
+     * 「稍后会自动关」这回事，此时给乐观提示等于骗人。</p>
+     *
+     * @param deployment 部署记录
+     * @param events     事件流水
+     * @return true 表示窗口未关且确定会被补关
+     */
+    private boolean isAwaitingClose(Deployment deployment, List<AiopsEventVo> events) {
+        if (!properties.isEnabled() || !StringUtils.hasText(deployment.getAiopsSilenceId())) {
+            return false;
+        }
+        if (!DeploymentStatus.isFinal(deployment.getStatus())) {
+            return false;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        // 超出回看时间窗的部署，对账任务根本不会扫到，不能提示「等待补关」
+        LocalDateTime since = now.minusHours(Math.max(1, properties.getSilenceReconcileWindowHours()));
+        if (deployment.getCreateTime() == null || deployment.getCreateTime().isBefore(since)) {
+            return false;
+        }
+        // 终态刚稳定不久：可能正在收尾关窗，先按正常流程看，别抢答
+        if (deployment.getUpdateTime() == null
+                || deployment.getUpdateTime().isAfter(now.minusSeconds(AiopsSilenceReconciler.GRACE_SECONDS))) {
+            return false;
+        }
+        return !hasClosedEvent(events);
+    }
+
+    /**
+     * 事件流水里是否已有「静默已关」。
+     *
+     * <p>与对账任务同一套判据：事件落库即「已关」标记（零 DDL）。这里读的是已加载的列表，
+     * 不再多查一次库。</p>
+     *
+     * @param events 事件流水
+     * @return true 表示已记录关窗
+     */
+    private boolean hasClosedEvent(List<AiopsEventVo> events) {
+        String closedCode = AiopsEventType.SILENCE_CLOSED.getCode();
+        for (AiopsEventVo event : events) {
+            if (closedCode.equals(event.getEventType())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

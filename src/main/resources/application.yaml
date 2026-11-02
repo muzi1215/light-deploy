@@ -160,7 +160,12 @@ light-deploy:
     # 只有「发布必须留痕」的严格环境才设为 false 阻断发布。
     fail-open: true
     # 静默窗基准时长（分钟），平台按「基准 + 每台目标 3 分钟余量」估算，上限 120 分钟（与 AIops 硬上限一致）。
-    silence-ttl-minutes: 40
+    # 15 分钟的含义：正常路径靠收尾关窗 + 补关对账关掉，TTL 只兜「平台在发布中途整体挂掉」的最坏情况。
+    # 调长只会让真故障被静音更久，不建议为了「保证不漏关」而放大。
+    silence-ttl-minutes: 15
+    # 关窗失败后的补关对账：每 N 秒扫一轮，只回看最近 M 小时内的部署。
+    silence-reconcile-interval-seconds: 60
+    silence-reconcile-window-hours: 24
     # 需要静默的告警类型，取值沿用 AIops 的 alarm_type_name，避免两套词汇表互相翻译。
     alert-categories:
       - 服务异常

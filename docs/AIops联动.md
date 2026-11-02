@@ -50,18 +50,19 @@ DeployTaskHandler.execute
 | 类 | 职责 |
 | --- | --- |
 | `config/AiopsProperties` | `light-deploy.aiops.*` 全部配置 |
-| `config/AiopsSchedulingConfig` | 仅 `enabled=true` 时开 `@EnableScheduling`（平台其他模块没有定时任务） |
+| `config/AiopsSchedulingConfig` | 仅 `enabled=true` 时开 `@EnableScheduling`，并定义 2 线程 `aiopsTaskScheduler` 覆盖默认单线程调度器（平台其他模块没有定时任务） |
 | `client/AiopsClient` | 只负责发报文、解 `{code,message,data}` 外壳；不做业务判断 |
 | `client/AiopsDtos` | 嵌套 record 报文模型，字段名与对端驼峰输出严格对齐 |
 | `client/AiopsException` | 外部系统异常，刻意区别于 `DeployException` |
 | `service/AiopsSilenceService` | 建窗 / 关窗 / TTL 估算 / `failOpen` 降级决策 |
 | `service/AiopsEventPublisher` | 事件组装 + 落库 + 投递 + 失败排期 + 重试 |
 | `service/AiopsRetryScheduler` | `@Scheduled` 扫 `next_retry_time` 补发 |
+| `service/AiopsSilenceReconciler` | `@Scheduled` 补关对账：终态部署若还没 `SILENCE_CLOSED`，重试关窗并补发事件（解决「发布 AIops 自身时关窗撞重启」） |
 | `model/AiopsEvent` | 表 `aiops_event` |
 | `model/AiopsEventType` | 10 类事件编码 + 中文短名（`getLabel`，页面直接渲染，前端不再维护第二份映射） |
 | `service/AiopsLinkService` | 只读聚合：本地事件流水 + 远程静默窗详情，远程失败降级为文案 |
 | `controller/AiopsLinkController` | `GET /aiops/link/{deploymentId}` 供前端联动抽屉；`GET /aiops/status` 供首页实时状态卡（平台级只读探针，不绑定部署） |
-| `model/vo/AiopsLinkVo` / `AiopsSilenceVo` / `AiopsEventVo` / `AiopsStatusVo` | 联动抽屉与首页状态卡的响应模型 |
+| `model/vo/AiopsLinkVo` / `AiopsSilenceVo` / `AiopsEventVo` / `AiopsStatusVo` / `AiopsReconcileVo` | 联动抽屉与首页状态卡的响应模型（`AiopsReconcileVo` 承载「补关中」判定，见 §5.1） |
 
 > `/aiops/status` 与 `/aiops/link` 一样是**只读、不标注 `@OperLog`** 的页面接口。`AiopsStatusVo` 只回答两件事：总闸是否开启（`enabled`）、对端是否可达（`reachable`，仅在 `enabled=true` 时执行 `AiopsClient.ping()`，关闭时恒为 false，避免把「没开联动」误显示成「对端挂了」）。首页卡片据此呈现「未启用 / 联动正常 / 后端不可达」三档状态。
 >
@@ -90,8 +91,9 @@ DeployTaskHandler.execute
   同环境其他机器照常告警。请求里同时给 `serverId`（平台主键）与 `host`（IP），
   **对端以 host 对齐**——两边服务器主键体系不同，只按 ID 匹配会永不命中。
 - **类型**：由 `alert-categories` 指定（默认「服务异常」），取值沿用 AIops 的 `alarm_type_name`，不另建词汇表。
-- **时长**：`静默基准时长 + 3 分钟 ×（目标数 - 1）`，封顶 120 分钟。
+- **时长**：`静默基准时长（默认 15 分钟）+ 3 分钟 ×（目标数 - 1）`，封顶 120 分钟。
   超出部分会被对端硬上限截断，所以平台自己先算准，避免日志里出现「被截断」这种需要解释的告警。
+  基准时长取短是因为正常关闭由收尾关窗 + 补关对账保证，TTL 只是最后兜底（理由见 §5.1）。
 - **幂等**：幂等键 `light-deploy:silence:{deploymentId}`。同一条部署重复建窗只回放已有窗口，不会开出第二个。
 
 ### 3.4 两级开关：总闸 + 环境开关
@@ -125,8 +127,8 @@ DeployTaskHandler.execute
 | 层 | 文件 | 说明 |
 | --- | --- | --- |
 | 接口 | `GET /aiops/link/{deploymentId}` | 聚合三处：`deployment.aiops_silence_id`、`aiops_event`、AIops 静默窗详情（远程只读） |
-| 服务 | `AiopsLinkService.getByDeployment` | 远程失败只写 `silenceMessage`，**不抛异常** |
-| 组件 | `lighit-deploy-ui/src/components/AiopsLinkDrawer.vue` | 静默窗信息卡 + 事件时间线 |
+| 服务 | `AiopsLinkService.getByDeployment` | 远程失败只写 `silenceMessage`，**不抛异常**；另算 `silenceReconcile.pending` 供页面提示「补关中」 |
+| 组件 | `lighit-deploy-ui/src/components/AiopsLinkDrawer.vue` | 静默窗信息卡（含「补关中」提示条）+ 事件时间线 |
 | 常量 | `constants/aiopsStatus.ts` | 只维护颜色；中文名由后端 `eventTypeLabel` 下发 |
 
 **三档短路，顺序即「为什么没有窗口」的解释优先级**（`fillSilence`）：
@@ -155,7 +157,7 @@ DeployTaskHandler.execute
 | `environment.aiops_enabled=0` | 跳过建窗（任务日志留一行「环境「X」未开启 AIops 联动，跳过静默窗」），发布照常 |
 | 建窗失败 + `fail-open=true`（默认） | 记一条 `【注意】AIops 不可用，本次发布不静默` 到任务日志，发布继续 |
 | 建窗失败 + `fail-open=false` | 抛异常阻断发布，仅用于「发布必须留痕」的严格环境 |
-| 关窗失败 | 只记日志、不抛异常：窗口自带过期时间，最坏多静默几分钟 |
+| 关窗失败 | 只记日志、不抛异常；由 `AiopsSilenceReconciler` 对账补关（每 `silence-reconcile-interval-seconds` 重试），窗口 TTL 仍是最后兜底 |
 | 事件推送失败 | 落库置 `status=2` 并排重试；**绝不影响发布结论** |
 | 事件组装异常 | `AiopsEventPublisher.publish` 内部 catch 全部异常，只留 WARN |
 
@@ -266,6 +268,44 @@ DeployTaskHandler.execute
   在成功时必须真的被清成 NULL。默认 NOT_NULL 策略会跳过 null 字段，
   让「已成功」的事件仍挂着一个过去的重试时间，排查时极易误判成「还在排队」。
 
+### 5.1 静默窗补关对账（关窗补偿）
+
+关窗与事件不同：事件走 `aiops_event` 落库 + 重试；而收尾关窗是**一次性同步调用**，失败只记日志。
+当发布目标恰好是 AIops 自身时，收尾关窗撞上 AIops 容器重启，必然失败 → 没有 `SILENCE_CLOSED`
+→ 窗口一直「生效中」直到 TTL（默认 15 分钟），期间该环境/主机的告警仍被抑制，
+反而可能掩盖「AIops 没起来」这种最该报警的情况。
+
+`AiopsSilenceReconciler` 专门补这个洞：
+
+- **扫描**：每 `silence-reconcile-interval-seconds`（默认 60s），查「终态（成功/失败/取消/已回滚）
+  + 有 `aiops_silence_id` + 最近 `silence-reconcile-window-hours`（默认 24h）+ 终态已稳定 2 分钟」的部署，单轮 ≤50 条；
+- **判定**：若该部署还没有 `DEPLOYMENT_SILENCE_CLOSED` 事件，视为未关；有则跳过
+  （事件落库即「已关」标记，**零 DDL**，无需新增表/字段）；
+- **补关**：再调一次 `POST /openapi/v1/silences/{id}/close`（对端幂等，已关闭会幂等回放），
+  成功后补发 `SILENCE_CLOSED`；
+- **不重复**：事件一经写入，下一轮扫描看到就跳过；若事件只是没送达，由 `AiopsRetryScheduler`
+  继续补投，本任务不重复关窗；
+- **2 分钟宽限**：避开与正常收尾关窗并发，防止同一次部署发出两条「静默已关」。
+
+效果：AIops 重启回来后通常在一个扫描周期内补关，而不是干等 15 分钟 TTL。
+
+> **为什么把 TTL 从 40 分钟压到 15 分钟**：TTL 只兜「关窗、补关都够不着」的最坏情况
+> （典型是平台在发布中途整体挂掉）。窗口每多开一分钟，目标机的真实告警就多被压制一分钟——
+> 漏关的代价是误报警，多静默的代价是真故障被静音，后者更贵。正常关闭由收尾关窗 + 补关对账保证，
+> 不需要用长 TTL 去「保证不会漏」。单台目标 15 分钟、每多一台 +3 分钟、硬上限 120 分钟。
+
+> **页面上怎么看到「补关中」**：`GET /aiops/link/{deploymentId}` 返回 `silenceReconcile`
+> （`pending` / `retry-interval-seconds` / `grace-seconds`），联动抽屉据此在静默窗上方显示
+> 「补关中：关窗未生效，约 N 秒内自动重试」。判定条件与对账任务的候选条件逐条对齐，包括
+> **总闸关闭时 `pending` 恒为 false**（任务都没注册，不存在「稍后自动关」），以及
+> 「终态未满 2 分钟」「超出 24h 回看窗」也不提示——避免页面乐观、任务其实不管的错位。
+
+> **调度线程**：补关任务是串行发 HTTP 的（建连 3s / 读 5s），一批 50 条全超时最坏能占住调度线程数分钟。
+> 若沿用 `@EnableScheduling` 默认的单线程调度器，它会把 `AiopsRetryScheduler` 的事件补发一起饿死，
+> 静默窗事件随之积压。因此 `AiopsSchedulingConfig` 显式提供 2 线程的 `aiopsTaskScheduler` 覆盖默认调度器——
+> 两条 `fixedDelay` 任务各占一线程、互不阻塞。线程数不必再放大：`fixedDelay` 保证单任务不会自我重叠，
+> 同一批事件被两个线程重复投递也没有收益。
+
 ## 6. 接口契约
 
 **整条链路只有这一个方向：平台调 AIops。** AIops 不回调平台，平台也不对 AIops 开放任何服务间接口——
@@ -340,10 +380,12 @@ X-Service-Id: light-deploy
 | `service-id` | `light-deploy` | 调用方标识 |
 | `connect-timeout-ms` / `read-timeout-ms` | 3000 / 5000 | 内网调用超时 |
 | `retry-max` | 5 | 事件最大重试次数 |
-| `retry-interval-seconds` | 30 | 补偿扫描间隔 |
+| `retry-interval-seconds` | 30 | 事件补偿扫描间隔 |
+| `silence-reconcile-interval-seconds` | 60 | 静默窗补关对账扫描间隔（关窗失败后多久重试） |
+| `silence-reconcile-window-hours` | 24 | 补关只回看最近多少小时的部署 |
 | `expire-hours` | 2 | 事件有效期 |
 | `fail-open` | `true` | 建窗失败是否继续发布 |
-| `silence-ttl-minutes` | 40 | 静默基准时长 |
+| `silence-ttl-minutes` | 15 | 静默基准时长（含兜底语义，勿为了「不漏关」调大，见 §5.1） |
 | `alert-categories` | `[服务异常]` | 静默的告警类型 |
 | `never-silence` | 系统资源/内核/网络/MySQL连接池/MySQL慢查询 | 显式声明不静默项 |
 
@@ -430,7 +472,8 @@ curl -X POST -H "Authorization: Bearer <令牌>" -H "X-Service-Id: light-deploy"
 | 任务日志出现 `环境「X」未开启 AIops 联动` | 二级开关没打开（存量环境默认全 0） | 环境管理里打开该环境开关；这不是故障，是配置 |
 | 总闸开着、环境也开着，日志仍说未启用 | 平台进程读的还是旧配置（改 yaml 没重启） | 重启平台；确认日志启动行里 `light-deploy.aiops.enabled` 的实际取值 |
 | 告警在窗口期内仍被推送 | ①类型不在 `alert-categories`；②主机不匹配；③命中硬排除（磁盘/SSH/数据库） | 查 AIops `ops_deploy_silence.hosts` 与实际告警主机；硬排除是底线，不要试图绕过 |
-| 窗口关了但通知没恢复 | 关窗请求失败（日志有 WARN） | 等自动过期，或执行 8.3 的手工关窗命令 |
+| 窗口关了但通知没恢复 | 关窗请求失败（日志有 WARN） | 等 `AiopsSilenceReconciler` 自动补关（默认 60s 一轮），或等自动过期 / 执行 8.3 的手工关窗命令 |
+| 发布 AIops 自身后窗口一直「生效中」、没有「静默已关」事件 | 收尾关窗正好撞上 AIops 重启，一次性调用失败 | 属预期边界：联动抽屉会显示「补关中：约 N 秒内自动重试」，对账任务在 AIops 恢复后自动补关并补发事件；若抽屉不显示「补关中」且窗口长期不消失，查 `silence-reconcile-*` 配置与平台日志 |
 | `aiops_event` 堆积 `status=2` | AIops 长时间不可用 | 修好后等补偿扫描自动补发；超过 2 小时的事件会自动置 `3 已放弃`（不会无限重试） |
 | 补发成功但 `next_retry_time` 仍有值 | 老版本 bug（已修，见 §5） | 升级后新事件不再出现 |
 | 发布完成后 AIops 侧无事件 | `enabled=false`，或 `aiops_event.request_body` 为空 | 先确认开关；再查 `aiops_event` 是否有记录与 `error_message` |

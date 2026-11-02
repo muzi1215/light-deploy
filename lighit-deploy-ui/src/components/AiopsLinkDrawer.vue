@@ -42,6 +42,17 @@
           <span class="section-tip">一次发布最多一条，生命周期在这一行内演进</span>
         </div>
 
+        <!-- 关窗没成功但会自愈：先说清楚，免得把「等一会就关」看成「关不掉了」 -->
+        <el-alert
+          v-if="data?.silenceReconcile?.pending"
+          class="reconcile-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`补关中：关窗未生效，约 ${data.silenceReconcile.retryIntervalSeconds} 秒内自动重试`"
+          :description="reconcileTip"
+        />
+
         <template v-if="data?.silence">
           <el-descriptions :column="2" border size="small">
             <el-descriptions-item label="窗口 ID">{{ data.silence.silenceId }}</el-descriptions-item>
@@ -171,6 +182,29 @@ const drawerTitle = computed(() => {
   return `AIops 联动 - ${name} ${version}`.trim()
 })
 
+/**
+ * 「补关中」提示文案。
+ *
+ * <p>三件事必须讲全，否则这条提示反而制造焦虑：为什么会走到这一步（关窗调用失败）、
+ * 谁在接手（补关任务多久扫一轮）、最坏多久结束（窗口到期时间兜底）。</p>
+ *
+ * <p>到期时间取自 AIops 返回的窗口详情；若远程查询失败（silence 为空），就退回「带自动到期」
+ * 的定性说法，不编造时间。</p>
+ */
+const reconcileTip = computed(() => {
+  const reconcile = data.value?.silenceReconcile
+  if (!reconcile?.pending) {
+    return ''
+  }
+  const expiresAt = data.value?.silence?.expiresAt
+  const head = '收尾关窗调用未成功（常见于发布 AIops 自身时撞上后端重启），已转由补关任务接管：'
+  const retry = `每 ${reconcile.retryIntervalSeconds} 秒扫描一次，关窗成功后会自动补记「静默已关」事件。`
+  const tail = expiresAt
+    ? `窗口最晚于 ${fmt(expiresAt)} 自动到期，不会永久静默。`
+    : '窗口本身带自动到期，不会永久静默。'
+  return head + retry + tail
+})
+
 /** 拉取联动详情：失败也把抽屉留在打开状态，页面提示由 request.ts 统一弹出 */
 async function load() {
   if (!props.deployment?.id) {
@@ -249,6 +283,10 @@ function silenceTag(silence: AiopsSilenceVo) {
 .inline-tag {
   margin-right: 6px;
   margin-bottom: 4px;
+}
+
+.reconcile-alert {
+  margin-bottom: 12px;
 }
 
 .event-row {

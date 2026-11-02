@@ -687,6 +687,20 @@ export interface AiopsEventVo {
   deliveredAt?: string
 }
 
+/**
+ * 补关对账状态（对应后端 AiopsReconcileVo）。
+ *
+ * pending=true 的含义很具体：这个窗口没记「静默已关」、已过收尾宽限，下一轮对账扫描一定会重试关窗。
+ * 因此页面可以放心写「正在自动补关」，而不是含糊的「可能有问题」。
+ */
+export interface AiopsReconcileVo {
+  pending: boolean
+  /** 对账扫描间隔（秒），页面据此说「约 N 秒内重试」 */
+  retryIntervalSeconds: number
+  /** 终态稳定宽限（秒），刚结束的部署要等过这段时间才进入补关 */
+  graceSeconds: number
+}
+
 /** 一次发布的联动全景（对应后端 AiopsLinkVo） */
 export interface AiopsLinkVo {
   deploymentId: string
@@ -696,6 +710,8 @@ export interface AiopsLinkVo {
   silence?: AiopsSilenceVo
   /** 静默窗为空时的解释文案：总闸关 / 环境关 / 未建窗 / 查询失败 */
   silenceMessage?: string
+  /** 补关对账状态：pending=true 时页面提示「补关中」，避免把「等一会就关」看成「关不掉了」 */
+  silenceReconcile?: AiopsReconcileVo
   events: AiopsEventVo[]
 }
 
