@@ -1,7 +1,6 @@
 HELP.md
 target/
 test/
-Docker/application.yaml
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
@@ -56,3 +55,4 @@ logs/
 
 ### Docker 部署目录里平铺的 jar（本地构建产物，与本机 JDK/系统相关，不入库） ###
 Docker/*.jar
+Docker/application.yaml
