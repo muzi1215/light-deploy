@@ -5,7 +5,7 @@
         <div class="page-header">
           <span>项目详情</span>
           <div>
-            <el-button size="small" type="primary" :icon="Edit" @click="goEdit">编 辑</el-button>
+            <el-button v-readonly size="small" type="primary" :icon="Edit" @click="goEdit">编 辑</el-button>
             <el-button size="small" :icon="Back" @click="goBack">返 回</el-button>
           </div>
         </div>

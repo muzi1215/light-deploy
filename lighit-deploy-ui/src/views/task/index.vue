@@ -60,8 +60,8 @@
       <el-table-column label="操作" min-width="260" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="primary" :icon="Document" @click="handleShowLogs(row)">执行日志</el-button>
-          <el-button v-if="!isTaskFinal(row.status)" link type="warning" :icon="CircleClose" @click="handleCancel(row)">取消</el-button>
-          <el-button v-if="isTaskFinal(row.status)" link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
+          <el-button v-readonly v-if="!isTaskFinal(row.status)" link type="warning" :icon="CircleClose" @click="handleCancel(row)">取消</el-button>
+          <el-button v-readonly v-if="isTaskFinal(row.status)" link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>

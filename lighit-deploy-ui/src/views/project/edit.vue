@@ -199,7 +199,7 @@
 
       <div class="form-footer">
         <el-button size="small" @click="goBack">取 消</el-button>
-        <el-button type="primary" size="small" :loading="submitLoading" @click="handleSubmit">保 存</el-button>
+        <el-button v-readonly type="primary" size="small" :loading="submitLoading" @click="handleSubmit">保 存</el-button>
       </div>
     </el-card>
   </div>

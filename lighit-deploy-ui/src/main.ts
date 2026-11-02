@@ -22,6 +22,7 @@ import router from './router'
 import '@/icons'
 import '@/permission.ts'
 import hasBtnPermission from '@/utils/btn-permission.ts'
+import readonlyDirective from '@/directives/readonly.ts'
 
 // 创建 Vue3 应用实例
 const app = createApp(App)
@@ -39,6 +40,9 @@ themeStore.initTheme()
 
 // 全局属性挂载 - 按钮权限
 app.config.globalProperties.$hasBP = hasBtnPermission
+
+// 全局指令 - 演示只读模式下锁定写操作按钮
+app.directive('readonly', readonlyDirective)
 
 // 全局注册所有 Element Plus 图标
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'

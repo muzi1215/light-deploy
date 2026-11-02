@@ -38,7 +38,7 @@
 
     <!-- 工具栏 -->
     <div class="tools-div">
-      <el-button type="primary" :icon="Plus" @click="handleAdd">新增项目</el-button>
+      <el-button v-readonly type="primary" :icon="Plus" @click="handleAdd">新增项目</el-button>
     </div>
 
     <!-- 数据表格 -->
@@ -81,10 +81,10 @@
       <el-table-column label="操作" min-width="380" fixed="right" align="center">
         <template #default="{ row }">
           <el-button link type="info" :icon="View" @click="handleDetail(row)">详情</el-button>
-          <el-button link type="primary" :icon="Edit" @click="handleEdit(row)">编辑</el-button>
+          <el-button v-readonly link type="primary" :icon="Edit" @click="handleEdit(row)">编辑</el-button>
           <el-button link type="success" :icon="Connection" @click="handleConnectivityTest(row)">连通性测试</el-button>
-          <el-button link type="warning" :icon="VideoPlay" @click="handleBuild(row)">构建</el-button>
-          <el-button link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
+          <el-button v-readonly link type="warning" :icon="VideoPlay" @click="handleBuild(row)">构建</el-button>
+          <el-button v-readonly link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -185,7 +185,7 @@
 
       <template #footer>
         <el-button v-if="!buildStarted" size="small" @click="buildDialogVisible = false">取 消</el-button>
-        <el-button v-if="!buildStarted" type="primary" size="small" :loading="buildSubmitting" @click="submitBuild">开始构建</el-button>
+        <el-button v-readonly v-if="!buildStarted" type="primary" size="small" :loading="buildSubmitting" @click="submitBuild">开始构建</el-button>
         <template v-else>
           <el-text v-if="running" size="small" type="info" style="margin-right: 12px">构建执行中，关闭窗口不影响执行</el-text>
           <el-button size="small" :icon="Download" :loading="downloading" @click="download">下载日志</el-button>

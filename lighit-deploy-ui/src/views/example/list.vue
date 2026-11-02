@@ -21,8 +21,8 @@
 
     <!-- 工具栏 -->
     <div class="tools-div">
-      <el-button type="primary" :icon="Plus" @click="handleAdd">新增</el-button>
-      <el-button type="danger" :icon="Delete" :disabled="!selectedIds.length" @click="handleBatchDelete">批量删除</el-button>
+      <el-button v-readonly type="primary" :icon="Plus" @click="handleAdd">新增</el-button>
+      <el-button v-readonly type="danger" :icon="Delete" :disabled="!selectedIds.length" @click="handleBatchDelete">批量删除</el-button>
     </div>
 
     <!-- 数据表格 -->
@@ -46,8 +46,8 @@
       <el-table-column prop="createTime" label="创建时间" width="180" align="center" />
       <el-table-column label="操作" width="220" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button link type="primary" :icon="Edit" @click="handleEdit(row)">编辑</el-button>
-          <el-button link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
+          <el-button v-readonly link type="primary" :icon="Edit" @click="handleEdit(row)">编辑</el-button>
+          <el-button v-readonly link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -85,7 +85,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitLoading" @click="handleSubmit">确定</el-button>
+        <el-button v-readonly type="primary" :loading="submitLoading" @click="handleSubmit">确定</el-button>
       </template>
     </el-dialog>
   </div>

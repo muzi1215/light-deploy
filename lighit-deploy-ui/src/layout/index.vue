@@ -15,6 +15,14 @@
         <navbar />
       </div>
       <tags-view />
+      <el-alert
+        v-if="demoStore.readonly"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="demo-readonly-banner"
+        title="演示模式：编辑、删除、发布等写操作已锁定，当前仅供查看（导航栏锁图标可临时解除）"
+      />
       <app-main />
     </div>
   </div>
@@ -31,6 +39,7 @@
 import { computed } from 'vue'
 import { useAppStore } from '@/store/app.ts'
 import { useSettingsStore } from '@/store/settings.ts'
+import { useDemoStore } from '@/store/demo.ts'
 import { useResizeHandler } from '@/composables/useResizeHandler.ts'
 import Navbar from './components/Navbar.vue'
 import Sidebar from './components/Sidebar/index.vue'
@@ -45,6 +54,7 @@ useResizeHandler()
 // Pinia store - 替代 Vue2 的 this.$store
 const appStore = useAppStore()
 const settingsStore = useSettingsStore()
+const demoStore = useDemoStore()
 
 // 计算属性 - Vue3 中使用 computed() 函数
 const sidebar = computed(() => appStore.sidebar)
@@ -104,5 +114,12 @@ function handleClickOutside() {
 
   .mobile .fixed-header {
     width: 100%;
+  }
+
+  // 演示只读横幅：贴顶、不与内容重叠，提醒当前为查看态
+  .demo-readonly-banner {
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
   }
 </style>

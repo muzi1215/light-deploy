@@ -22,7 +22,7 @@
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
-          <el-button type="primary" :icon="Promotion" @click="openCreate">新建部署</el-button>
+          <el-button v-readonly type="primary" :icon="Promotion" @click="openCreate">新建部署</el-button>
         </el-form-item>
       </el-form>
     </div>
@@ -98,7 +98,7 @@
             placement="top"
           >
             <span class="rollback-button-wrapper">
-              <el-button
+              <el-button v-readonly
                 link
                 type="warning"
                 :icon="RefreshLeft"
@@ -109,10 +109,10 @@
               </el-button>
             </span>
           </el-tooltip>
-          <el-button v-if="canCancel(row.status)" link type="warning" :icon="CircleClose" @click="handleCancel(row)">
+          <el-button v-readonly v-if="canCancel(row.status)" link type="warning" :icon="CircleClose" @click="handleCancel(row)">
             取消
           </el-button>
-          <el-button v-if="isDeployFinal(row.status)" link type="danger" :icon="Delete" @click="handleDelete(row)">
+          <el-button v-readonly v-if="isDeployFinal(row.status)" link type="danger" :icon="Delete" @click="handleDelete(row)">
             删除
           </el-button>
         </template>
@@ -253,7 +253,7 @@
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" :loading="createSubmitting" @click="submitCreate">立即发布</el-button>
+        <el-button v-readonly type="primary" :loading="createSubmitting" @click="submitCreate">立即发布</el-button>
       </template>
     </el-dialog>
 
@@ -429,7 +429,7 @@
       </template>
       <template #footer>
         <el-button @click="rollbackPreviewVisible = false">取 消</el-button>
-        <el-button
+        <el-button v-readonly
           type="warning"
           :disabled="!rollbackPreview?.rollbackable"
           :loading="rollbackSubmitting"

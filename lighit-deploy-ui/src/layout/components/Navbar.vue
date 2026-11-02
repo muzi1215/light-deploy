@@ -10,6 +10,13 @@
     <breadcrumb class="breadcrumb-container" />
 
     <div class="right-menu">
+      <!-- 演示只读模式开关：开启后全平台写操作按钮置灰禁用 -->
+      <el-tooltip :content="demoStore.readonly ? '演示只读：已开启（点击解除锁定）' : '演示只读：已关闭（点击开启锁定）'" placement="bottom">
+        <span class="theme-toggle" @click="demoStore.toggleReadonly()">
+          <el-icon :size="18"><Unlock v-if="demoStore.readonly" /><Lock v-else /></el-icon>
+        </span>
+      </el-tooltip>
+
       <!-- 主题切换按钮 -->
       <el-tooltip :content="themeStore.current === 'dark' ? '切换浅色主题' : '切换深色主题'" placement="bottom">
         <span class="theme-toggle" @click="themeStore.toggleTheme()">
@@ -47,7 +54,8 @@ import { useRouter } from 'vue-router'
 import { useAppStore } from '@/store/app.ts'
 import { useUserStore } from '@/store/user.ts'
 import { useThemeStore } from '@/store/theme.ts'
-import { Sunny, Moon, ArrowDown } from '@element-plus/icons-vue'
+import { useDemoStore } from '@/store/demo.ts'
+import { Sunny, Moon, ArrowDown, Lock, Unlock } from '@element-plus/icons-vue'
 import jsCookie from 'js-cookie'
 import Breadcrumb from '@/components/Breadcrumb/index.vue'
 import Hamburger from '@/components/Hamburger/index.vue'
@@ -58,6 +66,7 @@ const router = useRouter()
 const appStore = useAppStore()
 const userStore = useUserStore()
 const themeStore = useThemeStore()
+const demoStore = useDemoStore()
 
 const sidebar = computed(() => appStore.sidebar)
 const avatarUrl = computed(() => {

@@ -73,7 +73,7 @@ Light Deploy 是面向中小企业的**轻量化部署发布平台**。基于 Sp
 └──────────────────┘  └────────────────────┘  └─────────────┘
 ```
 
-数据落 MySQL；Redis 承担任务状态、分布式锁与实时进度。平台自身以后端 fat-jar（systemd 注册）+ 前端静态资源（Nginx 反代）为主要交付形态。
+数据落 MySQL；Redis 承担任务状态、分布式锁与实时进度。平台自身以「后端 fat-jar（systemd 注册）+ 前端静态资源（Nginx 反代）」为主要交付形态，也提供 `Docker/` 容器化部署（见 §6）。
 
 ---
 
@@ -175,6 +175,7 @@ docker compose up -d --build
 - **网络**：加入 external 网络 `lx-app-net`，容器间按容器名互访（如 AIops 后端 `aiops-backend:2029`）；`extra_hosts: host.docker.internal` 用于访问宿主机上裸跑的 MySQL/Redis。
 - **端口**：`2027:2027`，容器内端口由 `server.port` 决定，两边要一起改。
 - **日志**：落盘到宿主机 `./logs`（`LOG_PATH=/app/logs`），容器删了日志还在。
+- **密钥**：容器必须能拿到 `LIGHT_DEPLOY_AES_KEY` 环境变量（compose 注入或宿主机环境透传），否则启动报「缺少 AES 密钥」、凭据无法解密。该变量与 §2 同源，部署时一并注入。
 
 ---
 
@@ -211,6 +212,8 @@ docker compose up -d --build
 
 > `PLATFORM_TEMPLATE` 为早期「平台猜测语言生成 Dockerfile」的方案，已整体下线——它产出的镜像「能构建成功、运行即崩」，失败点离原因极远，故砍掉。保留此注记以解释历史代码与文档。
 
+> **架构一致性（Docker 构建）**：本平台 Docker 构建发布**暂不支持跨架构**——构建机与目标机需同为 amd64（生产环境即如此，无冲突）。若本地用 arm64 构建机（如 M 系列 Mac 上的 arm64 虚拟机）打镜像、amd64 服务器运行，会 `exec format error`。规避方式见 `docs/Docker镜像构建发布方案评估.md` §11.1。JAR / 脚本 / STATIC 部署不受架构影响。
+
 ---
 
 ## 模块进度
@@ -228,9 +231,9 @@ docker compose up -d --build
 | 发布模块 | `com.lx.deploy.deployment` | ✅ 完成 |
 | 发布版本查询（只读） | `com.lx.deploy.release` | ✅ 完成 |
 | 操作日志（审计） | `com.lx.deploy.audit` | ✅ 完成 |
-| 前端工程 | `lighit-deploy-ui` | ⏳ 第一版（假登录 + 七个管理页） |
-| 用户模块 | `com.lx.deploy.user` | ⏳ 部分（Model/Mapper/Service，无 Controller） |
-| AIops 集成 | - | ⬜ 未开始 |
+| 前端工程 | `lighit-deploy-ui` | ✅ 完成（项目管理 / 构建 / 发布 / 审计等页面，Nginx 托管生产前端） |
+| 用户模块 | `com.lx.deploy.user` | ⏳ 过渡期（Model/Mapper/Service，无 Controller，仅开发联调登录） |
+| AIops 集成（发布联动） | `openapi` / `deployLink` | ✅ 完成（发布静默窗口 + 事件推送 + 前端联动抽屉） |
 
 状态图例：✅ 已完成 ｜ ⏳ 进行中/占位 ｜ ⬜ 未开始
 
@@ -260,9 +263,9 @@ docker compose up -d --build
 2. ✅ 凭据 + 镜像仓库模块
 3. ✅ 构建模块（含 JAR_PREBUILD）
 4. ✅ 发布模块（三策略 + 健康检查 + 回滚）
-5. ⏳ AIops 集成（发布静默窗口 + 风险建议）
+5. ✅ AIops 集成（发布静默窗口 + 事件推送 + 前端联动抽屉）
 6. ⏳ 鉴权中心接入（统一登录 + 动态菜单）
-7. ⏳ 收尾（audit_log 审计、Docker 化交付、Nginx 托管前端）
+7. ✅ 收尾（audit_log 审计、Docker 化交付、Nginx 托管前端）
 
 ---
 

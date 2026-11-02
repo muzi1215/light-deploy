@@ -19,7 +19,7 @@
 
     <!-- 工具栏 -->
     <div class="tools-div">
-      <el-button type="primary" :icon="Plus" @click="handleAdd">新增环境</el-button>
+      <el-button v-readonly type="primary" :icon="Plus" @click="handleAdd">新增环境</el-button>
     </div>
 
     <!-- 数据表格 -->
@@ -79,8 +79,8 @@
       <el-table-column prop="description" label="描述" min-width="140" show-overflow-tooltip align="center" />
       <el-table-column label="操作" min-width="260" fixed="right" align="center">
         <template #default="{ row }">
-          <el-button link type="primary" :icon="Edit" @click="handleEdit(row)">编辑</el-button>
-          <el-button link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
+          <el-button v-readonly link type="primary" :icon="Edit" @click="handleEdit(row)">编辑</el-button>
+          <el-button v-readonly link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -195,7 +195,7 @@
       </div>
       <template #footer>
         <el-button size="small" @click="dialogVisible = false">取 消</el-button>
-        <el-button type="primary" size="small" :loading="submitLoading" @click="handleSubmit">确 定</el-button>
+        <el-button v-readonly type="primary" size="small" :loading="submitLoading" @click="handleSubmit">确 定</el-button>
       </template>
     </el-dialog>
   </div>

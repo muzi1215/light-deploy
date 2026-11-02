@@ -862,6 +862,30 @@ nginx -s reload
 | 18 | 目标机 SSH 用户无 `static_root` 父目录写权限 | `mv` 失败（注意：需要的是**父目录**写权限，不是 `static_root` 本身） | 首次发布时检测写权限并给出明确报错 |
 | 19 | nginx `open_file_cache` 导致切换后仍返回旧内容 | 发布了但用户看到旧的 | 固定执行 `nginx -s reload`；reload 失败保留新目录 + 明确提示 |
 | 20 | compose 预设误导 | 用户照抄 `JAVA_JAR` 预设但实际不用 config 卷 | 预设只是默认值可自由增删；文档说明预设含义 |
+| 21 | **跨架构构建发布不支持** | arm64 构建机打的镜像推到 amd64 目标机 → `exec format error` / 容器起不来 | 当前要求构建机与目标机同架构；本地 arm64 VM 作构建机时需平台外 buildx+QEMU 交叉编 amd64（未集成进平台） |
+
+### 11.1 跨架构构建发布限制（已知约束）
+
+**背景**
+- Docker 镜像内含基础 OS + 原生二进制（glibc / openssl / 解释器 / 编译型依赖），**架构绑定**：arm64 镜像只能在 arm64 内核跑，amd64 同理，二者不互通。
+- JAR 脚本部署、STATIC 部署**不受架构影响**：JVM 字节码跨架构，shell / 静态文件更是架构无关。
+- 平台当前设计隐含「构建机与目标机同架构」：生产构建机 `47.103.12.12` 为 amd64，与目标机一致，**生产链路无此问题**。
+
+**当前约束（2026-11-02 明确）**
+- **平台侧的 Docker 构建发布暂不支持跨架构构建发布**。构建命令走 `docker build`（非 buildx 多架构），未集成 QEMU 交叉构建，也未把启动级验证与目标机架构对齐。
+- 若构建机为 arm64（如本地 M 系列 Mac 上的 arm64 虚拟机）而目标机为 amd64，打出的镜像推到仓库后，目标机 `pull` 运行会报 `exec format error` / 容器无法启动。
+
+**影响范围**
+- 仅影响 Docker 部署模式（`PROJECT_DOCKERFILE` / `LAYERED_DOCKER` / `JAR_PREBUILD` / `SCRIPT_DEPLOY` 等走镜像的模式）。
+- JAR 脚本部署、STATIC 部署、COMPOSE（镜像已正确构建的前提下）不受影响。
+
+**当前规避方式**
+- 确保构建机与目标机同架构（生产已满足）。
+- 本地开发若用 arm64 VM 作构建机，Docker 镜像需**在平台之外**用 `docker buildx build --platform linux/amd64 --push` + 构建机注册 `tonistiigi/binfmt`（QEMU）交叉构建为 amd64，再交给平台走「推送 / 拉取 / 运行」；平台自身 `Docker/` 下的 light-deploy 镜像同理。
+
+**后续演进方向（未实施）**
+- 构建命令升级为 `docker buildx build --platform linux/amd64 --push`；构建机初始化注册 QEMU binfmt。
+- 启动级验证（构建机 `docker run -d` 判活）改为在目标机原生架构上执行，避免在 arm64 构建机上以 QEMU 仿真 amd64 容器做「伪验证」。
 
 ---
 

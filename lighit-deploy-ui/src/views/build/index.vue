@@ -28,7 +28,7 @@
         </el-form-item>
         <el-form-item>
           <!-- 上传产物：面向「本地已打包好」的 JAR / 静态产物项目，不走 clone + 构建 -->
-          <el-button type="success" :icon="UploadFilled" @click="openUpload">上传产物</el-button>
+          <el-button v-readonly type="success" :icon="UploadFilled" @click="openUpload">上传产物</el-button>
         </el-form-item>
       </el-form>
     </div>
@@ -63,8 +63,8 @@
         <template #default="{ row }">
           <el-button link type="primary" :icon="Document" @click="handleViewArtifacts(row)">产物</el-button>
           <el-button link type="success" :icon="Monitor" @click="handleViewLog(row)">构建日志</el-button>
-          <el-button link type="warning" :icon="Refresh" @click="handleRebuild(row)">重新构建</el-button>
-          <el-button link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
+          <el-button v-readonly link type="warning" :icon="Refresh" @click="handleRebuild(row)">重新构建</el-button>
+          <el-button v-readonly link type="danger" :icon="Delete" @click="handleDelete(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -134,7 +134,7 @@
       </el-form>
       <template #footer>
         <el-button @click="uploadVisible = false">取消</el-button>
-        <el-button type="primary" :loading="uploading" @click="submitUpload">上传并登记版本</el-button>
+        <el-button v-readonly type="primary" :loading="uploading" @click="submitUpload">上传并登记版本</el-button>
       </template>
     </el-dialog>
 
