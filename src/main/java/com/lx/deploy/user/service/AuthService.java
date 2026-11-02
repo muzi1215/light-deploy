@@ -64,7 +64,7 @@ public class AuthService {
         updater.setId(user.getId());
         updater.setLastLoginTime(LocalDateTime.now());
         userMapper.updateById(updater);
-        return new LoginUser(user.getId(), user.getUsername(), user.getNickname());
+        return new LoginUser(user.getId(), user.getUsername(), user.getNickname(), user.getEmail(), user.getExternalUserId());
     }
 
     /**

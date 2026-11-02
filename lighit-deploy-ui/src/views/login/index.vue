@@ -29,9 +29,9 @@
             {{ loading ? '登录中...' : '登 录' }}
           </el-button>
         </el-form>
-        <!-- <div class="form-footer">
-          <span class="footer-hint"></span>
-        </div> -->
+        <div class="form-footer">
+          <span class="footer-hint">账号：admin, 密码：admin123</span>
+        </div>
       </div>
       <p class="copyright">{{ copyrightText }}</p>
     </div>

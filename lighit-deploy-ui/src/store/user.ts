@@ -24,6 +24,10 @@ export const useUserStore = defineStore('user', {
     token: getToken() || '',
     id: '',
     name: '',
+    username: '',
+    nickname: '',
+    email: '',
+    externalUserId: '',
     avatar: '',
     buttons: [] as string[],
     menus: [] as RouteRecordItem[]
@@ -39,6 +43,10 @@ export const useUserStore = defineStore('user', {
       setToken(LOGGED_IN_SENTINEL)
       // 登录成功即先记录基础信息，供首屏请求携带操作者头；完整信息由守卫后续 getInfo 补全。
       this.id = data.id
+      this.username = data.username
+      this.nickname = data.nickname || ''
+      this.email = data.email || ''
+      this.externalUserId = data.externalUserId || ''
       this.name = data.nickname || data.username
     },
 
@@ -51,8 +59,12 @@ export const useUserStore = defineStore('user', {
         throw new Error('Verification failed, please Login again.')
       }
 
-      const { id, username, nickname, buttons, routers } = data
+      const { id, username, nickname, email, externalUserId, buttons, routers } = data
       this.id = id
+      this.username = username
+      this.nickname = nickname || ''
+      this.email = email || ''
+      this.externalUserId = externalUserId || ''
       this.name = nickname || username
       this.avatar = ''
       this.buttons = buttons || []

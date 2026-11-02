@@ -10,8 +10,8 @@
     <breadcrumb class="breadcrumb-container" />
 
     <div class="right-menu">
-      <!-- 演示只读模式开关：开启后全平台写操作按钮置灰禁用 -->
-      <el-tooltip :content="demoStore.readonly ? '演示只读：已开启（点击解除锁定）' : '演示只读：已关闭（点击开启锁定）'" placement="bottom">
+      <!-- 演示只读模式开关：仅主管用户可见，开启后全平台写操作按钮置灰禁用 -->
+      <el-tooltip v-if="demoStore.isDemoSupervisor" :content="demoStore.readonly ? '演示只读：已开启（点击解除锁定）' : '演示只读：已关闭（点击开启锁定）'" placement="bottom">
         <span class="theme-toggle" @click="demoStore.toggleReadonly()">
           <el-icon :size="18"><Unlock v-if="demoStore.readonly" /><Lock v-else /></el-icon>
         </span>

@@ -2,7 +2,7 @@
  * 认证 API —— 对接真实后端过渡期鉴权（基于 Spring Session Cookie，无 Token）。
  *
  * 后端接口（经 request.ts 的 /api 前缀 + Vite 代理重写到 /deploy）：
- *   POST /auth/login  - 账号密码登录，成功后由后端写入 SESSION Cookie；返回 { code:200, data:{ id, username, nickname } }
+ *   POST /auth/login  - 账号密码登录，成功后由后端写入 SESSION Cookie；返回 { code:200, data:{ id, username, nickname, email, externalUserId } }
  *   GET  /auth/me     - 获取当前登录用户；未登录返回 code:4002
  *   POST /auth/logout - 失效会话
  *
@@ -20,6 +20,8 @@ export interface LoginUser {
   id: string
   username: string
   nickname: string | null
+  email?: string | null
+  externalUserId?: string | null
 }
 
 /** 登录。 */
