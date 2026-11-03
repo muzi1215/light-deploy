@@ -7,6 +7,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +26,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/task")
+@Tag(name = "任务管理", description = "异步任务的查询、取消与维护；任务记录由构建/发布/测试入口写入")
 public class TaskController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -38,6 +41,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于获取 requestId
      * @return VO 分页数据
      */
+    @Operation(summary = "任务分页", description = "按 DTO 非空字段筛选，按创建时间倒序")
     @GetMapping("/page")
     public ApiResponse<PageResult<TaskVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute TaskDto condition,
@@ -54,6 +58,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的 VO 列表
      */
+    @Operation(summary = "任务列表", description = "不分页，适合下拉与轻量列表；数据量大时应使用分页接口")
     @GetMapping("/list")
     public ApiResponse<List<TaskVo>> list(@ModelAttribute TaskDto condition,
                                                HttpServletRequest request) {
@@ -67,6 +72,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
+    @Operation(summary = "任务详情", description = "返回任务的类型、状态、进度、关联业务主键与失败原因")
     @GetMapping("/detail/{id}")
     public ApiResponse<TaskVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -79,6 +85,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @Operation(summary = "新增任务", description = "写入一条排队中的任务记录；正常业务请走构建/发布/测试入口，不要手工造任务")
     @PostMapping("/create")
     public ApiResponse<TaskVo> create(@Valid @RequestBody TaskDto dto,
                                            HttpServletRequest request) {
@@ -93,6 +100,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @Operation(summary = "修改任务", description = "全量覆盖写入；任务状态与进度请由执行器通过 TaskService 汇报，不要直接改")
     @PutMapping("/update/{id}")
     public ApiResponse<TaskVo> update(@PathVariable String id,
                                            @Valid @RequestBody TaskDto dto,
@@ -107,6 +115,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除任务", description = "逻辑删除任务记录，不物理删除；执行中的任务请先取消")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);
@@ -123,6 +132,7 @@ public class TaskController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 取消后的最新任务 VO
      */
+    @Operation(summary = "取消任务", description = "排队中与执行中的任务可人工取消，终态返回数据冲突；这是人工干预任务的唯一入口")
     @PutMapping("/cancel/{id}")
     public ApiResponse<TaskVo> cancel(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.cancel(id), requestId(request));

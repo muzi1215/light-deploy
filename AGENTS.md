@@ -630,6 +630,30 @@ VO 包含必要的主键和审计信息，但默认排除密码、密文、Token
 
 控制器方法上的 `@PathVariable String id` 无需改动，只要路径模板里 `{id}` 是最后一段即可。该规范同时约束手写 Controller 与 `controller.java.ftl` 代码生成模板；新增接口与该模板产出必须一致，否则视为不合格。
 
+### 12.3 接口文档注解（强制）
+
+每一个 Controller 都必须能被 `/deploy/doc.html`（Knife4j）无歧义地展示，否则新接手的人只能靠翻代码找接口。因此：
+
+- **类级**：必须标注 `@Tag(name = "…", description = "…")`。`name` 用中文业务名（与同类 `@OperLog(title=…)` 保持一致，如「构建管理」「发布管理」），`description` 一句话说清这个模块负责什么、不负责什么。
+- **方法级**：每个 Mapping 方法必须标注 `@Operation(summary = "…", description = "…")`。`summary` 是动作（如「创建构建」），`description` 写调用方真正需要知道的行为与约束（是否异步、是否只读、哪些状态才允许调用、有无副作用、返回体是否特殊）。
+- 注解位置固定：`@Operation` 在 Javadoc 之后、`@OperLog` 之前，`@XxxMapping` 最靠近方法签名。顺序统一，便于扫读。
+- `description` 不允许写「与代码无关的营销式描述」，也不允许照抄 `summary`。**写错的文档比没有文档更有害**：不确定的行为先去 Service 里核对再写（例如「密码留空是否沿用原值」必须看过实现才能下结论）。
+- 导入坐标固定为 `io.swagger.v3.oas.annotations.Operation` 与 `io.swagger.v3.oas.annotations.tags.Tag`（OpenAPI 3），禁止引入 `io.swagger.annotations.*`（Swagger 2，与 Boot4 不兼容）。
+- 新增 Controller 或新增接口时，注解与代码必须在同一次改动里补齐，不允许「先上线后补文档」。
+
+接口文档页本身**必须登录后访问**：`/doc.html`、`/v3/api-docs`、`/v3/api-docs/**` 不在 `WebConfig` 的免登录白名单内。原因是文档把全部路径、参数与错误码平铺出来，属于攻击面测绘信息，不适合对公网裸奔。白名单只放行 `/auth/login`、`/auth/logout`、文档 UI 的静态资源（`/swagger-ui*`、`/webjars/**`）以及 `/error`、`/favicon.ico`；新增免登录路径必须先想清楚「这条路径泄露了什么」，并在本节登记。
+
+### 12.4 文档分组与开关（Knife4jConfig）
+
+文档元信息与按域分组集中在 `config/Knife4jConfig`，三条硬约定：
+
+- **开关只有一处**：`light-deploy.doc.enabled`（默认 `true`）。`application.yaml` 里 `knife4j.enable` 与 `springdoc.api-docs.enabled` 都用 `${light-deploy.doc.enabled:true}` 指向它。只加 `@ConditionalOnProperty` 关不掉文档——本类不注册时 springdoc 会自己造一个默认 `OpenAPI`，`/v3/api-docs` 照样可访问，三处必须一起关。
+- **分组名必须是 ASCII**：分组名会拼进 `/v3/api-docs/{group}`，中文名会让 Knife4j「发送前 Schema 诊断」按中文 URL 解析失败。分组名用英文短横线风格（`auth`、`infra`、`project`、`build`、`deployment`、`task`、`audit`、`aiops`）。
+- **`pathsToMatch` 不写上下文路径**：它匹配容器内应用路径，控制器上 `@RequestMapping("/build")` 这里就写 `/build/**`，不要写成 `/deploy/build/**`。新增模块时补一个分组，前缀与 `@RequestMapping` 对齐。
+- **查询对象必须拍平（`default-flat-param-object: true`）**：`application.yaml` 的 `springdoc:` 段已置 `default-flat-param-object: true`。springdoc 3.x 该值默认 `false`，即**不把 `@ModelAttribute` 对象拍平**，会把它渲染成单个「必填 object」参数（如 `project/page` 的 `condition`），而 Knife4j 对 object 参数默认标必填——但运行时 `@ModelAttribute` 是可选的（不传则 Spring 绑定出全 null 的空对象，`@Valid` 也能过，因为 `ProjectDto` 等查询 DTO 只有 `@Schema` 文档注解、没有 `@NotNull` 运行时约束）。置 `true` 后文档把查询对象拍平成独立可选 query 参数（每字段 `required=false`），与运行时语义一致，**纯配置改动、不动 Controller**。若想字段名不带 `condition.` 前缀，可把 `@ModelAttribute` 换成 Spring 6.1 的 `@ParameterObject`（Boot 4.1 可用，跨多接口改动，按需再做）。详见 [docs/接口文档Knife4j模块.md](docs/接口文档Knife4j模块.md) §6。
+
+本平台**不声明 `bearerAuth` 安全方案**（与 auth-cloud 不同）：鉴权靠 HttpSession + 浏览器 Cookie，声明 bearer 只会让使用者去填一个平台根本不认的 Token。文档页只需「先登录、再打开」，调试请求自动带 Cookie。
+
 ## 13. 注释规范
 
 新增或生成的类必须有类级 JavaDoc，说明职责、边界和使用方式。**所有新建的 Java 类（含枚举、DTO、VO、Service、Controller）统一使用以下模板**：

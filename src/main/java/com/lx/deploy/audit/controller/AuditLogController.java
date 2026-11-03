@@ -7,6 +7,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/auditLog")
+@Tag(name = "操作审计", description = "审计日志的分页查询与详情，只读不写")
 public class AuditLogController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -41,6 +44,7 @@ public class AuditLogController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 操作日志分页数据，按操作时间倒序
      */
+    @Operation(summary = "操作日志分页", description = "支持操作人、模块、类型、请求方式、结果与时间区间筛选，按操作时间倒序")
     @GetMapping("/page")
     public ApiResponse<PageResult<AuditLogVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                     @ModelAttribute AuditLogDto condition,
@@ -55,6 +59,7 @@ public class AuditLogController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 含请求参数与返回结果的日志详情
      */
+    @Operation(summary = "操作日志详情", description = "返回含请求参数与返回结果的单条审计记录")
     @GetMapping("/detail/{id}")
     public ApiResponse<AuditLogVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));

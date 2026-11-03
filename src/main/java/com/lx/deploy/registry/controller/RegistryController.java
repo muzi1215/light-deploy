@@ -9,6 +9,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +28,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/registry")
+@Tag(name = "镜像仓库", description = "镜像推送目标（Harbor / ACR / Docker Hub 等）的维护，只有 DOCKER 运行时用得上")
 public class RegistryController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -40,6 +43,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于获取 requestId
      * @return VO 分页数据
      */
+    @Operation(summary = "仓库分页", description = "按 DTO 非空字段筛选；登录密码存在 credential 表，这里只有 credentialId")
     @GetMapping("/page")
     public ApiResponse<PageResult<RegistryVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute RegistryDto condition,
@@ -56,6 +60,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的 VO 列表
      */
+    @Operation(summary = "仓库列表", description = "不分页，适合项目配置里的仓库下拉")
     @GetMapping("/list")
     public ApiResponse<List<RegistryVo>> list(@ModelAttribute RegistryDto condition,
                                                HttpServletRequest request) {
@@ -69,6 +74,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
+    @Operation(summary = "仓库详情", description = "返回单条镜像仓库配置；登录凭据只以 credentialId 引用")
     @GetMapping("/detail/{id}")
     public ApiResponse<RegistryVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -81,6 +87,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @Operation(summary = "新增仓库", description = "地址不带 https:// 前缀；选填的 credentialId 必须是类型为 REGISTRY 的凭据")
     @OperLog(title = "镜像仓库", businessType = BusinessType.INSERT)
     @PostMapping("/create")
     public ApiResponse<RegistryVo> create(@Valid @RequestBody RegistryDto dto,
@@ -96,6 +103,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @Operation(summary = "修改仓库", description = "全量覆盖写入：未提交的字段会被置空，调用方须提交完整对象")
     @OperLog(title = "镜像仓库", businessType = BusinessType.UPDATE, resourceType = "registry")
     @PutMapping("/update/{id}")
     public ApiResponse<RegistryVo> update(@PathVariable String id,
@@ -111,6 +119,7 @@ public class RegistryController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除仓库", description = "仍被项目绑定时拒绝删除（数据冲突），需先解除项目上的仓库绑定")
     @OperLog(title = "镜像仓库", businessType = BusinessType.DELETE, resourceType = "registry")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {

@@ -9,6 +9,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +28,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/credential")
+@Tag(name = "凭据管理", description = "SSH / Git / 镜像仓库的加密凭据维护，响应永不返回明文")
 public class CredentialController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -40,6 +43,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于获取 requestId
      * @return VO 分页数据
      */
+    @Operation(summary = "凭据分页", description = "按 DTO 非空字段筛选；响应只含密文占位信息，不含明文")
     @GetMapping("/page")
     public ApiResponse<PageResult<CredentialVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute CredentialDto condition,
@@ -56,6 +60,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的 VO 列表
      */
+    @Operation(summary = "凭据列表", description = "不分页，适合下拉选择；数据量大时应使用分页接口")
     @GetMapping("/list")
     public ApiResponse<List<CredentialVo>> list(@ModelAttribute CredentialDto condition,
                                                HttpServletRequest request) {
@@ -69,6 +74,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
+    @Operation(summary = "凭据详情", description = "解密只发生在服务端执行阶段，接口只返回不含密文的凭据信息")
     @GetMapping("/detail/{id}")
     public ApiResponse<CredentialVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -81,6 +87,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @Operation(summary = "新增凭据", description = "密文入库前加密；审计不记录请求参数，避免明文落日志")
     @OperLog(title = "凭据管理", businessType = BusinessType.INSERT, recordParam = false)
     @PostMapping("/create")
     public ApiResponse<CredentialVo> create(@Valid @RequestBody CredentialDto dto,
@@ -96,6 +103,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @Operation(summary = "修改凭据", description = "明文凭据留空则沿用原密文，其余字段全量覆盖；审计不记录请求参数")
     @OperLog(title = "凭据管理", businessType = BusinessType.UPDATE, recordParam = false, resourceType = "credential")
     @PutMapping("/update/{id}")
     public ApiResponse<CredentialVo> update(@PathVariable String id,
@@ -111,6 +119,7 @@ public class CredentialController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除凭据", description = "仍被项目或镜像仓库引用时拒绝删除（数据冲突），需先解除绑定")
     @OperLog(title = "凭据管理", businessType = BusinessType.DELETE, resourceType = "credential")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {

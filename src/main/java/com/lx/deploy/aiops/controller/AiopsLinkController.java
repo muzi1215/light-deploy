@@ -7,6 +7,8 @@ import com.lx.deploy.aiops.model.vo.AiopsStatusVo;
 import com.lx.deploy.aiops.service.AiopsLinkService;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/aiops")
+@Tag(name = "AIops 联动查询", description = "发布在 AIops 侧建的静默窗与事件流水，只读不写")
 public class AiopsLinkController {
 
     /** 联动查询服务，由 Spring 容器完成字段注入。 */
@@ -49,6 +52,7 @@ public class AiopsLinkController {
      * @param request      当前 HTTP 请求，用于取 requestId
      * @return 联动详情；静默窗与事件各自可为空，原因在 `silenceMessage` 里
      */
+    @Operation(summary = "发布联动详情", description = "返回该次发布的静默窗与事件流水，两者各自可为空，原因见 silenceMessage")
     @GetMapping("/link/{deploymentId}")
     public ApiResponse<AiopsLinkVo> link(@PathVariable String deploymentId, HttpServletRequest request) {
         return ApiResponse.success(service.getByDeployment(deploymentId), requestId(request));
@@ -64,6 +68,7 @@ public class AiopsLinkController {
      * @param request 当前 HTTP 请求，用于取 requestId
      * @return 平台级联动状态
      */
+    @Operation(summary = "AIops 联动状态", description = "首页状态卡使用；总闸关闭时 reachable 恒为 false，对端不可达时接口仍返回 200")
     @GetMapping("/status")
     public ApiResponse<AiopsStatusVo> status(HttpServletRequest request) {
         boolean reachable = properties.isEnabled() && client.ping();

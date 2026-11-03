@@ -7,6 +7,8 @@ import com.lx.deploy.common.web.RequestTraceFilter;
 import com.lx.deploy.release.model.dto.ReleaseRecordDto;
 import com.lx.deploy.release.model.vo.ReleaseRecordVo;
 import com.lx.deploy.release.service.ReleaseService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +33,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/release")
+@Tag(name = "发布版本", description = "构建成功后自动生成的版本记录，只读查询")
 public class ReleaseController {
 
     /** 发布版本服务，由 Spring 容器完成字段注入。 */
@@ -45,6 +48,7 @@ public class ReleaseController {
      * @param request   当前 HTTP 请求
      * @return 发布版本 VO 分页数据
      */
+    @Operation(summary = "版本分页", description = "支持项目与状态筛选，按创建时间倒序")
     @GetMapping("/page")
     public ApiResponse<PageResult<ReleaseRecordVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                          @ModelAttribute ReleaseRecordDto condition,
@@ -59,6 +63,7 @@ public class ReleaseController {
      * @param request   当前 HTTP 请求
      * @return 发布版本 VO 列表
      */
+    @Operation(summary = "版本列表", description = "发布页版本下拉使用，通常传 projectId + status=1（可发布）")
     @GetMapping("/list")
     public ApiResponse<List<ReleaseRecordVo>> list(@ModelAttribute ReleaseRecordDto condition,
                                                    HttpServletRequest request) {
@@ -72,6 +77,7 @@ public class ReleaseController {
      * @param request 当前 HTTP 请求
      * @return 发布版本 VO
      */
+    @Operation(summary = "版本详情", description = "含产物路径、所在构建机、校验摘要与可发布状态，发布前核对用")
     @GetMapping("/detail/{id}")
     public ApiResponse<ReleaseRecordVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));

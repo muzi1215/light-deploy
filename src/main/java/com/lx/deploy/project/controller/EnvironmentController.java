@@ -9,6 +9,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +28,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/environment")
+@Tag(name = "环境管理", description = "部署环境（测试、生产等发布语义）的维护")
 public class EnvironmentController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -40,6 +43,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于获取 requestId
      * @return VO 分页数据
      */
+    @Operation(summary = "环境分页", description = "按 DTO 非空字段筛选，按创建时间倒序")
     @GetMapping("/page")
     public ApiResponse<PageResult<EnvironmentVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute EnvironmentDto condition,
@@ -56,6 +60,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的 VO 列表
      */
+    @Operation(summary = "环境列表", description = "不分页，适合下拉与轻量列表；数据量大时应使用分页接口")
     @GetMapping("/list")
     public ApiResponse<List<EnvironmentVo>> list(@ModelAttribute EnvironmentDto condition,
                                                HttpServletRequest request) {
@@ -69,6 +74,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
+    @Operation(summary = "环境详情", description = "返回单条环境配置")
     @GetMapping("/detail/{id}")
     public ApiResponse<EnvironmentVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -81,6 +87,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @Operation(summary = "新增环境", description = "环境只描述发布语义，本身不持有任何机器；机器由部署目标绑定")
     @OperLog(title = "环境管理", businessType = BusinessType.INSERT)
     @PostMapping("/create")
     public ApiResponse<EnvironmentVo> create(@Valid @RequestBody EnvironmentDto dto,
@@ -96,6 +103,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @Operation(summary = "修改环境", description = "全量覆盖写入：未提交的字段会被置空，调用方须提交完整环境对象")
     @OperLog(title = "环境管理", businessType = BusinessType.UPDATE, resourceType = "environment")
     @PutMapping("/update/{id}")
     public ApiResponse<EnvironmentVo> update(@PathVariable String id,
@@ -111,6 +119,7 @@ public class EnvironmentController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除环境", description = "逻辑删除；仍被部署目标引用时拒绝删除（数据冲突）")
     @OperLog(title = "环境管理", businessType = BusinessType.DELETE, resourceType = "environment")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {

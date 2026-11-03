@@ -10,6 +10,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +38,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/server")
+@Tag(name = "服务器管理", description = "目标机与构建机的维护、SSH 凭据与连通性测试")
 public class ServerController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -50,6 +53,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 分页元数据和当前页数据列表
      */
+    @Operation(summary = "服务器分页", description = "按非空业务字段动态筛选；响应不含 SSH 密文")
     @GetMapping("/page")
     public ApiResponse<PageResult<ServerVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                    @ModelAttribute ServerDto condition,
@@ -68,6 +72,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 满足条件的数据列表
      */
+    @Operation(summary = "服务器列表", description = "不分页，适合下拉选择；数据量大时应使用分页接口")
     @GetMapping("/list")
     public ApiResponse<List<ServerVo>> list(@ModelAttribute ServerDto condition,
                                              HttpServletRequest request) {
@@ -83,6 +88,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 对应的业务实体
      */
+    @Operation(summary = "服务器详情", description = "返回单条服务器配置；SSH 密文不出库")
     @GetMapping("/detail/{id}")
     public ApiResponse<ServerVo> detail(@PathVariable String id, HttpServletRequest request) {
         // Service 在记录不存在时抛出统一 DATA_NOT_FOUND 业务异常。
@@ -96,6 +102,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 保存完成且不包含 SSH 密文的响应对象
      */
+    @Operation(summary = "新增服务器", description = "SSH 凭据加密存储；审计不记录请求参数，避免密钥落日志")
     @OperLog(title = "服务器管理", businessType = BusinessType.INSERT, recordParam = false)
     @PostMapping("/create")
     public ApiResponse<ServerVo> create(@Valid @RequestBody ServerDto dto,
@@ -112,6 +119,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 修改完成且不包含 SSH 密文的响应对象
      */
+    @Operation(summary = "修改服务器", description = "SSH 凭据留空则沿用原密文，其余字段全量覆盖；审计不记录请求参数")
     @OperLog(title = "服务器管理", businessType = BusinessType.UPDATE, recordParam = false, resourceType = "server")
     @PutMapping("/update/{id}")
     public ApiResponse<ServerVo> update(@PathVariable String id,
@@ -131,6 +139,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 新建的异步任务（状态为 0 排队中）
      */
+    @Operation(summary = "服务器连通性测试", description = "只创建异步任务并立即返回，SSH 连接与探活命令由执行器执行")
     @OperLog(title = "服务器管理", businessType = BusinessType.EXECUTE)
     @PostMapping("/test/{id}")
     public ApiResponse<TaskVo> test(@PathVariable String id, HttpServletRequest request) {
@@ -144,6 +153,7 @@ public class ServerController {
      * @param request 当前 HTTP 请求，用于读取请求追踪ID
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除服务器", description = "逻辑删除，不校验是否仍被部署目标绑定；删前请确认没有项目在用它发布")
     @OperLog(title = "服务器管理", businessType = BusinessType.DELETE, resourceType = "server")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {

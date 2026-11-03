@@ -11,6 +11,8 @@ import com.lx.deploy.deployment.model.vo.DeploymentTargetVo;
 import com.lx.deploy.deployment.model.vo.DeploymentVo;
 import com.lx.deploy.deployment.model.vo.RollbackPreviewVo;
 import com.lx.deploy.deployment.service.DeploymentService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,6 +45,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/deployment")
+@Tag(name = "发布管理", description = "部署创建、回滚、取消与回滚预览")
 public class DeploymentController {
 
     /** 部署业务服务，由 Spring 容器完成字段注入。 */
@@ -57,6 +60,7 @@ public class DeploymentController {
      * @param request   当前 HTTP 请求，用于获取 requestId
      * @return 部署 VO 分页数据
      */
+    @Operation(summary = "部署记录分页", description = "支持项目、环境、版本、状态筛选")
     @GetMapping("/page")
     public ApiResponse<PageResult<DeploymentVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute DeploymentDto condition,
@@ -71,6 +75,7 @@ public class DeploymentController {
      * @param request   当前 HTTP 请求
      * @return 部署 VO 列表
      */
+    @Operation(summary = "部署记录列表", description = "不分页，适合下拉与统计；数据量大时应使用分页接口")
     @GetMapping("/list")
     public ApiResponse<List<DeploymentVo>> list(@ModelAttribute DeploymentDto condition,
                                                 HttpServletRequest request) {
@@ -84,6 +89,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 部署 VO
      */
+    @Operation(summary = "部署详情", description = "含目标汇总与关联任务标识，前端据此拉起任务日志")
     @GetMapping("/detail/{id}")
     public ApiResponse<DeploymentVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -96,6 +102,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 部署目标 VO 列表
      */
+    @Operation(summary = "部署目标明细", description = "返回一次发布在各目标服务器上的执行结果")
     @GetMapping("/targets/{id}")
     public ApiResponse<List<DeploymentTargetVo>> targets(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.listTargets(id), requestId(request));
@@ -108,6 +115,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 刚创建并触发的部署 VO（含 taskId / taskNo）
      */
+    @Operation(summary = "创建发布", description = "固化目标快照后写入 DEPLOY 异步任务并立即返回，实际发布由调度器取任务执行")
     @OperLog(title = "发布管理", businessType = BusinessType.EXECUTE)
     @PostMapping("/create")
     public ApiResponse<DeploymentVo> create(@Valid @RequestBody DeploymentDto dto, HttpServletRequest request) {
@@ -122,6 +130,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 修改后的部署 VO
      */
+    @Operation(summary = "修改发布", description = "仅排队中允许更换版本或策略")
     @OperLog(title = "发布管理", businessType = BusinessType.UPDATE, resourceType = "deployment")
     @PutMapping("/update/{id}")
     public ApiResponse<DeploymentVo> update(@PathVariable String id,
@@ -137,6 +146,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 进入回滚中的部署 VO（含新的 taskId / taskNo）
      */
+    @Operation(summary = "回滚发布", description = "仅已成功的部署可回滚；退回版本取自构建机产物，不依赖目标机残留文件")
     @OperLog(title = "发布管理", businessType = BusinessType.ROLLBACK)
     @PutMapping("/rollback/{id}")
     public ApiResponse<DeploymentVo> rollback(@PathVariable String id, HttpServletRequest request) {
@@ -153,6 +163,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 回滚预览（总结论 + 逐目标版本对照）
      */
+    @Operation(summary = "回滚预览", description = "只读接口：列出每台目标机将退回的版本与跳过原因，不改变任何状态、不触发任务")
     @GetMapping("/rollback-preview/{id}")
     public ApiResponse<RollbackPreviewVo> rollbackPreview(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.rollbackPreview(id), requestId(request));
@@ -165,6 +176,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 取消后的部署 VO
      */
+    @Operation(summary = "取消发布", description = "排队中或发布中的部署可取消，终态返回数据冲突")
     @OperLog(title = "发布管理", businessType = BusinessType.CANCEL)
     @PutMapping("/cancel/{id}")
     public ApiResponse<DeploymentVo> cancel(@PathVariable String id, HttpServletRequest request) {
@@ -178,6 +190,7 @@ public class DeploymentController {
      * @param request 当前 HTTP 请求
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除发布", description = "仅终态允许删除；执行中的发布请先取消")
     @OperLog(title = "发布管理", businessType = BusinessType.DELETE, resourceType = "deployment")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {

@@ -11,6 +11,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +35,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/build")
+@Tag(name = "构建管理", description = "构建记录查询、创建触发与本地产物上传")
 public class BuildController {
 
     /** 构建业务服务，由 Spring 容器完成字段注入。 */
@@ -51,6 +54,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求，用于获取 requestId
      * @return 构建 VO 分页数据
      */
+    @Operation(summary = "构建记录分页", description = "按 DTO 非空字段筛选，按创建时间倒序")
     @GetMapping("/page")
     public ApiResponse<PageResult<BuildVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                  @ModelAttribute BuildDto condition,
@@ -65,6 +69,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 构建 VO 列表
      */
+    @Operation(summary = "构建记录列表", description = "不分页，适合下拉与轻量列表；数据量大时应使用分页接口")
     @GetMapping("/list")
     public ApiResponse<List<BuildVo>> list(@ModelAttribute BuildDto condition, HttpServletRequest request) {
         return ApiResponse.success(service.listByCondition(condition), requestId(request));
@@ -77,6 +82,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 构建 VO
      */
+    @Operation(summary = "构建详情", description = "含关联任务标识，前端据此拉起任务日志")
     @GetMapping("/detail/{id}")
     public ApiResponse<BuildVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -89,6 +95,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 构建产物 VO 列表
      */
+    @Operation(summary = "构建产物列表", description = "查询该次构建产出的全部文件记录")
     @GetMapping("/artifacts/{id}")
     public ApiResponse<List<BuildArtifactVo>> artifacts(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.listArtifacts(id), requestId(request));
@@ -101,6 +108,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 刚创建并触发的构建 VO（含 taskId / taskNo）
      */
+    @Operation(summary = "创建构建", description = "写入一条 BUILD 异步任务后立即返回 taskId，实际构建由调度器取任务执行")
     @OperLog(title = "构建管理", businessType = BusinessType.EXECUTE)
     @PostMapping("/create")
     public ApiResponse<BuildVo> create(@Valid @RequestBody BuildDto dto, HttpServletRequest request) {
@@ -122,6 +130,7 @@ public class BuildController {
      * @param request    当前 HTTP 请求
      * @return 本次上传登记的构建 VO
      */
+    @Operation(summary = "上传产物", description = "把本地已构建好的包登记为可直接发布的版本，同步完成、不产生构建任务")
     @OperLog(title = "构建管理", businessType = BusinessType.EXECUTE)
     @PostMapping(value = "/upload", consumes = "multipart/form-data")
     public ApiResponse<BuildVo> upload(@RequestParam("projectId") String projectId,
@@ -139,6 +148,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 修改后的构建 VO
      */
+    @Operation(summary = "修改构建", description = "仅排队中的构建允许重新指定构建机；未传 buildServerId 时不做任何变更")
     @OperLog(title = "构建管理", businessType = BusinessType.UPDATE, resourceType = "build")
     @PutMapping("/update/{id}")
     public ApiResponse<BuildVo> update(@PathVariable String id,
@@ -154,6 +164,7 @@ public class BuildController {
      * @param request 当前 HTTP 请求
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除构建", description = "仅终态（成功/失败）可删除，执行中的请先取消")
     @OperLog(title = "构建管理", businessType = BusinessType.DELETE, resourceType = "build")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {

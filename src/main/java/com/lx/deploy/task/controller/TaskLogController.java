@@ -9,6 +9,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +37,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/taskLog")
+@Tag(name = "任务日志", description = "任务执行日志的增量拉取、导出与查询，前端执行过程页依赖此模块")
 public class TaskLogController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -49,6 +52,7 @@ public class TaskLogController {
      * @param request 当前 HTTP 请求，用于获取 requestId
      * @return VO 分页数据
      */
+    @Operation(summary = "日志分页", description = "按 DTO 非空字段筛选；做执行过程实时展示请用 /pull 增量接口")
     @GetMapping("/page")
     public ApiResponse<PageResult<TaskLogVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute TaskLogDto condition,
@@ -65,6 +69,7 @@ public class TaskLogController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的 VO 列表
      */
+    @Operation(summary = "日志列表", description = "不分页，用于一次性取某任务的全部日志；实时轮询请用 /pull")
     @GetMapping("/list")
     public ApiResponse<List<TaskLogVo>> list(@ModelAttribute TaskLogDto condition,
                                                HttpServletRequest request) {
@@ -84,6 +89,7 @@ public class TaskLogController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 增量日志、任务状态与下一次拉取的锚点
      */
+    @Operation(summary = "增量拉取日志", description = "只返回 seq > lastSeq 的日志，响应中的 finished=true 表示任务已结束、前端应停止轮询")
     @GetMapping("/pull")
     public ApiResponse<TaskLogPullVo> pull(@RequestParam String taskId,
                                             @RequestParam(required = false) Long lastSeq,
@@ -107,6 +113,7 @@ public class TaskLogController {
      * @param taskId 任务主键，必填
      * @return 附件响应：正文为 UTF-8 纯文本，Content-Disposition 携带文件名
      */
+    @Operation(summary = "导出任务日志", description = "返回 text/plain 附件（不包 ApiResponse），正文带任务头部摘要；业务异常仍是标准 JSON")
     @GetMapping("/export/{taskId}")
     public ResponseEntity<byte[]> export(@PathVariable String taskId) {
         TaskLogExportVo export = service.exportText(taskId);
@@ -129,6 +136,7 @@ public class TaskLogController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
+    @Operation(summary = "日志详情", description = "返回单条任务日志记录")
     @GetMapping("/detail/{id}")
     public ApiResponse<TaskLogVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -141,6 +149,7 @@ public class TaskLogController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @Operation(summary = "新增日志", description = "一般由执行器通过 TaskLogService 写入，不供页面直接调用")
     @PostMapping("/create")
     public ApiResponse<TaskLogVo> create(@Valid @RequestBody TaskLogDto dto,
                                            HttpServletRequest request) {
@@ -155,6 +164,7 @@ public class TaskLogController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @Operation(summary = "修改日志", description = "全量覆盖写入；日志属于执行痕迹，正常链路不修改")
     @PutMapping("/update/{id}")
     public ApiResponse<TaskLogVo> update(@PathVariable String id,
                                            @Valid @RequestBody TaskLogDto dto,
@@ -169,6 +179,7 @@ public class TaskLogController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除日志", description = "逻辑删除，不物理删除记录")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
         service.delete(id);

@@ -10,6 +10,8 @@ import com.lx.deploy.common.model.PageQuery;
 import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +29,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/projectEnvironmentTarget")
+@Tag(name = "部署目标", description = "项目+环境与目标服务器的绑定关系，发布只认这里的启用绑定")
 public class ProjectEnvironmentTargetController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -41,6 +44,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于获取 requestId
      * @return VO 分页数据
      */
+    @Operation(summary = "部署目标分页", description = "按 DTO 非空字段筛选，按创建时间倒序")
     @GetMapping("/page")
     public ApiResponse<PageResult<ProjectEnvironmentTargetVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute ProjectEnvironmentTargetDto condition,
@@ -57,6 +61,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的 VO 列表
      */
+    @Operation(summary = "部署目标列表", description = "不分页，适合下拉与轻量列表；数据量大时应使用分页接口")
     @GetMapping("/list")
     public ApiResponse<List<ProjectEnvironmentTargetVo>> list(@ModelAttribute ProjectEnvironmentTargetDto condition,
                                                HttpServletRequest request) {
@@ -74,6 +79,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 环境选项列表；projectId 为空时返回空列表
      */
+    @Operation(summary = "可选环境下拉", description = "只返回该项目已绑定启用目标的环境并带回目标台数；没有绑定时返回空列表")
     @GetMapping("/env-options")
     public ApiResponse<List<EnvironmentOptionVo>> envOptions(@RequestParam String projectId,
                                                              HttpServletRequest request) {
@@ -87,6 +93,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
+    @Operation(summary = "部署目标详情", description = "返回单条项目环境与服务器的绑定记录")
     @GetMapping("/detail/{id}")
     public ApiResponse<ProjectEnvironmentTargetVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -99,6 +106,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @Operation(summary = "新增部署目标", description = "把一台服务器绑定到 项目+环境；同一环境可绑多台，is_primary 决定主目标")
     @OperLog(title = "部署目标", businessType = BusinessType.INSERT)
     @PostMapping("/create")
     public ApiResponse<ProjectEnvironmentTargetVo> create(@Valid @RequestBody ProjectEnvironmentTargetDto dto,
@@ -114,6 +122,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @Operation(summary = "修改部署目标", description = "全量覆盖写入；置为主目标时会自动取消同项目同环境下其它目标的主目标标记")
     @OperLog(title = "部署目标", businessType = BusinessType.UPDATE, resourceType = "projectEnvironmentTarget")
     @PutMapping("/update/{id}")
     public ApiResponse<ProjectEnvironmentTargetVo> update(@PathVariable String id,
@@ -129,6 +138,7 @@ public class ProjectEnvironmentTargetController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除部署目标", description = "相当于在发布链路上摘掉这台机器；逻辑删除，不物理删除记录")
     @OperLog(title = "部署目标", businessType = BusinessType.DELETE, resourceType = "projectEnvironmentTarget")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {

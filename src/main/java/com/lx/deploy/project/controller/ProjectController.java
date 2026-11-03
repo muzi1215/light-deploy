@@ -10,6 +10,8 @@ import com.lx.deploy.common.model.PageResult;
 import com.lx.deploy.common.response.ApiResponse;
 import com.lx.deploy.common.web.RequestTraceFilter;
 import com.lx.deploy.task.model.vo.TaskVo;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +29,7 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/project")
+@Tag(name = "项目管理", description = "部署项目维护与项目连通性测试")
 public class ProjectController {
 
     /** 当前模块业务服务，由 Spring 容器完成字段注入。 */
@@ -41,6 +44,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于获取 requestId
      * @return VO 分页数据
      */
+    @Operation(summary = "项目分页", description = "按 DTO 非空字段筛选，按创建时间倒序")
     @GetMapping("/page")
     public ApiResponse<PageResult<ProjectVo>> page(@Valid @ModelAttribute PageQuery pageQuery,
                                                       @ModelAttribute ProjectDto condition,
@@ -57,6 +61,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的 VO 列表
      */
+    @Operation(summary = "项目列表", description = "不分页，适合下拉与轻量列表；数据量大时应使用分页接口")
     @GetMapping("/list")
     public ApiResponse<List<ProjectVo>> list(@ModelAttribute ProjectDto condition,
                                                HttpServletRequest request) {
@@ -70,6 +75,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含敏感字段的单条 VO
      */
+    @Operation(summary = "项目详情", description = "返回单条项目配置，不含任何凭据密文")
     @GetMapping("/detail/{id}")
     public ApiResponse<ProjectVo> detail(@PathVariable String id, HttpServletRequest request) {
         return ApiResponse.success(service.getRequiredById(id), requestId(request));
@@ -82,6 +88,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 保存完成后的 VO
      */
+    @Operation(summary = "新增项目", description = "主键与审计字段由服务端维护")
     @OperLog(title = "项目管理", businessType = BusinessType.INSERT)
     @PostMapping("/create")
     public ApiResponse<ProjectVo> create(@Valid @RequestBody ProjectDto dto,
@@ -97,6 +104,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 修改完成后的 VO
      */
+    @Operation(summary = "修改项目", description = "全量覆盖写入：未提交的字段会被置空（负责人除外），调用方须提交完整项目对象")
     @OperLog(title = "项目管理", businessType = BusinessType.UPDATE, resourceType = "project")
     @PutMapping("/update/{id}")
     public ApiResponse<ProjectVo> update(@PathVariable String id,
@@ -116,6 +124,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 新建的异步任务（状态为 0 排队中）
      */
+    @Operation(summary = "项目连通性测试", description = "在项目绑定的构建机上校验仓库拉取与镜像仓库登录，只创建异步任务并立即返回")
     @OperLog(title = "项目管理", businessType = BusinessType.EXECUTE)
     @PostMapping("/test/{id}")
     public ApiResponse<TaskVo> test(@PathVariable String id, HttpServletRequest request) {
@@ -129,6 +138,7 @@ public class ProjectController {
      * @param request 当前 HTTP 请求，用于读取本次请求的 requestId
      * @return 不包含业务数据的统一成功响应
      */
+    @Operation(summary = "删除项目", description = "逻辑删除；仍被部署目标引用时拒绝删除（数据冲突）")
     @OperLog(title = "项目管理", businessType = BusinessType.DELETE, resourceType = "project")
     @DeleteMapping("/delete/{id}")
     public ApiResponse<Void> delete(@PathVariable String id, HttpServletRequest request) {
