@@ -121,11 +121,24 @@ public class BuildTaskHandler implements TaskHandler {
     /**
      * 互斥键：同一台构建机上的构建必须串行执行。
      *
-     * @param task 待执行任务，bizId 为目标构建机主键
-     * @return 形如 {@code build-server:构建机ID} 的互斥键
+     * <p>bizId 是 build.id，需先读 build 取构建机主键；读不到（构建记录已被删除/数据被改脏）时回落到
+     * 构建级互斥键，不能因为读不到就返回 null——那样同一构建机可以同时发起多个构建。</p>
+     *
+     * @param task 待执行任务，bizId 为 build.id
+     * @return 形如 {@code build-server:构建机ID} 的互斥键；读不到构建机时为 {@code build-server:buildId}
      */
     @Override
     public String lockKey(Task task) {
+        // 按「构建机」维度互斥：同一台构建机上的构建串行执行（与类注释语义一致）。
+        try {
+            Build build = buildMapper.selectById(task.getBizId());
+            if (build != null && StringUtils.hasText(build.getBuildServerId())) {
+                return LOCK_KEY_PREFIX + build.getBuildServerId();
+            }
+        } catch (Exception e) {
+            log.warn("读取构建记录用于锁键失败，回落到构建级互斥键，buildId={}", task.getBizId(), e);
+        }
+        // 回落：仍按 build.id 做键，保证不会返回 null 导致同机构建并发
         return LOCK_KEY_PREFIX + task.getBizId();
     }
 

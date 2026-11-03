@@ -353,6 +353,8 @@ public class TaskExecutor implements SmartLifecycle {
             log.warn("[中央调度分发] 未找到任务类型 {} 对应的编排器，任务将标记失败：taskId={}",
                     task.getTaskType(), task.getId());
         }
+        // 互斥键：由 Handler.lockKey(task) 按业务维度计算（如 build-server:<id> / deploy:<id> / server:<id>），
+        // 相同互斥键的任务在平台内串行执行（落实 AGENTS.md §1「同一服务器同一时刻只执行一个任务」）。
         // 未知类型也必须领取执行，否则任务会永远停留在排队中；这里用任务主键作为互斥键。
         String lockKey = handler == null ? LOCK_KEY_UNKNOWN + task.getId() : handler.lockKey(task);
 
@@ -360,8 +362,10 @@ public class TaskExecutor implements SmartLifecycle {
         if (!submittedTaskIds.add(task.getId())) {
             return true;
         }
-        // 互斥键已被占用说明该服务器正在执行另一个任务，本轮跳过，下一轮再试。
+        // 互斥键已被占用 = 同锁键的任务正在执行中，本轮跳过、下轮再试（串行互斥的真正生效点，详见 §1.1.2）。
         if (!busyLockKeys.add(lockKey)) {
+            log.debug("[中央调度分发] 任务 taskId={} 跳过本轮：互斥键 {} 被占用（同锁键任务执行中），下轮重试",
+                    task.getId(), lockKey);
             submittedTaskIds.remove(task.getId());
             return true;
         }
