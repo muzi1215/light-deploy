@@ -41,6 +41,10 @@ import java.util.stream.Collectors;
  *
  * <p>生成的文件是待人工审查的骨架：字段标签、表单控件、校验规则和枚举渲染由模板按
  * 数据库类型做启发式推断，拷入 {@code lighit-deploy-ui/src/} 前需要按业务精化。</p>
+ *
+ * <p><b>输出通道说明</b>：本类是开发期命令行工具，仅由 {@link CodeGenerator} 的 main 方法调用，
+ * 进度信息统一走标准输出 {@code System.out}，<b>不是</b>运行时日志。后续维护时不要把它改成
+ * logger，也不要把它注册成 Spring Bean——它不参与任何线上发布链路。</p>
  */
 public final class FrontendCodeGenerator {
 

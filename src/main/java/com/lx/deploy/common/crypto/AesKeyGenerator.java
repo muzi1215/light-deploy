@@ -40,6 +40,9 @@ public final class AesKeyGenerator {
      * @param args 不使用命令行参数
      */
     public static void main(String[] args) {
+        // 这里故意用标准输出而不是日志：这把密钥要让人直接复制到环境变量 LIGHT_DEPLOY_AES_KEY，
+        // 一旦写进 logs/ 就变成「密钥落盘」，反而违反 AGENTS.md §7（凭据不得进入日志）。
+        // 这是本类唯一的 System.out，属于命令行输出通道，不是运行时日志。
         System.out.println(generateKey());
     }
 }

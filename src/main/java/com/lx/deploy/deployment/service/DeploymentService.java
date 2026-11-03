@@ -3,6 +3,7 @@ package com.lx.deploy.deployment.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
+import lombok.extern.slf4j.Slf4j;
 import com.lx.deploy.aiops.model.AiopsEventType;
 import com.lx.deploy.aiops.service.AiopsEventPublisher;
 import com.lx.deploy.aiops.service.AiopsSilenceService;
@@ -74,6 +75,10 @@ import java.util.Map;
  * @since 2026-09-24 22:30:00
  */
 @Service
+// 注意：ServiceImpl 父类自带一个 org.apache.ibatis.logging.Log 类型的 log 字段，它只接受单字符串，
+// 写 log.debug("taskId={}", id) 会编译失败。这里显式 @Slf4j 让子类的 log 成为 SLF4J 日志器，
+// 支持占位符写法；新增 Service 时若继承 ServiceImpl 且要打参数化日志，同样需要加 @Slf4j。
+@Slf4j
 public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment> {
 
     /** 部署目标 Mapper：快照目标、查询明细、状态流转。 */
@@ -786,8 +791,10 @@ public class DeploymentService extends ServiceImpl<DeploymentMapper, Deployment>
         for (Task task : tasks) {
             try {
                 taskService.cancel(task.getId());
-            } catch (DeployException ignored) {
-                // 任务已处于终态，视为已收敛。
+            } catch (DeployException e) {
+                // 任务已处于终态（已完成 / 已失败 / 已取消），视为已收敛，不再重复取消。
+                // 记 DEBUG 便于排查「取消部署后任务状态为何没变」——正常路径下不打印，不污染日志。
+                log.debug("任务已处于终态，跳过取消：taskId={}，原因：{}", task.getId(), e.getMessage());
             }
         }
     }

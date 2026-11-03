@@ -2,6 +2,7 @@ package com.lx.deploy.common.util;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 
 /**
@@ -33,6 +34,7 @@ import org.springframework.util.StringUtils;
  * @author lx
  * @since 2026-09-26 02:10:00
  */
+@Slf4j
 public final class RegistryAuthSupport {
 
     /** 登录前把密码文件喂给 docker 的命令片段。 */
@@ -83,8 +85,11 @@ public final class RegistryAuthSupport {
             if (username != null && username.isTextual() && StringUtils.hasText(username.asText())) {
                 return username.asText();
             }
-        } catch (Exception ignored) {
-            // 非法 JSON 或非预期结构：静默回退，不影响主流程
+        } catch (Exception e) {
+            // 非法 JSON 或非预期结构：回退到「按首个冒号切分」的历史形态，不影响主流程。
+            // 只记 DEBUG：该方法调用频率高，且属于已兼容的脏数据，不应污染 INFO 日志；
+            // 但不能完全不记——否则「测试能登录、构建推不上去」时无从判断走的是哪条解析分支。
+            log.debug("解析镜像仓库凭据 metadata 失败，回退到冒号切分：{}", e.getMessage());
         }
         return "";
     }
